@@ -11,7 +11,7 @@ import { CommandTemplatePanel } from "./CommandTemplatePanel";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { HistoryWorkspace } from "./HistoryWorkspace";
 import { openWindowsTerminal } from "../lib/externalTerminal";
-import { Terminal, Plus, Search } from "./icons";
+import { Terminal, Plus, Search, X } from "./icons";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
 import {
@@ -73,11 +73,11 @@ function SortableTab({ id, title, isActive, status, onActivate, onClose, menuCon
           <button
             onClick={(e) => { e.stopPropagation(); onClose(); }}
             onPointerDown={(e) => e.stopPropagation()}
-            className="ml-1.5 inline-flex h-6 w-6 items-center justify-center rounded text-[16px] leading-none text-on-surface-variant opacity-70 transition-[opacity,background-color] hover:bg-on-surface/10 hover:opacity-100"
+            className="ui-terminal-tab-close ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-on-surface-variant opacity-75 transition-[background-color,color,opacity,box-shadow] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--interactive-focus-ring)]"
             aria-label={`关闭终端 ${title}`}
             title={`关闭终端 ${title}`}
           >
-            &times;
+            <X size={13} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </div>
       </ContextMenuTrigger>

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { TerminalSession, PersistedSplit, Project } from "../lib/types";
-import { logError } from "../lib/logger";
+import { logError, logInfo } from "../lib/logger";
 import { useSettingsStore } from "./settingsStore";
 import { useSessionStore } from "./sessionStore";
 import { normalizeShellKey } from "../lib/shell";
@@ -53,6 +53,30 @@ function scheduleSaveActiveId(id: string | null) {
   }, 200);
 }
 
+function summarizeStartupCmd(startupCmd?: string): string | null {
+  if (!startupCmd) return null;
+  const redacted = startupCmd
+    .replace(/((?:token|password|passwd|secret|api[_-]?key)\s*=\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1<redacted>")
+    .replace(/(--(?:token|password|passwd|secret|api[_-]?key)\s+)(\S+)/gi, "$1<redacted>");
+  const summary = redacted.replace(/\s+/g, " ").trim();
+  return summary.length > 120 ? `${summary.slice(0, 120)}...` : summary;
+}
+
+function logTerminalExitStatus(session: TerminalSession, payload: PtyStatusPayload) {
+  if (payload.status !== "exited" && payload.status !== "error") return;
+  logInfo("pty status received", {
+    sessionId: session.id,
+    title: session.title,
+    projectId: session.projectId ?? null,
+    cwd: session.cwd ?? null,
+    shell: session.shell ?? null,
+    hasStartupCmd: Boolean(session.startupCmd),
+    startupCmdSummary: summarizeStartupCmd(session.startupCmd),
+    status: payload.status,
+    exit_code: payload.exit_code,
+  });
+}
+
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -97,6 +121,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
     const unlisten = await listen<PtyStatusPayload>(`pty-status-${sessionId}`, (event) => {
       const status = event.payload.status as SessionStatus;
+      logTerminalExitStatus(session, event.payload);
       set((state) => ({
         sessionStatuses: { ...state.sessionStatuses, [sessionId]: status },
       }));
@@ -118,7 +143,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       setTimeout(() => {
         invoke("pty_write", { sessionId, data: startupCmd + "\r" }).catch((err) => {
           toast.error("启动命令写入失败", { description: String(err) });
-          logError("Failed to write startup command", { sessionId, startupCmd, err });
+          logError("Failed to write startup command", {
+            sessionId,
+            hasStartupCmd: true,
+            startupCmdSummary: summarizeStartupCmd(startupCmd),
+            err,
+          });
         });
       }, 500);
     }
@@ -231,8 +261,16 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       throw err;
     }
 
+    const splitSession: TerminalSession = {
+      id: secondSessionId,
+      title: "Split Terminal",
+      cwd,
+      shell: resolvedShell,
+    };
+
     const unlisten = await listen<PtyStatusPayload>(`pty-status-${secondSessionId}`, (event) => {
       const status = event.payload.status as SessionStatus;
+      logTerminalExitStatus(splitSession, event.payload);
       set((state) => ({
         sessionStatuses: { ...state.sessionStatuses, [secondSessionId]: status },
       }));
@@ -370,10 +408,21 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
 
       newIdMap[ps.id] = newSessionId;
 
+      const restoredSession: TerminalSession = {
+        id: newSessionId,
+        projectId: ps.projectId,
+        title: ps.title,
+        cwd: ps.cwd,
+        shell: resolvedShell,
+        envVars: ps.envVars,
+        startupCmd: ps.startupCmd,
+      };
+
       let unlisten: UnlistenFn;
       try {
         unlisten = await listen<PtyStatusPayload>(`pty-status-${newSessionId}`, (event) => {
           const status = event.payload.status as SessionStatus;
+          logTerminalExitStatus(restoredSession, event.payload);
           useTerminalStore.setState((state) => ({
             sessionStatuses: { ...state.sessionStatuses, [newSessionId]: status },
           }));
@@ -385,16 +434,6 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         continue;
       }
 
-      const restoredSession: TerminalSession = {
-        id: newSessionId,
-        projectId: ps.projectId,
-        title: ps.title,
-        cwd: ps.cwd,
-        shell: resolvedShell,
-        envVars: ps.envVars,
-        startupCmd: ps.startupCmd,
-      };
-
       restoredSessions.push(restoredSession);
       restoredStatuses[newSessionId] = "running";
       restoredListeners[newSessionId] = unlisten;
@@ -403,7 +442,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       if (ps.startupCmd) {
         setTimeout(() => {
           invoke("pty_write", { sessionId: newSessionId, data: ps.startupCmd + "\r" }).catch((err) => {
-            logError("Failed to write startup command on restore", { sessionId: newSessionId, startupCmd: ps.startupCmd, err });
+            logError("Failed to write startup command on restore", {
+              sessionId: newSessionId,
+              hasStartupCmd: true,
+              startupCmdSummary: summarizeStartupCmd(ps.startupCmd),
+              err,
+            });
           });
         }, 500);
       }
@@ -431,10 +475,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         continue;
       }
 
+      const restoredSplitSession: TerminalSession = {
+        id: secondSessionId,
+        title: "Split Terminal",
+        cwd: ps.secondSessionCwd,
+        shell: resolvedShell,
+      };
+
       const unlisten = await (async () => {
         try {
           return await listen<PtyStatusPayload>(`pty-status-${secondSessionId}`, (event) => {
             const status = event.payload.status as SessionStatus;
+            logTerminalExitStatus(restoredSplitSession, event.payload);
             useTerminalStore.setState((state) => ({
               sessionStatuses: { ...state.sessionStatuses, [secondSessionId]: status },
             }));

@@ -22,7 +22,18 @@ pub struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    diagnostics: Arc<Mutex<PtySessionDiagnostics>>,
     reader_handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct PtySessionDiagnostics {
+    session_id: String,
+    shell: String,
+    exe: String,
+    cwd: Option<String>,
+    last_resize_cols: Option<u16>,
+    last_resize_rows: Option<u16>,
 }
 
 #[derive(Clone, Serialize)]
@@ -114,10 +125,19 @@ impl PtyManager {
         })?;
 
         let child = Arc::new(Mutex::new(child));
+        let diagnostics = Arc::new(Mutex::new(PtySessionDiagnostics {
+            session_id: session_id.to_string(),
+            shell: shell.unwrap_or("powershell").to_string(),
+            exe: exe.to_string(),
+            cwd: cwd.map(str::to_string),
+            last_resize_cols: None,
+            last_resize_rows: None,
+        }));
         let output_event = format!("pty-output-{session_id}");
         let status_event = format!("pty-status-{session_id}");
         let status_map = self.statuses.clone();
         let child_for_thread = child.clone();
+        let diagnostics_for_thread = diagnostics.clone();
         let session_id_owned = session_id.to_string();
 
         self.statuses.lock().unwrap().insert(
@@ -131,6 +151,7 @@ impl PtyManager {
         let reader_handle = std::thread::spawn(move || {
             let mut buf = [0u8; READER_BUF_SIZE];
             let mut pending: Vec<u8> = Vec::with_capacity(READER_FLUSH_THRESHOLD * 2);
+            let mut reader_end_reason = "eof".to_string();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -160,7 +181,10 @@ impl PtyManager {
                             }
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        reader_end_reason = format!("read_error: {e}");
+                        break;
+                    }
                 }
             }
             // 进程退出，把剩余数据全部发出去（不再保护边界，最后一帧）
@@ -171,23 +195,54 @@ impl PtyManager {
             }
 
             // Process exited — check exit status
-            let new_status = match child_for_thread.lock().unwrap().try_wait() {
-                Ok(Some(exit)) => PtyProcessStatus {
-                    status: "exited".to_string(),
-                    exit_code: Some(exit.exit_code() as i32),
-                },
-                Ok(None) => PtyProcessStatus {
-                    status: "exited".to_string(),
-                    exit_code: None,
-                },
-                Err(_) => PtyProcessStatus {
-                    status: "error".to_string(),
-                    exit_code: None,
-                },
-            };
+            let (new_status, child_exit_status, child_exit_code_raw, child_wait_error) =
+                match child_for_thread.lock().unwrap().try_wait() {
+                    Ok(Some(exit)) => {
+                        let exit_code = exit.exit_code();
+                        (
+                            PtyProcessStatus {
+                                status: "exited".to_string(),
+                                exit_code: Some(exit_code as i32),
+                            },
+                            Some(format!("{exit:?}")),
+                            Some(exit_code),
+                            None,
+                        )
+                    }
+                    Ok(None) => (
+                        PtyProcessStatus {
+                            status: "exited".to_string(),
+                            exit_code: None,
+                        },
+                        None,
+                        None,
+                        None,
+                    ),
+                    Err(e) => (
+                        PtyProcessStatus {
+                            status: "error".to_string(),
+                            exit_code: None,
+                        },
+                        None,
+                        None,
+                        Some(e.to_string()),
+                    ),
+                };
+            let diagnostics = diagnostics_for_thread.lock().unwrap().clone();
             info!(
-                "pty session exited: id={}, status={}, exit_code={:?}",
-                session_id_owned, new_status.status, new_status.exit_code
+                "pty reader ended: reason={}, id={}, status={}, exit_code={:?}, child_exit_status={:?}, child_exit_code_raw={:?}, shell={}, exe={}, cwd={:?}, last_resize_cols={:?}, last_resize_rows={:?}, child_wait_error={:?}",
+                reader_end_reason,
+                diagnostics.session_id,
+                new_status.status,
+                new_status.exit_code,
+                child_exit_status,
+                child_exit_code_raw,
+                diagnostics.shell,
+                diagnostics.exe,
+                diagnostics.cwd,
+                diagnostics.last_resize_cols,
+                diagnostics.last_resize_rows,
+                child_wait_error
             );
 
             if let Ok(mut statuses) = status_map.lock() {
@@ -203,6 +258,7 @@ impl PtyManager {
             writer,
             master: pair.master,
             child,
+            diagnostics,
             reader_handle: Some(reader_handle),
         }));
         self.sessions
@@ -255,6 +311,10 @@ impl PtyManager {
             "pty resize: session_id={}, cols={}, rows={}",
             session_id, cols, rows
         );
+        if let Ok(mut diagnostics) = session.diagnostics.lock() {
+            diagnostics.last_resize_cols = Some(cols);
+            diagnostics.last_resize_rows = Some(rows);
+        }
         session
             .master
             .resize(PtySize {

@@ -120,7 +120,10 @@ function TreeNodeItemImpl({ node, depth, density, focusedNodeKey, onFocusNode }:
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="block truncate font-medium">{p.name}</span>
             {p.cli_tool && (
-              <span className="ui-tree-meta-chip inline-flex shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight">
+              <span
+                className="ui-tree-meta-chip inline-flex shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight"
+                data-cli-tool={p.cli_tool.trim().toLowerCase()}
+              >
                 {p.cli_tool}
               </span>
             )}
