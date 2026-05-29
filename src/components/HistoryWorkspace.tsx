@@ -9,7 +9,7 @@ import { HistoryListPane } from "./history/HistoryListPane";
 import { SessionDetailPane } from "./history/SessionDetailPane";
 import { toGroupLabel, type TimeGroupLabel } from "./history/historyViewUtils";
 
-const SESSION_PAGE_SIZE = 200;
+const SESSION_PAGE_SIZE = 100;
 const MESSAGE_PAGE_SIZE = 160;
 const LOAD_MORE_THRESHOLD_PX = 220;
 // 稳定的空数组引用：避免每次 render 都用 `?? []` 生成新数组、击穿下游 memo。
@@ -19,12 +19,9 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function makeHitKey(hit: HistorySearchHit): string {
-  return `${hit.source}:${hit.session_id}:${hit.file_path}`;
-}
-
 export function HistoryWorkspace() {
   const loadingSessions = useHistoryStore((s) => s.loadingSessions);
+  const loadingMoreSessions = useHistoryStore((s) => s.loadingMoreSessions);
   const loadingSessionDetail = useHistoryStore((s) => s.loadingSessionDetail);
   const searching = useHistoryStore((s) => s.searching);
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
@@ -34,6 +31,7 @@ export function HistoryWorkspace() {
   const globalQuery = useHistoryStore((s) => s.globalQuery);
   const sessionQuery = useHistoryStore((s) => s.sessionQuery);
   const searchHits = useHistoryStore((s) => s.searchHits);
+  const backendHasMoreSessions = useHistoryStore((s) => s.hasMoreSessions);
   const focusedMessageIndex = useHistoryStore((s) => s.focusedMessageIndex);
   const focusedMessageSeq = useHistoryStore((s) => s.focusedMessageSeq);
   const focusGlobalSearchSeq = useHistoryStore((s) => s.focusGlobalSearchSeq);
@@ -41,7 +39,9 @@ export function HistoryWorkspace() {
   const closeHistory = useHistoryStore((s) => s.closeHistory);
   const setSourceFilter = useHistoryStore((s) => s.setSourceFilter);
   const loadSessions = useHistoryStore((s) => s.loadSessions);
+  const loadMoreSessions = useHistoryStore((s) => s.loadMoreSessions);
   const openSession = useHistoryStore((s) => s.openSession);
+  const openSearchHit = useHistoryStore((s) => s.openSearchHit);
   const setGlobalQuery = useHistoryStore((s) => s.setGlobalQuery);
   const runGlobalSearch = useHistoryStore((s) => s.runGlobalSearch);
   const setSessionQuery = useHistoryStore((s) => s.setSessionQuery);
@@ -76,6 +76,26 @@ export function HistoryWorkspace() {
     const timer = setTimeout(() => setDebouncedSessionQuery(sessionQuery), 150);
     return () => clearTimeout(timer);
   }, [sessionQuery]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (diffOpen) {
+        setDiffOpen(false);
+        return;
+      }
+      if (promptOpen) {
+        setPromptOpen(false);
+        return;
+      }
+      closeHistory();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [closeHistory, diffOpen, promptOpen]);
 
   const activeView = useMemo(
     () => sessions.find((item) => item.sessionKey === activeSessionKey) ?? null,
@@ -169,15 +189,16 @@ export function HistoryWorkspace() {
   }, [sessions, normalizedGlobal]);
 
   useEffect(() => {
-    setVisibleSessionCount(Math.min(SESSION_PAGE_SIZE, filteredSessions.length));
-  }, [filteredSessions.length]);
+    setVisibleSessionCount(SESSION_PAGE_SIZE);
+  }, [normalizedGlobal, sourceFilter, loadingSessions]);
 
   const visibleFilteredSessions = useMemo(
     () => filteredSessions.slice(0, visibleSessionCount),
     [filteredSessions, visibleSessionCount]
   );
 
-  const hasMoreSessions = visibleSessionCount < filteredSessions.length;
+  const hasMoreVisibleSessions = visibleSessionCount < filteredSessions.length;
+  const hasMoreSessions = hasMoreVisibleSessions || backendHasMoreSessions;
 
   const groupedSessions = useMemo(() => {
     const order: TimeGroupLabel[] = ["Today", "Yesterday", "This Week", "This Month", "Earlier"];
@@ -194,13 +215,29 @@ export function HistoryWorkspace() {
       .filter((group) => group.items.length > 0);
   }, [visibleFilteredSessions]);
 
+  const handleLoadMoreSessions = useCallback(() => {
+    if (hasMoreVisibleSessions) {
+      setVisibleSessionCount((prev) => Math.min(filteredSessions.length, prev + SESSION_PAGE_SIZE));
+      return;
+    }
+    if (backendHasMoreSessions && !loadingMoreSessions) {
+      void loadMoreSessions()
+        .then(() => {
+          setVisibleSessionCount((prev) => prev + SESSION_PAGE_SIZE);
+        })
+        .catch((err) => {
+          toast.error("加载更多会话失败", { description: String(err) });
+        });
+    }
+  }, [backendHasMoreSessions, filteredSessions.length, hasMoreVisibleSessions, loadMoreSessions, loadingMoreSessions]);
+
   const handleSessionListScroll = useCallback(() => {
     const container = sessionListRef.current;
     if (!container || !hasMoreSessions) return;
     const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
-    setVisibleSessionCount((prev) => Math.min(filteredSessions.length, prev + SESSION_PAGE_SIZE));
-  }, [filteredSessions.length, hasMoreSessions]);
+    handleLoadMoreSessions();
+  }, [handleLoadMoreSessions, hasMoreSessions]);
 
   const matchIndices = useMemo(() => {
     const query = debouncedSessionQuery.trim();
@@ -302,9 +339,8 @@ export function HistoryWorkspace() {
   };
 
   const openByHit = async (hit: HistorySearchHit) => {
-    const key = makeHitKey(hit);
     try {
-      await openSession(key);
+      await openSearchHit(hit);
       clearFocusedMessage();
       setSessionQuery(globalQuery.trim());
     } catch (err) {
@@ -350,12 +386,13 @@ export function HistoryWorkspace() {
         globalQuery={globalQuery}
         activeSessionKey={activeSessionKey}
         loadingSessions={loadingSessions}
+        loadingMoreSessions={loadingMoreSessions}
         searching={searching}
         normalizedGlobal={normalizedGlobal}
         groupedSessions={groupedSessions}
         filteredSessionCount={filteredSessions.length}
         hasMoreSessions={hasMoreSessions}
-        visibleSessionCount={visibleSessionCount}
+        visibleSessionCount={Math.min(visibleSessionCount, filteredSessions.length)}
         searchHits={searchHits}
         globalSearchRef={globalSearchRef}
         onClose={closeHistory}
@@ -372,9 +409,7 @@ export function HistoryWorkspace() {
         onOpenHit={(hit) => {
           void openByHit(hit);
         }}
-        onLoadMoreSessions={() =>
-          setVisibleSessionCount((prev) => Math.min(filteredSessions.length, prev + SESSION_PAGE_SIZE))
-        }
+        onLoadMoreSessions={handleLoadMoreSessions}
         onSessionListScroll={handleSessionListScroll}
         onStartResize={startResize}
       />

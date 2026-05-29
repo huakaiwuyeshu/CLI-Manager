@@ -18,6 +18,7 @@ interface HistoryListPaneProps {
   globalQuery: string;
   activeSessionKey: string | null;
   loadingSessions: boolean;
+  loadingMoreSessions: boolean;
   searching: boolean;
   normalizedGlobal: string;
   groupedSessions: SessionGroup[];
@@ -45,6 +46,7 @@ export function HistoryListPane({
   globalQuery,
   activeSessionKey,
   loadingSessions,
+  loadingMoreSessions,
   searching,
   normalizedGlobal,
   groupedSessions,
@@ -159,8 +161,15 @@ export function HistoryListPane({
 
         {!loadingSessions && hasMoreSessions && (
           <div className="p-2">
-            <button onClick={onLoadMoreSessions} className="ui-btn w-full" aria-label="加载更多历史会话">
-              加载更多 ({visibleSessionCount}/{filteredSessionCount})
+            <button
+              onClick={onLoadMoreSessions}
+              className="ui-btn w-full"
+              aria-label="加载更多历史会话"
+              disabled={loadingMoreSessions}
+            >
+              {loadingMoreSessions
+                ? "正在加载更多..."
+                : `加载更多（已显示 ${visibleSessionCount} 条，已载入 ${filteredSessionCount} 条）`}
             </button>
           </div>
         )}

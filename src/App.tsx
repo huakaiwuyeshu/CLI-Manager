@@ -392,6 +392,7 @@ function App() {
 
   // 关闭窗口拦截：根据 closeBehavior 决定最小化到托盘 / 直接退出 / 弹窗询问
   useEffect(() => {
+    if (!IN_TAURI) return;
     const appWindow = getCurrentWindow();
     let unlistenPromise: Promise<() => void> | null = null;
 

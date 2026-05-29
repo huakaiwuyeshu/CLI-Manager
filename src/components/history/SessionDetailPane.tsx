@@ -1,9 +1,11 @@
-﻿import { BookCopy, GitCompare, Star } from "lucide-react";
+﻿import { BookCopy, Copy, GitCompare, Star } from "lucide-react";
 import { useMemo } from "react";
+import { toast } from "sonner";
 import type { HistoryMessage, HistorySessionDetail, HistorySessionView } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { HistoryMarkdownContent } from "./HistoryMarkdownContent";
 import { MetaEditor } from "./MetaEditor";
-import { formatTime, highlightText, makeSessionLabel, roleBadge } from "./historyViewUtils";
+import { formatTime, makeSessionLabel, roleBadge } from "./historyViewUtils";
 import type { RefObject } from "react";
 
 interface SessionDetailPaneProps {
@@ -81,6 +83,20 @@ export function SessionDetailPane({
     );
   }
 
+  const copyText = (text: string, label: string) => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => toast.success(`${label} 已复制`))
+      .catch((err) => toast.error("复制失败", { description: String(err) }));
+  };
+
+  const locationText = [
+    `sessionId=${activeView.session_id}`,
+    `source=${activeView.source}`,
+    `project=${activeView.project_key}`,
+    `filePath=${activeView.file_path}`,
+  ].join("\n");
+
   return (
     <>
       <div className="ui-history-detail-top [grid-row:1] min-h-0 shrink-0 overflow-y-auto p-3">
@@ -89,6 +105,27 @@ export function SessionDetailPane({
             <h3 className="truncate text-sm font-semibold text-text-primary">{activeView.displayTitle}</h3>
             <div className="ui-dev-label mt-1 text-[11px] text-text-muted">
               {activeView.source} · {makeSessionLabel(activeView)} · 更新于 {formatTime(activeView.updated_at)}
+            </div>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-text-muted">
+              <span className="ui-dev-label max-w-full truncate rounded border border-border bg-bg-secondary px-1.5 py-0.5">
+                sessionId: {activeView.session_id}
+              </span>
+              <button
+                onClick={() => copyText(activeView.session_id, "sessionId")}
+                className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                title="复制 sessionId"
+              >
+                <Copy size={11} />
+                复制ID
+              </button>
+              <button
+                onClick={() => copyText(locationText, "会话定位信息")}
+                className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+                title="复制 source/project/filePath 定位信息"
+              >
+                <Copy size={11} />
+                复制定位
+              </button>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -175,9 +212,7 @@ export function SessionDetailPane({
                   </span>
                   <span>{msg.timestamp ?? "-"}</span>
                 </div>
-                <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs text-text-primary">
-                  {highlightText(msg.content, sessionQuery)}
-                </pre>
+                <HistoryMarkdownContent content={msg.content} query={sessionQuery} />
               </div>
             );
           })}

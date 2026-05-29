@@ -1,5 +1,7 @@
-import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { Diff, Hunk, parseDiff, type FileData } from "react-diff-view";
+import "react-diff-view/style/index.css";
 import { FileCode2, GitCompareArrows, X } from "lucide-react";
 import type { HistoryMessage } from "../../lib/types";
 import DiffWorker from "../../lib/diffParser.worker.ts?worker";
@@ -14,41 +16,7 @@ interface DiffModalProps {
   onJumpToMessage: (messageIndex: number) => void;
 }
 
-const LINE_STYLE_BASE: CSSProperties = {
-  display: "block",
-  width: "max-content",
-  minWidth: "100%",
-  paddingLeft: "0.25rem",
-  paddingRight: "0.25rem",
-};
-
-const LINE_STYLE_DEFAULT: CSSProperties = {
-  ...LINE_STYLE_BASE,
-  color: "var(--text-primary)",
-  backgroundColor: "transparent",
-};
-const LINE_STYLE_ADD: CSSProperties = {
-  ...LINE_STYLE_BASE,
-  color: "var(--success)",
-  backgroundColor: "rgba(16, 185, 129, 0.1)",
-};
-const LINE_STYLE_DELETE: CSSProperties = {
-  ...LINE_STYLE_BASE,
-  color: "var(--danger)",
-  backgroundColor: "rgba(244, 63, 94, 0.1)",
-};
-const LINE_STYLE_HUNK: CSSProperties = {
-  ...LINE_STYLE_BASE,
-  color: "#93c5fd",
-  backgroundColor: "rgba(59, 130, 246, 0.12)",
-};
-const LINE_STYLE_HEADER: CSSProperties = {
-  ...LINE_STYLE_BASE,
-  color: "var(--warning)",
-  backgroundColor: "rgba(245, 158, 11, 0.1)",
-};
-
-function classifyLineStyle(line: string): CSSProperties {
+function classifyFallbackLine(line: string): string {
   if (
     line.startsWith("*** Begin Patch") ||
     line.startsWith("*** End Patch") ||
@@ -60,51 +28,28 @@ function classifyLineStyle(line: string): CSSProperties {
     line.startsWith("--- ") ||
     line.startsWith("+++ ")
   ) {
-    return LINE_STYLE_HEADER;
+    return "history-diff-fallback-header";
   }
-  if (line.startsWith("@@")) {
-    return LINE_STYLE_HUNK;
-  }
-  if (line.startsWith("+") && !line.startsWith("+++")) {
-    return LINE_STYLE_ADD;
-  }
-  if (line.startsWith("-") && !line.startsWith("---")) {
-    return LINE_STYLE_DELETE;
-  }
-  return LINE_STYLE_DEFAULT;
+  if (line.startsWith("@@")) return "history-diff-fallback-hunk";
+  if (line.startsWith("+") && !line.startsWith("+++")) return "history-diff-fallback-add";
+  if (line.startsWith("-") && !line.startsWith("---")) return "history-diff-fallback-delete";
+  return "history-diff-fallback-line";
 }
 
 function renderHighlightedPatch(patch: string): ReactNode {
-  const lines = patch.split("\n");
-  return lines.map((line, index) => (
-    <span key={index} style={classifyLineStyle(line)}>
+  return patch.split("\n").map((line, index) => (
+    <span key={index} className={classifyFallbackLine(line)}>
       {line || " "}
     </span>
   ));
 }
 
-const VIEWER_OUTER_STYLE: CSSProperties = {
-  borderColor: "var(--border)",
-  backgroundColor: "var(--bg-secondary)",
-  scrollbarGutter: "stable both-edges",
-};
-
-const VIEWER_INNER_STYLE: CSSProperties = { color: "var(--text-primary)" };
-
-const DiffCodeViewer = memo(function DiffCodeViewer({ patch }: { patch: string }) {
+const FallbackDiffViewer = memo(function FallbackDiffViewer({ patch }: { patch: string }) {
   return (
-    <div className="mt-2">
-      <div
-        className="rounded-md border overflow-x-scroll overflow-y-hidden max-w-full diff-code-scroll"
-        style={VIEWER_OUTER_STYLE}
-      >
-        <pre
-          className="text-xs whitespace-pre m-0 p-2 min-w-max font-mono leading-5 diff-code-inner"
-          style={VIEWER_INNER_STYLE}
-        >
-          {renderHighlightedPatch(patch)}
-        </pre>
-      </div>
+    <div className="mt-2 rounded-md border border-border bg-bg-secondary overflow-x-scroll overflow-y-hidden max-w-full diff-code-scroll">
+      <pre className="text-xs whitespace-pre m-0 p-2 min-w-max font-mono leading-5 diff-code-inner text-text-primary">
+        {renderHighlightedPatch(patch)}
+      </pre>
     </div>
   );
 });
@@ -115,6 +60,60 @@ function isDiffCandidate(content: string): boolean {
     content.includes("*** Begin Patch") ||
     content.includes("@@") ||
     content.includes("+++")
+  );
+}
+
+function parseBlockFiles(patch: string): FileData[] {
+  if (!patch.includes("diff --git") && !patch.includes("--- ")) return [];
+  try {
+    return parseDiff(patch, { nearbySequences: "zip" });
+  } catch {
+    return [];
+  }
+}
+
+function countChanges(files: FileData[]): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const file of files) {
+    for (const hunk of file.hunks) {
+      for (const change of hunk.changes) {
+        if (change.type === "insert") additions += 1;
+        if (change.type === "delete") deletions += 1;
+      }
+    }
+  }
+  return { additions, deletions };
+}
+
+function DiffBlockViewer({ block }: { block: ParsedDiffBlock }) {
+  const files = useMemo(() => parseBlockFiles(block.patch), [block.patch]);
+  const changes = useMemo(() => countChanges(files), [files]);
+
+  if (files.length === 0) {
+    return <FallbackDiffViewer patch={block.patch} />;
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+        <span className="rounded bg-success/10 px-1.5 py-0.5 text-success">+{changes.additions}</span>
+        <span className="rounded bg-danger/10 px-1.5 py-0.5 text-danger">-{changes.deletions}</span>
+      </div>
+      {files.map((file, index) => (
+        <div key={`${file.oldPath ?? "old"}-${file.newPath ?? "new"}-${index}`} className="history-diff-viewer rounded-md border border-border overflow-x-auto diff-code-scroll">
+          <Diff
+            viewType="split"
+            diffType={file.type}
+            hunks={file.hunks}
+            gutterType="default"
+            optimizeSelection
+          >
+            {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
+          </Diff>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -182,7 +181,7 @@ export function DiffModal({ open, messages, container, onClose, onJumpToMessage 
           style={{ zIndex: 56 }}
         >
           <div
-            className="w-full max-w-5xl h-[min(84vh,780px)] rounded-lg border overflow-hidden flex flex-col"
+            className="w-full max-w-6xl h-[min(84vh,780px)] rounded-lg border overflow-hidden flex flex-col"
             style={{ borderColor: "var(--border)", backgroundColor: "var(--bg-primary)" }}
           >
             <div
@@ -247,7 +246,7 @@ export function DiffModal({ open, messages, container, onClose, onJumpToMessage 
                         跳回消息
                       </button>
                     </div>
-                    <DiffCodeViewer patch={block.patch} />
+                    <DiffBlockViewer block={block} />
                   </div>
                 ))}
             </div>

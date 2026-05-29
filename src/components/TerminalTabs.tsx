@@ -50,8 +50,9 @@ interface SortableTabProps {
 function SortableTab({ id, title, isActive, notification, onActivate, onClose, menuContent }: SortableTabProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
 
+  const horizontalTransform = transform ? { ...transform, y: 0 } : transform;
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(horizontalTransform),
     transition,
     opacity: isDragging ? 0.5 : 1,
     zIndex: isDragging ? 10 : undefined,

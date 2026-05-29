@@ -7,7 +7,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// BufReader 容量；默认 8KB 对几 MB 的 jsonl 文件 syscall 次数偏多。
@@ -50,8 +50,40 @@ struct CachedSessionComputation {
 
 #[derive(Default)]
 struct SessionStatsCache {
-    entries: HashMap<String, CachedSessionComputation>,
+    entries: HashMap<String, CachedSessionCacheEntry>,
 }
+
+#[derive(Clone)]
+struct CachedSessionCacheEntry {
+    fingerprint: SessionFileFingerprint,
+    computed: CachedSessionComputation,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SessionFileFingerprint {
+    created_at: i64,
+    updated_at: i64,
+    size: u64,
+}
+
+#[derive(Clone)]
+struct HistoryIndexEntry {
+    file_ref: SessionFileRef,
+    fingerprint: SessionFileFingerprint,
+    computed: CachedSessionComputation,
+}
+
+#[derive(Clone, Default)]
+struct HistorySessionIndex {
+    entries: Vec<HistoryIndexEntry>,
+    by_path: HashMap<String, usize>,
+    refreshed_at: i64,
+    generation: u64,
+}
+
+static HISTORY_SESSION_INDEX: OnceLock<RwLock<HistorySessionIndex>> = OnceLock::new();
+
+const HISTORY_SESSION_INDEX_TTL_MS: i64 = 5_000;
 
 #[derive(Clone)]
 struct CachedSessionFiles {
@@ -237,16 +269,50 @@ pub async fn history_list_sessions(
     source: Option<String>,
     query: Option<String>,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<HistorySessionSummary>, String> {
     tokio::task::spawn_blocking(move || {
-        let files = collect_session_files(source.as_deref());
+        let source_filter = source.map(|v| v.to_lowercase());
         let query_lower = query
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
+        let max_sessions = limit.unwrap_or(usize::MAX);
+        let start_offset = offset.unwrap_or(0);
         let mut sessions = Vec::new();
+        if max_sessions == 0 {
+            return Ok(sessions);
+        }
 
-        for file_ref in files {
-            let summary = build_session_summary(&file_ref);
+        if query_lower.is_none() {
+            let mut files: Vec<(SessionFileRef, SessionFileFingerprint)> =
+                collect_session_files(source_filter.as_deref())
+                    .into_iter()
+                    .map(|file_ref| {
+                        let fingerprint = session_file_fingerprint(&file_ref.path);
+                        (file_ref, fingerprint)
+                    })
+                    .collect();
+            files.sort_by(|a, b| {
+                b.1.updated_at
+                    .cmp(&a.1.updated_at)
+                    .then_with(|| a.0.path.cmp(&b.0.path))
+            });
+
+            for (file_ref, _) in files.into_iter().skip(start_offset).take(max_sessions) {
+                let computed = get_or_scan_session_computation(&file_ref);
+                sessions.push(summary_from_computation(&file_ref, &computed));
+            }
+            return Ok(sessions);
+        }
+
+        for entry in refresh_history_index() {
+            if let Some(filter) = &source_filter {
+                if &entry.file_ref.source != filter {
+                    continue;
+                }
+            }
+
+            let summary = summary_from_computation(&entry.file_ref, &entry.computed);
             if let Some(q) = &query_lower {
                 let title = summary.title.to_lowercase();
                 let session_id = summary.session_id.to_lowercase();
@@ -266,14 +332,11 @@ pub async fn history_list_sessions(
                     continue;
                 }
             }
+
             sessions.push(summary);
         }
 
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        if let Some(max) = limit {
-            sessions.truncate(max);
-        }
-        Ok(sessions)
+        Ok(sessions.into_iter().skip(start_offset).take(max_sessions).collect())
     })
     .await
     .map_err(|err| err.to_string())?
@@ -326,26 +389,27 @@ pub async fn history_search(
             let project_key = file_ref.project_key.clone();
             let mut local_full = false;
 
-            let scan_result = iter_session_messages_filtered(&file_ref.path, &normalized_query, |_, msg| {
-                if !msg.content.to_lowercase().contains(&normalized_query) {
-                    return true;
-                }
-                hits.push(HistorySearchResult {
-                    session_id: session_id.clone(),
-                    source: source_name.clone(),
-                    project_key: project_key.clone(),
-                    title: title.clone(),
-                    file_path: file_path_str.clone(),
-                    role: msg.role,
-                    snippet: excerpt(&msg.content, 180),
-                    timestamp: msg.timestamp,
+            let scan_result =
+                iter_session_messages_filtered(&file_ref.path, &normalized_query, |_, msg| {
+                    if !msg.content.to_lowercase().contains(&normalized_query) {
+                        return true;
+                    }
+                    hits.push(HistorySearchResult {
+                        session_id: session_id.clone(),
+                        source: source_name.clone(),
+                        project_key: project_key.clone(),
+                        title: title.clone(),
+                        file_path: file_path_str.clone(),
+                        role: msg.role,
+                        snippet: excerpt(&msg.content, 180),
+                        timestamp: msg.timestamp,
+                    });
+                    if hits.len() >= max_hits {
+                        local_full = true;
+                        return false;
+                    }
+                    true
                 });
-                if hits.len() >= max_hits {
-                    local_full = true;
-                    return false;
-                }
-                true
-            });
             if let Err(err) = scan_result {
                 debug!(
                     "history_search skip unreadable file: path={}, err={}",
@@ -374,101 +438,105 @@ pub async fn history_list_prompts(
     query: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<HistoryPromptItem>, String> {
-    let scope = scope
-        .as_deref()
-        .map(|v| v.trim().to_lowercase())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "global".to_string());
-    let target_project = project_key
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let target_file = file_path
-        .map(|v| v.trim().replace('\\', "/").to_lowercase())
-        .filter(|v| !v.is_empty());
-    let normalized_query = query
-        .map(|q| q.trim().to_lowercase())
-        .filter(|q| !q.is_empty());
-    let max_items = limit.unwrap_or(200).clamp(1, 2000);
-    let files = collect_session_files(source.as_deref());
-    let mut prompts: Vec<HistoryPromptItem> = Vec::new();
+    tokio::task::spawn_blocking(move || {
+        let scope = scope
+            .as_deref()
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "global".to_string());
+        let files = collect_session_files(source.as_deref());
+        let target_project = project_key
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let target_file = file_path
+            .map(|v| v.trim().replace('\\', "/").to_lowercase())
+            .filter(|v| !v.is_empty());
+        let normalized_query = query
+            .map(|q| q.trim().to_lowercase())
+            .filter(|q| !q.is_empty());
+        let max_items = limit.unwrap_or(200).clamp(1, 2000);
+        let mut prompts: Vec<HistoryPromptItem> = Vec::new();
 
-    for file_ref in files {
-        if let Some(project) = &target_project {
-            if &file_ref.project_key != project {
-                continue;
-            }
-        }
-
-        if scope == "session" {
-            let Some(target) = target_file.as_ref() else {
-                continue;
-            };
-            let current = path_to_key(&file_ref.path).to_lowercase();
-            if &current != target {
-                continue;
-            }
-        }
-
-        let computed = get_or_scan_session_computation(&file_ref);
-        let session_id = computed.session_id.clone();
-        let source_name = file_ref.source.clone();
-        let project_key_owned = file_ref.project_key.clone();
-        let file_path_str = file_ref.path.to_string_lossy().to_string();
-        let session_title = computed.title.clone();
-        let updated_at = computed.updated_at;
-        let title_lower = session_title.to_lowercase();
-        let mut local_full = false;
-
-        let scan_result = iter_session_messages(&file_ref.path, |index, msg| {
-            if msg.role != "user" {
-                return true;
-            }
-            let prompt = normalize_text(&msg.content);
-            if prompt.is_empty() {
-                return true;
-            }
-            if let Some(q) = &normalized_query {
-                let prompt_lower = prompt.to_lowercase();
-                if !prompt_lower.contains(q) && !title_lower.contains(q) {
-                    return true;
+        for file_ref in files {
+            if let Some(project) = &target_project {
+                if &file_ref.project_key != project {
+                    continue;
                 }
             }
-            prompts.push(HistoryPromptItem {
-                session_id: session_id.clone(),
-                source: source_name.clone(),
-                project_key: project_key_owned.clone(),
-                file_path: file_path_str.clone(),
-                session_title: session_title.clone(),
-                updated_at,
-                message_index: index,
-                prompt,
-                timestamp: msg.timestamp,
-            });
-            if prompts.len() >= max_items {
-                local_full = true;
-                return false;
-            }
-            true
-        });
-        if let Err(err) = scan_result {
-            debug!(
-                "history_list_prompts skip unreadable file: path={}, err={}",
-                file_ref.path.to_string_lossy(),
-                err
-            );
-            continue;
-        }
-        if local_full {
-            break;
-        }
-    }
 
-    prompts.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then(b.message_index.cmp(&a.message_index))
-    });
-    Ok(prompts)
+            if scope == "session" {
+                let Some(target) = target_file.as_ref() else {
+                    continue;
+                };
+                let current = path_to_key(&file_ref.path).to_lowercase();
+                if &current != target {
+                    continue;
+                }
+            }
+
+            let computed = get_or_scan_session_computation(&file_ref);
+            let session_id = computed.session_id.clone();
+            let source_name = file_ref.source.clone();
+            let project_key_owned = file_ref.project_key.clone();
+            let file_path_str = file_ref.path.to_string_lossy().to_string();
+            let session_title = computed.title.clone();
+            let updated_at = computed.updated_at;
+            let title_lower = session_title.to_lowercase();
+            let mut local_full = false;
+
+            let scan_result = iter_session_messages(&file_ref.path, |index, msg| {
+                if msg.role != "user" {
+                    return true;
+                }
+                let prompt = normalize_text(&msg.content);
+                if prompt.is_empty() {
+                    return true;
+                }
+                if let Some(q) = &normalized_query {
+                    let prompt_lower = prompt.to_lowercase();
+                    if !prompt_lower.contains(q) && !title_lower.contains(q) {
+                        return true;
+                    }
+                }
+                prompts.push(HistoryPromptItem {
+                    session_id: session_id.clone(),
+                    source: source_name.clone(),
+                    project_key: project_key_owned.clone(),
+                    file_path: file_path_str.clone(),
+                    session_title: session_title.clone(),
+                    updated_at,
+                    message_index: index,
+                    prompt,
+                    timestamp: msg.timestamp,
+                });
+                if prompts.len() >= max_items {
+                    local_full = true;
+                    return false;
+                }
+                true
+            });
+            if let Err(err) = scan_result {
+                debug!(
+                    "history_list_prompts skip unreadable file: path={}, err={}",
+                    file_ref.path.to_string_lossy(),
+                    err
+                );
+                continue;
+            }
+            if local_full {
+                break;
+            }
+        }
+
+        prompts.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then(b.message_index.cmp(&a.message_index))
+        });
+        Ok(prompts)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -478,10 +546,11 @@ pub async fn history_get_stats(
     range_days: Option<usize>,
 ) -> Result<HistoryStatsResponse, String> {
     let range_days = range_days.unwrap_or(30).clamp(1, 180);
+    let source_filter = source.map(|v| v.to_lowercase());
     let target_project = project_key
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let files = collect_session_files(source.as_deref());
+    let entries = refresh_history_index();
     let end_day = day_start_utc(now_millis());
     let start_day = end_day - (range_days as i64 - 1) * DAY_MS;
 
@@ -495,15 +564,20 @@ pub async fn history_get_stats(
     let mut day_map: BTreeMap<i64, DayStatsAggregate> = BTreeMap::new();
     let mut hourly_map: Vec<HourStatsAggregate> = vec![HourStatsAggregate::default(); 24];
 
-    for file_ref in files {
+    for entry in entries {
+        if let Some(filter) = &source_filter {
+            if &entry.file_ref.source != filter {
+                continue;
+            }
+        }
         if let Some(project) = &target_project {
-            if &file_ref.project_key != project {
+            if &entry.file_ref.project_key != project {
                 continue;
             }
         }
 
-        let computed = get_or_scan_session_computation(&file_ref);
-        let summary = summary_from_computation(&file_ref, &computed);
+        let computed = entry.computed;
+        let summary = summary_from_computation(&entry.file_ref, &computed);
         let day_start = day_start_utc(summary.updated_at);
         if day_start < start_day || day_start > end_day {
             continue;
@@ -706,6 +780,143 @@ fn get_files_cache() -> &'static Mutex<SessionFilesCache> {
     SESSION_FILES_CACHE.get_or_init(|| Mutex::new(SessionFilesCache::default()))
 }
 
+fn get_history_index() -> &'static RwLock<HistorySessionIndex> {
+    HISTORY_SESSION_INDEX.get_or_init(|| RwLock::new(HistorySessionIndex::default()))
+}
+
+fn refresh_history_index() -> Vec<HistoryIndexEntry> {
+    let now = now_millis();
+    if let Ok(index) = get_history_index().read() {
+        if index.refreshed_at > 0 && now - index.refreshed_at < HISTORY_SESSION_INDEX_TTL_MS {
+            return index.entries.clone();
+        }
+    }
+
+    let previous = get_history_index()
+        .read()
+        .ok()
+        .filter(|index| index.refreshed_at > 0)
+        .map(|index| index.clone());
+    let next = build_history_index(now, previous);
+    let entries = next.entries.clone();
+
+    if let Ok(mut index) = get_history_index().write() {
+        *index = next;
+    }
+
+    entries
+}
+
+fn build_history_index(now: i64, previous: Option<HistorySessionIndex>) -> HistorySessionIndex {
+    let mut previous_entries: HashMap<String, HistoryIndexEntry> = previous
+        .as_ref()
+        .map(|index| {
+            index
+                .entries
+                .iter()
+                .cloned()
+                .map(|entry| (path_to_key(&entry.file_ref.path), entry))
+                .collect()
+        })
+        .unwrap_or_default();
+    let previous_generation = previous.as_ref().map(|index| index.generation).unwrap_or(0);
+    let files = collect_session_files(None);
+    let mut entries = Vec::with_capacity(files.len());
+
+    for file_ref in files {
+        let path_key = path_to_key(&file_ref.path);
+        let fingerprint = session_file_fingerprint(&file_ref.path);
+        if let Some(mut existing) = previous_entries.remove(&path_key) {
+            if existing.file_ref.source == file_ref.source
+                && existing.file_ref.project_key == file_ref.project_key
+                && can_reuse_session_scan(existing.fingerprint, fingerprint)
+            {
+                existing.file_ref = file_ref;
+                existing.fingerprint = fingerprint;
+                existing.computed.created_at = fingerprint.created_at;
+                existing.computed.updated_at = fingerprint.updated_at;
+                entries.push(existing);
+                continue;
+            }
+        }
+
+        let computed = scan_session_computation(
+            &file_ref.path,
+            fingerprint.created_at,
+            fingerprint.updated_at,
+        );
+        entries.push(HistoryIndexEntry {
+            file_ref,
+            fingerprint,
+            computed,
+        });
+    }
+
+    entries.sort_by(|a, b| b.computed.updated_at.cmp(&a.computed.updated_at));
+
+    let mut by_path = HashMap::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        by_path.insert(path_to_key(&entry.file_ref.path), index);
+    }
+
+    HistorySessionIndex {
+        entries,
+        by_path,
+        refreshed_at: now,
+        generation: previous_generation.saturating_add(1),
+    }
+}
+
+fn lookup_indexed_computation(file_ref: &SessionFileRef) -> Option<CachedSessionComputation> {
+    let index = get_history_index().read().ok()?;
+    let path_key = path_to_key(&file_ref.path);
+    let entry_index = *index.by_path.get(&path_key)?;
+    let entry = index.entries.get(entry_index)?;
+    if entry.file_ref.source != file_ref.source
+        || entry.file_ref.project_key != file_ref.project_key
+    {
+        return None;
+    }
+
+    let fingerprint = session_file_fingerprint(&file_ref.path);
+    if !can_reuse_session_scan(entry.fingerprint, fingerprint) {
+        return None;
+    }
+
+    let mut computed = entry.computed.clone();
+    computed.created_at = fingerprint.created_at;
+    computed.updated_at = fingerprint.updated_at;
+    Some(computed)
+}
+
+fn can_reuse_session_scan(
+    previous: SessionFileFingerprint,
+    current: SessionFileFingerprint,
+) -> bool {
+    previous.updated_at == current.updated_at && previous.size == current.size
+}
+
+fn session_file_fingerprint(path: &Path) -> SessionFileFingerprint {
+    let metadata = fs::metadata(path).ok();
+    let updated_at = metadata
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .map(system_time_to_millis)
+        .unwrap_or(0);
+    let created_at = metadata
+        .as_ref()
+        .and_then(|m| m.created().ok())
+        .map(system_time_to_millis)
+        .unwrap_or(updated_at);
+    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    SessionFileFingerprint {
+        created_at,
+        updated_at,
+        size,
+    }
+}
+
 fn summary_from_computation(
     file_ref: &SessionFileRef,
     computed: &CachedSessionComputation,
@@ -752,27 +963,39 @@ fn scan_session_computation(
 }
 
 fn get_or_scan_session_computation(file_ref: &SessionFileRef) -> CachedSessionComputation {
-    let (created_at, updated_at) = file_timestamps(&file_ref.path);
+    if let Some(computed) = lookup_indexed_computation(file_ref) {
+        return computed;
+    }
+
+    let fingerprint = session_file_fingerprint(&file_ref.path);
     let key = path_to_key(&file_ref.path);
 
     if let Ok(cache) = get_stats_cache().lock() {
         if let Some(existing) = cache.entries.get(&key) {
-            if existing.updated_at == updated_at {
-                return existing.clone();
+            if can_reuse_session_scan(existing.fingerprint, fingerprint) {
+                let mut computed = existing.computed.clone();
+                computed.created_at = fingerprint.created_at;
+                computed.updated_at = fingerprint.updated_at;
+                return computed;
             }
         }
     }
 
-    let computed = scan_session_computation(&file_ref.path, created_at, updated_at);
+    let computed = scan_session_computation(
+        &file_ref.path,
+        fingerprint.created_at,
+        fingerprint.updated_at,
+    );
     if let Ok(mut cache) = get_stats_cache().lock() {
-        cache.entries.insert(key, computed.clone());
+        cache.entries.insert(
+            key,
+            CachedSessionCacheEntry {
+                fingerprint,
+                computed: computed.clone(),
+            },
+        );
     }
     computed
-}
-
-fn build_session_summary(file_ref: &SessionFileRef) -> HistorySessionSummary {
-    let computed = get_or_scan_session_computation(file_ref);
-    summary_from_computation(file_ref, &computed)
 }
 
 fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetail, String> {
@@ -1488,21 +1711,6 @@ fn excerpt(text: &str, max_chars: usize) -> String {
         out.push(ch);
     }
     out
-}
-
-fn file_timestamps(path: &Path) -> (i64, i64) {
-    let metadata = fs::metadata(path).ok();
-    let updated_at = metadata
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .map(system_time_to_millis)
-        .unwrap_or(0);
-    let created_at = metadata
-        .as_ref()
-        .and_then(|m| m.created().ok())
-        .map(system_time_to_millis)
-        .unwrap_or(updated_at);
-    (created_at, updated_at)
 }
 
 fn system_time_to_millis(time: SystemTime) -> i64 {

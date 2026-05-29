@@ -1525,6 +1525,137 @@ samp,
   min-width: 100%;
 }
 
+.history-markdown {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.history-markdown-p {
+  margin: 0.35rem 0;
+}
+
+.history-markdown-p:first-child {
+  margin-top: 0;
+}
+
+.history-markdown-p:last-child {
+  margin-bottom: 0;
+}
+
+.history-markdown ul,
+.history-markdown ol {
+  margin: 0.35rem 0;
+  padding-left: 1.25rem;
+}
+
+.history-markdown li {
+  margin: 0.2rem 0;
+}
+
+.history-markdown-compact {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.history-inline-code {
+  border: 1px solid color-mix(in srgb, var(--border) 22%, transparent);
+  border-radius: 5px;
+  padding: 0.1rem 0.28rem;
+  background-color: color-mix(in srgb, var(--bg-tertiary) 78%, transparent);
+  color: var(--warning);
+  font-family: var(--font-ui-mono);
+  font-size: 0.92em;
+}
+
+.history-code-block {
+  margin: 0.55rem 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 28%, transparent);
+  border-radius: 10px;
+  background-color: #111827;
+}
+
+.history-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.35rem 0.75rem;
+  background-color: rgba(255, 255, 255, 0.04);
+  color: #9ca3af;
+  font-family: var(--font-ui-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.history-code-tag {
+  font-family: var(--font-ui-mono) !important;
+}
+
+.history-markdown-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.history-diff-viewer {
+  --diff-background-color: var(--bg-secondary);
+  --diff-text-color: var(--text-primary);
+  --diff-font-family: var(--font-ui-mono);
+  --diff-gutter-insert-background-color: color-mix(in srgb, var(--success) 24%, var(--bg-secondary));
+  --diff-gutter-delete-background-color: color-mix(in srgb, var(--danger) 24%, var(--bg-secondary));
+  --diff-code-insert-background-color: color-mix(in srgb, var(--success) 18%, var(--bg-secondary));
+  --diff-code-delete-background-color: color-mix(in srgb, var(--danger) 18%, var(--bg-secondary));
+  --diff-code-insert-edit-background-color: color-mix(in srgb, var(--success) 38%, transparent);
+  --diff-code-delete-edit-background-color: color-mix(in srgb, var(--danger) 38%, transparent);
+  --diff-gutter-selected-background-color: color-mix(in srgb, var(--warning) 22%, var(--bg-secondary));
+  --diff-code-selected-background-color: color-mix(in srgb, var(--warning) 14%, var(--bg-secondary));
+  background-color: var(--bg-secondary);
+}
+
+.history-diff-viewer .diff {
+  min-width: 820px;
+  font-size: 12px;
+}
+
+.history-diff-viewer .diff-gutter {
+  color: var(--text-muted);
+}
+
+.history-diff-viewer .diff-code {
+  padding-left: 0.75rem;
+}
+
+.history-diff-fallback-header,
+.history-diff-fallback-hunk,
+.history-diff-fallback-add,
+.history-diff-fallback-delete,
+.history-diff-fallback-line {
+  display: block;
+  min-height: 1.25rem;
+  padding: 0 0.5rem;
+}
+
+.history-diff-fallback-header {
+  color: var(--accent);
+  background-color: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.history-diff-fallback-hunk {
+  color: var(--warning);
+  background-color: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.history-diff-fallback-add {
+  color: var(--success);
+  background-color: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.history-diff-fallback-delete {
+  color: var(--danger);
+  background-color: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
 .tree-collapse {
   display: grid;
   grid-template-rows: 0fr;

@@ -33,6 +33,7 @@ interface MetaPatchInput {
 interface HistoryStore {
   isOpen: boolean;
   loadingSessions: boolean;
+  loadingMoreSessions: boolean;
   loadingSessionDetail: boolean;
   searching: boolean;
   loadingPrompts: boolean;
@@ -41,6 +42,8 @@ interface HistoryStore {
   statsUpdatedAt: number | null;
   sourceFilter: HistorySourceFilter;
   sessions: HistorySessionView[];
+  hasMoreSessions: boolean;
+  sessionListOffset: number;
   activeSessionKey: string | null;
   activeSession: HistorySessionDetail | null;
   globalQuery: string;
@@ -59,7 +62,9 @@ interface HistoryStore {
   toggleHistory: () => Promise<void>;
   setSourceFilter: (filter: HistorySourceFilter) => Promise<void>;
   loadSessions: () => Promise<void>;
+  loadMoreSessions: () => Promise<void>;
   openSession: (sessionKey: string) => Promise<void>;
+  openSearchHit: (hit: HistorySearchHit) => Promise<void>;
   setGlobalQuery: (query: string) => void;
   runGlobalSearch: (query: string) => Promise<void>;
   setSessionQuery: (query: string) => void;
@@ -82,7 +87,8 @@ interface HistoryStore {
   triggerSessionSearchFocus: () => void;
 }
 
-const DEFAULT_SESSION_LIMIT = 500;
+const SESSION_PAGE_SIZE = 100;
+const SESSION_PAGE_FETCH_LIMIT = SESSION_PAGE_SIZE + 1;
 const DEFAULT_SEARCH_LIMIT = 120;
 const STATS_CACHE_TTL_MS = 15_000;
 const STATS_CACHE_MAX = 16;
@@ -396,6 +402,20 @@ function applyMeta(summaries: HistorySessionSummary[], metaMap: SessionMetaMap):
   return views;
 }
 
+function viewToSummary(view: HistorySessionView): HistorySessionSummary {
+  return {
+    session_id: view.session_id,
+    source: view.source,
+    project_key: view.project_key,
+    title: view.title,
+    file_path: view.file_path,
+    created_at: view.created_at,
+    updated_at: view.updated_at,
+    message_count: view.message_count,
+    branch: view.branch,
+  };
+}
+
 async function readMetaMap(): Promise<SessionMetaMap> {
   const db = await getDb();
   const rows = await db.select<SessionMeta[]>(
@@ -411,6 +431,7 @@ async function readMetaMap(): Promise<SessionMetaMap> {
 export const useHistoryStore = create<HistoryStore>((set, get) => ({
   isOpen: false,
   loadingSessions: false,
+  loadingMoreSessions: false,
   loadingSessionDetail: false,
   searching: false,
   loadingPrompts: false,
@@ -419,6 +440,8 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   statsUpdatedAt: null,
   sourceFilter: "all",
   sessions: [],
+  hasMoreSessions: false,
+  sessionListOffset: 0,
   activeSessionKey: null,
   activeSession: null,
   globalQuery: "",
@@ -498,16 +521,18 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     const stopPerf = createPerfMarker("history.sessions.load", {
       sourceFilter: get().sourceFilter,
     });
-    set({ loadingSessions: true });
+    set({ loadingSessions: true, loadingMoreSessions: false, hasMoreSessions: false, sessionListOffset: 0 });
     try {
       await get().ensureMetaTable();
       const source = normalizeSourceFilter(get().sourceFilter);
       const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
         source,
         query: null,
-        limit: DEFAULT_SESSION_LIMIT,
+        limit: SESSION_PAGE_FETCH_LIMIT,
+        offset: 0,
       });
-      const summaries = (summariesRaw ?? []).map((item) => normalizeSummary(item));
+      const allSummaries = (summariesRaw ?? []).map((item) => normalizeSummary(item));
+      const summaries = allSummaries.slice(0, SESSION_PAGE_SIZE);
       const metaMap = await readMetaMap();
       const sessions = applyMeta(summaries, metaMap);
       const activeSessionKey = get().activeSessionKey;
@@ -518,6 +543,8 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       set({
         sessions,
         metaMap,
+        hasMoreSessions: allSummaries.length > SESSION_PAGE_SIZE,
+        sessionListOffset: summaries.length,
         activeSessionKey: nextActiveKey,
         activeSession: activeExists ? get().activeSession : null,
         focusedMessageIndex: null,
@@ -530,6 +557,51 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       stopPerf({
         sessionCount: get().sessions.length,
         activeSessionKey: get().activeSessionKey,
+        hasMoreSessions: get().hasMoreSessions,
+      });
+    }
+  },
+
+  loadMoreSessions: async () => {
+    if (get().loadingSessions || get().loadingMoreSessions || !get().hasMoreSessions) return;
+    const offset = get().sessionListOffset;
+    const stopPerf = createPerfMarker("history.sessions.load", {
+      sourceFilter: get().sourceFilter,
+      mode: "loadMore",
+      offset,
+    });
+    set({ loadingMoreSessions: true });
+    try {
+      await get().ensureMetaTable();
+      const source = normalizeSourceFilter(get().sourceFilter);
+      const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
+        source,
+        query: null,
+        limit: SESSION_PAGE_FETCH_LIMIT,
+        offset,
+      });
+      const allSummaries = (summariesRaw ?? []).map((item) => normalizeSummary(item));
+      const nextSummaries = allSummaries.slice(0, SESSION_PAGE_SIZE);
+      const summaryMap = new Map<string, HistorySessionSummary>();
+      for (const session of get().sessions) {
+        summaryMap.set(session.sessionKey, viewToSummary(session));
+      }
+      for (const summary of nextSummaries) {
+        summaryMap.set(makeSessionKey(summary.source, summary.session_id, summary.file_path), summary);
+      }
+      const metaMap = await readMetaMap();
+      const sessions = applyMeta(Array.from(summaryMap.values()), metaMap);
+      set({
+        sessions,
+        metaMap,
+        hasMoreSessions: allSummaries.length > SESSION_PAGE_SIZE,
+        sessionListOffset: offset + nextSummaries.length,
+      });
+    } finally {
+      set({ loadingMoreSessions: false });
+      stopPerf({
+        sessionCount: get().sessions.length,
+        hasMoreSessions: get().hasMoreSessions,
       });
     }
   },
@@ -550,6 +622,48 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       });
       const detail = normalizeDetail(detailRaw);
       set({ activeSession: detail });
+    } finally {
+      set({ loadingSessionDetail: false });
+      stopPerf({
+        messageCount: get().activeSession?.messages.length ?? 0,
+      });
+    }
+  },
+
+  openSearchHit: async (hit) => {
+    const sessionKey = makeSessionKey(hit.source, hit.session_id, hit.file_path);
+    const stopPerf = createPerfMarker("history.session.detail", { sessionKey, fromSearch: true });
+    set({ activeSessionKey: sessionKey, loadingSessionDetail: true, focusedMessageIndex: null });
+    try {
+      const detailRaw = await invoke<unknown>("history_get_session", {
+        filePath: hit.file_path,
+        source: hit.source,
+        projectKey: hit.project_key,
+      });
+      const detail = normalizeDetail(detailRaw);
+      const exists = get().sessions.some((item) => item.sessionKey === sessionKey);
+      if (exists) {
+        set({ activeSession: detail });
+        return;
+      }
+
+      const summary: HistorySessionSummary = {
+        session_id: hit.session_id,
+        source: hit.source,
+        project_key: hit.project_key,
+        title: detail.title,
+        file_path: hit.file_path,
+        created_at: detail.created_at,
+        updated_at: detail.updated_at,
+        message_count: detail.message_count,
+        branch: detail.branch,
+      };
+      const metaMap = get().metaMap;
+      const summaries = [...get().sessions.map((item) => viewToSummary(item)), summary];
+      set({
+        activeSession: detail,
+        sessions: applyMeta(summaries, metaMap),
+      });
     } finally {
       set({ loadingSessionDetail: false });
       stopPerf({

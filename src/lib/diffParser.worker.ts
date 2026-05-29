@@ -60,20 +60,26 @@ function splitDiffBlocks(content: string): string[] {
   const chunks: string[] = [];
   const fenced = /```(?:diff|patch)?\s*([\s\S]*?)```/gi;
   let match: RegExpExecArray | null;
+  let cursor = 0;
+  let rawContent = "";
   while ((match = fenced.exec(content)) !== null) {
+    rawContent += content.slice(cursor, match.index);
+    cursor = fenced.lastIndex;
     const body = match[1]?.trim();
     if (body) {
       chunks.push(body);
     }
   }
-  if (content.includes("*** Begin Patch")) {
-    chunks.push(...splitApplyPatchBlocks(content));
+  rawContent += content.slice(cursor);
+
+  if (rawContent.includes("*** Begin Patch")) {
+    chunks.push(...splitApplyPatchBlocks(rawContent));
   }
 
-  if (content.includes("diff --git")) {
-    chunks.push(content);
-  } else if (chunks.length === 0 && content.includes("@@") && content.includes("+++")) {
-    chunks.push(content);
+  if (rawContent.includes("diff --git")) {
+    chunks.push(rawContent);
+  } else if (rawContent.includes("@@") && rawContent.includes("+++")) {
+    chunks.push(rawContent);
   }
 
   const blocks: string[] = [];
