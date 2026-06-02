@@ -16,12 +16,16 @@ jobs:
         include:
           - platform: windows-latest
             args: ""
-          - platform: macos-latest
+            rust-target: ""
+          - platform: macos-14
             args: "--target aarch64-apple-darwin"
-          - platform: macos-15
+            rust-target: aarch64-apple-darwin
+          - platform: macos-14-large
             args: "--target x86_64-apple-darwin"
+            rust-target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: ""
+            rust-target: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -36,7 +40,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || matrix.platform == 'macos-15' && 'x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust-target }}
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
