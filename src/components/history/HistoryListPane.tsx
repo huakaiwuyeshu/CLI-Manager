@@ -24,6 +24,7 @@ interface HistoryListPaneProps {
   groupedSessions: SessionGroup[];
   filteredSessionCount: number;
   hasMoreSessions: boolean;
+  loadMoreSessionMode: "local" | "backend";
   visibleSessionCount: number;
   searchHits: HistorySearchHit[];
   globalSearchRef: RefObject<HTMLInputElement | null>;
@@ -52,6 +53,7 @@ export function HistoryListPane({
   groupedSessions,
   filteredSessionCount,
   hasMoreSessions,
+  loadMoreSessionMode,
   visibleSessionCount,
   searchHits,
   globalSearchRef,
@@ -169,7 +171,9 @@ export function HistoryListPane({
             >
               {loadingMoreSessions
                 ? "正在加载更多..."
-                : `加载更多（已显示 ${visibleSessionCount} 条，已载入 ${filteredSessionCount} 条）`}
+                : loadMoreSessionMode === "local"
+                  ? `显示更多匹配会话（${visibleSessionCount}/${filteredSessionCount}）`
+                  : `继续扫描更多历史（已载入 ${filteredSessionCount} 条）`}
             </button>
           </div>
         )}

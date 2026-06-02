@@ -106,13 +106,26 @@ export function StatsPanel({ open, sessions, onClose, onOpenSession }: StatsPane
 
   useEffect(() => {
     if (!open) return;
+    if (projectKey && !projectOptions.includes(projectKey)) {
+      setProjectKey("");
+    }
+  }, [open, projectKey, projectOptions]);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedDayStart(null);
+    setDayVisibleCount(DAY_SESSION_PAGE_SIZE);
+  }, [open, sourceFilter, projectKey]);
+
+  useEffect(() => {
+    if (!open) return;
     void loadStats({
       projectKey: projectKey || null,
       rangeDays,
     }).catch(() => {
       // error state is already managed in store
     });
-  }, [open, projectKey, rangeDays, loadStats]);
+  }, [open, projectKey, rangeDays, sourceFilter, loadStats]);
 
   useEffect(() => {
     if (!stats) return;

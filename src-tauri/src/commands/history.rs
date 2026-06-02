@@ -349,19 +349,83 @@ pub async fn history_get_session(
     project_key: String,
 ) -> Result<HistorySessionDetail, String> {
     tokio::task::spawn_blocking(move || {
-        let path = PathBuf::from(&file_path);
-        if !path.exists() {
-            return Err(format!("Session file not found: {file_path}"));
-        }
-        let file_ref = SessionFileRef {
-            source,
-            project_key,
-            path,
-        };
+        let file_ref = validate_session_file_ref(&file_path, &source, &project_key)?;
         build_session_detail(&file_ref)
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+fn validate_session_file_ref(
+    file_path: &str,
+    source: &str,
+    project_key: &str,
+) -> Result<SessionFileRef, String> {
+    let source = source.trim().to_lowercase();
+    let project_key = project_key.trim();
+    let base = history_source_base(&source)?
+        .canonicalize()
+        .map_err(|_| "history_source_not_found".to_string())?;
+    resolve_session_file_ref(
+        file_path,
+        &source,
+        project_key,
+        &base,
+        collect_session_files(Some(&source)),
+    )
+}
+
+fn history_source_base(source: &str) -> Result<PathBuf, String> {
+    let Some(home) = detect_home_dir() else {
+        return Err("home_dir_not_found".to_string());
+    };
+    match source {
+        "claude" => Ok(home.join(".claude").join("projects")),
+        "codex" => Ok(home.join(".codex").join("sessions")),
+        _ => Err("unsupported_history_source".to_string()),
+    }
+}
+
+fn resolve_session_file_ref(
+    file_path: &str,
+    source: &str,
+    project_key: &str,
+    history_base: &Path,
+    candidates: Vec<SessionFileRef>,
+) -> Result<SessionFileRef, String> {
+    if project_key.is_empty() {
+        return Err("invalid_project_key".to_string());
+    }
+
+    let requested = PathBuf::from(file_path);
+    if !is_jsonl(&requested) {
+        return Err("invalid_session_file".to_string());
+    }
+
+    let requested = requested
+        .canonicalize()
+        .map_err(|_| format!("Session file not found: {file_path}"))?;
+    if !requested.starts_with(history_base) {
+        return Err("session_file_outside_history_scope".to_string());
+    }
+
+    for candidate in candidates {
+        if candidate.source != source || candidate.project_key != project_key {
+            continue;
+        }
+        let Ok(candidate_path) = candidate.path.canonicalize() else {
+            continue;
+        };
+        if candidate_path == requested {
+            return Ok(SessionFileRef {
+                source: candidate.source,
+                project_key: candidate.project_key,
+                path: requested,
+            });
+        }
+    }
+
+    Err("session_file_not_indexed".to_string())
 }
 
 #[tauri::command]
@@ -377,11 +441,17 @@ pub async fn history_search(
         }
 
         let max_hits = limit.unwrap_or(100).max(1);
-        let files = collect_session_files(source.as_deref());
+        let source_filter = source.map(|v| v.to_lowercase());
         let mut hits: Vec<HistorySearchResult> = Vec::new();
 
-        for file_ref in files {
-            let computed = get_or_scan_session_computation(&file_ref);
+        for entry in refresh_history_index() {
+            if let Some(filter) = &source_filter {
+                if &entry.file_ref.source != filter {
+                    continue;
+                }
+            }
+            let file_ref = entry.file_ref;
+            let computed = entry.computed;
             let file_path_str = file_ref.path.to_string_lossy().to_string();
             let title = computed.title.clone();
             let session_id = computed.session_id.clone();
@@ -444,7 +514,7 @@ pub async fn history_list_prompts(
             .map(|v| v.trim().to_lowercase())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "global".to_string());
-        let files = collect_session_files(source.as_deref());
+        let source_filter = source.map(|v| v.to_lowercase());
         let target_project = project_key
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
@@ -457,7 +527,14 @@ pub async fn history_list_prompts(
         let max_items = limit.unwrap_or(200).clamp(1, 2000);
         let mut prompts: Vec<HistoryPromptItem> = Vec::new();
 
-        for file_ref in files {
+        for entry in refresh_history_index() {
+            if let Some(filter) = &source_filter {
+                if &entry.file_ref.source != filter {
+                    continue;
+                }
+            }
+            let file_ref = entry.file_ref;
+            let computed = entry.computed;
             if let Some(project) = &target_project {
                 if &file_ref.project_key != project {
                     continue;
@@ -474,7 +551,6 @@ pub async fn history_list_prompts(
                 }
             }
 
-            let computed = get_or_scan_session_computation(&file_ref);
             let session_id = computed.session_id.clone();
             let source_name = file_ref.source.clone();
             let project_key_owned = file_ref.project_key.clone();
@@ -1717,4 +1793,118 @@ fn system_time_to_millis(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_file(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "{}\n").unwrap();
+    }
+
+    fn expect_string_err<T>(result: Result<T, String>) -> String {
+        match result {
+            Ok(_) => panic!("expected error"),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn resolve_session_file_ref_accepts_indexed_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path().join("history");
+        let file = base.join("project-a").join("session.jsonl");
+        write_file(&file);
+
+        let result = resolve_session_file_ref(
+            file.to_str().unwrap(),
+            "claude",
+            "project-a",
+            &base.canonicalize().unwrap(),
+            vec![SessionFileRef {
+                source: "claude".to_string(),
+                project_key: "project-a".to_string(),
+                path: file.clone(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(result.source, "claude");
+        assert_eq!(result.project_key, "project-a");
+        assert_eq!(result.path, file.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_session_file_ref_rejects_non_jsonl() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path().join("history");
+        let file = base.join("project-a").join("session.txt");
+        write_file(&file);
+
+        let err = expect_string_err(resolve_session_file_ref(
+            file.to_str().unwrap(),
+            "claude",
+            "project-a",
+            &base.canonicalize().unwrap(),
+            Vec::new(),
+        ));
+
+        assert_eq!(err, "invalid_session_file");
+    }
+
+    #[test]
+    fn resolve_session_file_ref_rejects_path_outside_history_scope() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path().join("history");
+        let file = temp_dir.path().join("outside").join("session.jsonl");
+        write_file(&base.join("project-a").join("known.jsonl"));
+        write_file(&file);
+
+        let err = expect_string_err(resolve_session_file_ref(
+            file.to_str().unwrap(),
+            "claude",
+            "project-a",
+            &base.canonicalize().unwrap(),
+            Vec::new(),
+        ));
+
+        assert_eq!(err, "session_file_outside_history_scope");
+    }
+
+    #[test]
+    fn resolve_session_file_ref_rejects_source_or_project_mismatch() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path().join("history");
+        let file = base.join("project-a").join("session.jsonl");
+        write_file(&file);
+
+        let wrong_project = expect_string_err(resolve_session_file_ref(
+            file.to_str().unwrap(),
+            "claude",
+            "project-a",
+            &base.canonicalize().unwrap(),
+            vec![SessionFileRef {
+                source: "claude".to_string(),
+                project_key: "project-b".to_string(),
+                path: file.clone(),
+            }],
+        ));
+        let wrong_source = expect_string_err(resolve_session_file_ref(
+            file.to_str().unwrap(),
+            "claude",
+            "project-a",
+            &base.canonicalize().unwrap(),
+            vec![SessionFileRef {
+                source: "codex".to_string(),
+                project_key: "project-a".to_string(),
+                path: file.clone(),
+            }],
+        ));
+
+        assert_eq!(wrong_project, "session_file_not_indexed");
+        assert_eq!(wrong_source, "session_file_not_indexed");
+    }
 }

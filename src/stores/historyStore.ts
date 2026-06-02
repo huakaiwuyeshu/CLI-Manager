@@ -509,10 +509,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   setSourceFilter: async (filter) => {
     set({ sourceFilter: filter });
     await get().loadSessions();
-    const query = get().globalQuery.trim();
-    if (query) {
-      await get().runGlobalSearch(query);
-    } else {
+    if (!get().globalQuery.trim()) {
       set({ searchHits: [] });
     }
   },

@@ -64,8 +64,9 @@ const makeComponents = (query: string): Components => ({
     return <em>{renderText(children, query)}</em>;
   },
   a({ href, children }) {
+    const title = href ? `纯文本链接预览：${href}` : "纯文本链接预览";
     return (
-      <span className="history-markdown-link" title={href ?? undefined}>
+      <span className="history-markdown-link" title={title} aria-label={title}>
         {renderText(children, query)}
       </span>
     );

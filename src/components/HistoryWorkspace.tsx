@@ -199,6 +199,7 @@ export function HistoryWorkspace() {
 
   const hasMoreVisibleSessions = visibleSessionCount < filteredSessions.length;
   const hasMoreSessions = hasMoreVisibleSessions || backendHasMoreSessions;
+  const loadMoreSessionMode = hasMoreVisibleSessions ? "local" : "backend";
 
   const groupedSessions = useMemo(() => {
     const order: TimeGroupLabel[] = ["Today", "Yesterday", "This Week", "This Month", "Earlier"];
@@ -238,6 +239,18 @@ export function HistoryWorkspace() {
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
     handleLoadMoreSessions();
   }, [handleLoadMoreSessions, hasMoreSessions]);
+
+  const handleRefreshSessions = useCallback(() => {
+    void (async () => {
+      await loadSessions();
+      const query = globalQuery.trim();
+      if (query) {
+        await runGlobalSearch(query);
+      }
+    })().catch((err) => {
+      toast.error("刷新失败", { description: String(err) });
+    });
+  }, [globalQuery, loadSessions, runGlobalSearch]);
 
   const matchIndices = useMemo(() => {
     const query = debouncedSessionQuery.trim();
@@ -392,15 +405,12 @@ export function HistoryWorkspace() {
         groupedSessions={groupedSessions}
         filteredSessionCount={filteredSessions.length}
         hasMoreSessions={hasMoreSessions}
+        loadMoreSessionMode={loadMoreSessionMode}
         visibleSessionCount={Math.min(visibleSessionCount, filteredSessions.length)}
         searchHits={searchHits}
         globalSearchRef={globalSearchRef}
         onClose={closeHistory}
-        onRefresh={() => {
-          void loadSessions().catch((err) => {
-            toast.error("刷新失败", { description: String(err) });
-          });
-        }}
+        onRefresh={handleRefreshSessions}
         onSourceFilterChange={(value) => {
           void setSourceFilter(value as HistorySourceFilter);
         }}
