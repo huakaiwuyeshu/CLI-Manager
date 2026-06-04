@@ -1,8 +1,9 @@
 import { Select } from "@/components/ui/select";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { RefreshCw, Search, Star, Trash2 } from "lucide-react";
-import { useMemo, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { RefreshCw, Search, Star, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import type { HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
+import { Portal } from "../ui/Portal";
 import { formatTime, makeSessionLabel } from "./historyViewUtils";
 
 const ALL_PROJECTS_SELECT_VALUE = "__all_projects__";
@@ -21,6 +22,12 @@ type HistoryListRow =
   | { type: "session"; id: string; item: HistorySessionView }
   | { type: "empty"; id: string }
   | { type: "loadMore"; id: string };
+
+type SessionContextMenu = {
+  session: HistorySessionView;
+  x: number;
+  y: number;
+};
 
 interface HistoryListPaneProps {
   historySidebarWidth: number;
@@ -58,7 +65,7 @@ function rowHeight(row: HistoryListRow): number {
   if (row.type === "group" || row.type === "searchHeader" || row.type === "searching") return 32;
   if (row.type === "loading" || row.type === "empty" || row.type === "loadMore") return 56;
   if (row.type === "searchHit") return 72;
-  return 76;
+  return 96;
 }
 
 export function HistoryListPane({
@@ -92,6 +99,42 @@ export function HistoryListPane({
   onSessionListScroll,
   onStartResize,
 }: HistoryListPaneProps) {
+  const [contextMenu, setContextMenu] = useState<SessionContextMenu | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSessionContextMenu = useCallback((e: ReactMouseEvent, session: HistorySessionView) => {
+    e.preventDefault();
+    setContextMenu({ session, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleContextMenuDelete = useCallback(() => {
+    if (!contextMenu) return;
+    const session = contextMenu.session;
+    setContextMenu(null);
+    onDeleteSession(session);
+  }, [contextMenu, onDeleteSession]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = (e: Event) => {
+      if (contextMenuRef.current && contextMenuRef.current.contains(e.target as Node)) return;
+      setContextMenu(null);
+    };
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("scroll", handler, true);
+    window.addEventListener("resize", handler);
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("scroll", handler, true);
+      window.removeEventListener("resize", handler);
+      window.removeEventListener("keydown", keyHandler);
+    };
+  }, [contextMenu]);
+
   const rows = useMemo<HistoryListRow[]>(() => {
     if (loadingSessions) return [{ type: "loading", id: "loading" }];
 
@@ -129,6 +172,9 @@ export function HistoryListPane({
     overscan: 10,
     getItemKey: (index) => rows[index]?.id ?? index,
   });
+
+  const menuX = contextMenu ? Math.max(8, Math.min(contextMenu.x, window.innerWidth - 200)) : 0;
+  const menuY = contextMenu ? Math.max(8, Math.min(contextMenu.y, window.innerHeight - 80)) : 0;
 
   return (
     <aside
@@ -238,33 +284,36 @@ export function HistoryListPane({
                 )}
 
                 {row.type === "session" && (
-                  <div
-                    className="ui-list-row flex w-full items-start gap-2 border-b border-border px-3 py-2 text-left"
-                    style={{ backgroundColor: row.item.sessionKey === activeSessionKey ? "var(--bg-tertiary)" : "transparent" }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onOpenSession(row.item.sessionKey)}
-                      className="min-w-0 flex-1 text-left"
+                  <div className="px-2 py-1">
+                    <div
+                      onContextMenu={(e) => handleSessionContextMenu(e, row.item)}
+                      className="ui-list-row flex min-h-[88px] w-full items-start gap-2 rounded-xl border border-border/70 bg-surface-container-lowest px-2.5 py-2 text-left"
+                      style={{ backgroundColor: row.item.sessionKey === activeSessionKey ? "var(--bg-tertiary)" : undefined }}
                     >
-                      <div className="flex items-center gap-1.5">
-                        {row.item.starred && <Star size={12} style={{ color: "var(--warning)" }} fill="currentColor" />}
-                        <span className="truncate text-[13px] font-semibold text-text-primary">{row.item.displayTitle}</span>
-                      </div>
-                      <div className="ui-dev-label mt-1 text-[11px] text-text-muted">
-                        {row.item.source} · {makeSessionLabel(row.item)} · {row.item.message_count} 条消息
-                      </div>
-                      <div className="ui-dev-label mt-1 text-[11px] text-text-muted">更新于 {formatTime(row.item.updated_at)}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteSession(row.item)}
-                      className="ui-flat-action mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted hover:text-danger"
-                      aria-label={`删除历史会话 ${row.item.displayTitle}`}
-                      title="删除历史会话"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => onOpenSession(row.item.sessionKey)}
+                        className="min-w-0 flex-1 overflow-hidden text-left"
+                      >
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {row.item.starred && <Star size={12} className="shrink-0" style={{ color: "var(--warning)" }} fill="currentColor" />}
+                          <span className="truncate text-[13px] font-semibold text-text-primary">{row.item.displayTitle}</span>
+                        </div>
+                        <div className="ui-dev-label mt-1 truncate text-[11px] text-text-muted">
+                          {row.item.source} · {makeSessionLabel(row.item)} · {row.item.message_count} 条消息
+                        </div>
+                        <div className="ui-dev-label mt-1 truncate text-[11px] text-text-muted">更新于 {formatTime(row.item.updated_at)}</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteSession(row.item)}
+                        className="ui-flat-action mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-muted hover:text-danger"
+                        aria-label={`删除历史会话 ${row.item.displayTitle}`}
+                        title="删除历史会话"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -293,6 +342,16 @@ export function HistoryListPane({
           })}
         </div>
       </div>
+
+      {contextMenu && (
+        <Portal>
+          <div className="context-menu" style={{ left: menuX, top: menuY }} ref={contextMenuRef} role="menu">
+            <button className="context-menu-item danger" role="menuitem" onClick={handleContextMenuDelete}>
+              删除
+            </button>
+          </div>
+        </Portal>
+      )}
 
       <div
         onMouseDown={onStartResize}
