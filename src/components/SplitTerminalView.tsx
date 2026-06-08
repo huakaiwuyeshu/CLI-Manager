@@ -62,22 +62,21 @@ function SplitNodeView({ node, renderLeaf }: Props) {
   return (
     <div
       ref={containerRef}
-      className="flex h-full min-h-0 w-full min-w-0"
+      className="ui-terminal-split-node flex h-full min-h-0 w-full min-w-0"
       style={{ flexDirection: isHorizontal ? "row" : "column" }}
     >
-      <div className="min-h-0 min-w-0 overflow-hidden" style={{ [isHorizontal ? "width" : "height"]: first }}>
+      <div className="ui-terminal-split-child min-h-0 min-w-0 overflow-hidden" style={{ [isHorizontal ? "width" : "height"]: first }}>
         <SplitNodeView node={node.first} renderLeaf={renderLeaf} />
       </div>
       <div
         onMouseDown={(event) => handleDragStart(node, event)}
-        className="shrink-0 hover:opacity-100 transition-colors"
+        className="ui-terminal-split-divider shrink-0 transition-colors"
         style={{
           [isHorizontal ? "width" : "height"]: `${DIVIDER_SIZE}px`,
-          backgroundColor: "var(--border)",
           cursor: isHorizontal ? "col-resize" : "row-resize",
         }}
       />
-      <div className="min-h-0 min-w-0 overflow-hidden" style={{ [isHorizontal ? "width" : "height"]: second }}>
+      <div className="ui-terminal-split-child min-h-0 min-w-0 overflow-hidden" style={{ [isHorizontal ? "width" : "height"]: second }}>
         <SplitNodeView node={node.second} renderLeaf={renderLeaf} />
       </div>
     </div>

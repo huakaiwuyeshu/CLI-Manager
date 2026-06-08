@@ -812,7 +812,7 @@ function PaneLeafView({
         />
       )}
       <div
-        className="relative min-h-0 flex-1 overflow-hidden"
+        className="ui-terminal-pane-content relative min-h-0 flex-1 overflow-hidden"
         onMouseDownCapture={() => {
           if (pane.activeSessionId && pane.activeSessionId !== activeSessionId) onActivateSession(pane.activeSessionId);
         }}
@@ -1248,7 +1248,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       onMoveToPane={moveSessionToPane}
       onHideBackground={hideBackgroundForSession}
       onShowBackground={showBackgroundForSession}
-      toolbarActions={activeSessionId && pane.sessionIds.includes(activeSessionId) ? renderToolbarActions() : undefined}
+      toolbarActions={renderToolbarActions()}
       hideTabBar={false}
     />
   ), [

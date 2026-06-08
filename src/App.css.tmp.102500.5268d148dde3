@@ -1957,6 +1957,14 @@ samp,
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 9%, transparent);
 }
 
+.ui-terminal-split-node {
+  background-color: color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 88%, var(--terminal-theme-foreground, #f8fafc) 8%);
+}
+
+.ui-terminal-split-divider {
+  background-color: transparent;
+}
+
 .ui-terminal-well .ui-terminal-pane {
   border-radius: 8px;
 }
