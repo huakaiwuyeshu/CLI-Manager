@@ -310,3 +310,36 @@ Fixed Chinese IME punctuation requiring two inputs by keeping xterm helper texta
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Fix terminal IME candidate popup position
+
+**Date**: 2026-06-11
+**Task**: Fix terminal IME candidate popup position
+**Branch**: `fix-terminal-ime-candidate-popup-position`
+
+### Summary
+
+Fixed xterm IME composition anchor fallback so candidate windows stay near the actual cursor unless a stable bottom prompt is positively recognized; merged the changelog entry into V1.0.1 and updated GitNexus-generated docs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9022bf7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
