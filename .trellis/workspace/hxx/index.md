@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
-- **Last Active**: 2026-06-10
+- **Total Sessions**: 10
+- **Last Active**: 2026-06-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~279 | Active |
+| `journal-1.md` | ~345 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-06-11 | Fix terminal IME candidate popup position | `9022bf7` | `fix-terminal-ime-candidate-popup-position` |
+| 9 | 2026-06-11 | Fix Chinese IME punctuation input | `308da34` | `master` |
 | 8 | 2026-06-10 | Windows 闪窗修复与设置/侧栏 UX 修复 | `7839e34`, `f5c43ea`, `4b4108b`, `1680b6b` | `master` |
 | 7 | 2026-06-10 | Settings UI 修复收尾与侧边栏项目树 UX 优化 | `75e1ede`, `0383611`, `f51eb81` | `master` |
 | 6 | 2026-06-08 | Fix Windows PowerShell paste and scrollback | `d15495d` | `fix/windows-terminal-powershell-paste` |
