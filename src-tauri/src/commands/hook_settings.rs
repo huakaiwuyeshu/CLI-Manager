@@ -67,14 +67,23 @@ try {
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
-    Invoke-RestMethod `
-        -Method Post `
-        -Uri "http://127.0.0.1:$port/api/claude-hook" `
-        -Headers @{ Authorization = "Bearer $token" } `
-        -ContentType "application/json" `
-        -Body $body `
-        -TimeoutSec 2 `
-        | Out-Null
+    $uri = "http://127.0.0.1:$port/api/claude-hook"
+    $sent = $false
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        $body | & $curl.Source -sf -m 2 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@-" $uri | Out-Null
+        if ($LASTEXITCODE -eq 0) { $sent = $true }
+    }
+    if (-not $sent) {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -Headers @{ Authorization = "Bearer $token" } `
+            -ContentType "application/json" `
+            -Body $body `
+            -TimeoutSec 2 `
+            | Out-Null
+    }
 } catch {
     exit 0
 }
@@ -132,14 +141,23 @@ try {
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
-    Invoke-RestMethod `
-        -Method Post `
-        -Uri "http://127.0.0.1:$port/api/claude-hook" `
-        -Headers @{ Authorization = "Bearer $token" } `
-        -ContentType "application/json" `
-        -Body $body `
-        -TimeoutSec 2 `
-        | Out-Null
+    $uri = "http://127.0.0.1:$port/api/claude-hook"
+    $sent = $false
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        $body | & $curl.Source -sf -m 2 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@-" $uri | Out-Null
+        if ($LASTEXITCODE -eq 0) { $sent = $true }
+    }
+    if (-not $sent) {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -Headers @{ Authorization = "Bearer $token" } `
+            -ContentType "application/json" `
+            -Body $body `
+            -TimeoutSec 2 `
+            | Out-Null
+    }
 } catch {
     exit 0
 }
@@ -199,14 +217,23 @@ try {
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
-    Invoke-RestMethod `
-        -Method Post `
-        -Uri "http://127.0.0.1:$port/api/claude-hook" `
-        -Headers @{ Authorization = "Bearer $token" } `
-        -ContentType "application/json" `
-        -Body $body `
-        -TimeoutSec 2 `
-        | Out-Null
+    $uri = "http://127.0.0.1:$port/api/claude-hook"
+    $sent = $false
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        $body | & $curl.Source -sf -m 2 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@-" $uri | Out-Null
+        if ($LASTEXITCODE -eq 0) { $sent = $true }
+    }
+    if (-not $sent) {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -Headers @{ Authorization = "Bearer $token" } `
+            -ContentType "application/json" `
+            -Body $body `
+            -TimeoutSec 2 `
+            | Out-Null
+    }
 } catch {
     exit 0
 }
@@ -257,14 +284,23 @@ try {
     }
 
     $body = $payload | ConvertTo-Json -Depth 5 -Compress
-    Invoke-RestMethod `
-        -Method Post `
-        -Uri "http://127.0.0.1:$port/api/claude-hook" `
-        -Headers @{ Authorization = "Bearer $token" } `
-        -ContentType "application/json" `
-        -Body $body `
-        -TimeoutSec 2 `
-        | Out-Null
+    $uri = "http://127.0.0.1:$port/api/claude-hook"
+    $sent = $false
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        $body | & $curl.Source -sf -m 2 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data-binary "@-" $uri | Out-Null
+        if ($LASTEXITCODE -eq 0) { $sent = $true }
+    }
+    if (-not $sent) {
+        Invoke-RestMethod `
+            -Method Post `
+            -Uri $uri `
+            -Headers @{ Authorization = "Bearer $token" } `
+            -ContentType "application/json" `
+            -Body $body `
+            -TimeoutSec 2 `
+            | Out-Null
+    }
 } catch {
     exit 0
 }
@@ -410,6 +446,12 @@ fn install_claude_hooks(claude_dir: &Path) -> Result<(), String> {
     let settings_path = claude_dir.join(CLAUDE_SETTINGS_FILE_NAME);
     let mut settings = read_json(&settings_path)?;
     ensure_root_object(&settings, "settings.json")?;
+    // 先清掉旧版本注册的条目（命令串/matcher 可能已变化），保证安装即升级
+    remove_hook_commands(
+        &mut settings,
+        &["UserPromptSubmit", "Notification", "Stop", "StopFailure"],
+        &[CLAUDE_APPROVAL_SCRIPT_NAME, CLAUDE_FINISHED_SCRIPT_NAME],
+    );
     add_hook_command(
         &mut settings,
         "UserPromptSubmit",
@@ -418,9 +460,12 @@ fn install_claude_hooks(claude_dir: &Path) -> Result<(), String> {
             "UserPromptSubmit",
         ),
     );
-    add_hook_command(
+    // 只订阅需要用户介入的通知类型：permission_prompt（等待审批）、
+    // idle_prompt（等待输入）；auth_success 等不该把 Tab 置为 attention
+    add_hook_command_with_matcher(
         &mut settings,
         "Notification",
+        "permission_prompt|idle_prompt",
         build_command(&hooks_dir.join(CLAUDE_APPROVAL_SCRIPT_NAME), "Notification"),
     );
     add_hook_command(
@@ -469,6 +514,12 @@ fn install_codex_hooks(codex_dir: &Path) -> Result<(), String> {
     let hooks_path = codex_dir.join(CODEX_HOOKS_FILE_NAME);
     let mut settings = read_json(&hooks_path)?;
     ensure_root_object(&settings, "hooks.json")?;
+    // 先清掉旧版本注册的条目，保证安装即升级
+    remove_hook_commands(
+        &mut settings,
+        &["UserPromptSubmit", "PermissionRequest", "Stop"],
+        &[CODEX_ATTENTION_SCRIPT_NAME, CODEX_FINISHED_SCRIPT_NAME],
+    );
     add_hook_command(
         &mut settings,
         "UserPromptSubmit",
@@ -865,6 +916,10 @@ fn write_json(path: &Path, settings: &Value) -> Result<(), String> {
 }
 
 fn add_hook_command(settings: &mut Value, event: &str, command: String) {
+    add_hook_command_with_matcher(settings, event, "", command);
+}
+
+fn add_hook_command_with_matcher(settings: &mut Value, event: &str, matcher: &str, command: String) {
     let root = ensure_object(settings);
     let hooks = ensure_child_object(root, "hooks");
     let event_value = hooks
@@ -878,7 +933,7 @@ fn add_hook_command(settings: &mut Value, event: &str, command: String) {
     }
     if let Value::Array(entries) = event_value {
         entries.push(json!({
-            "matcher": "",
+            "matcher": matcher,
             "hooks": [
                 {
                     "type": "command",
@@ -983,8 +1038,10 @@ fn ensure_child_object<'a>(
 }
 
 fn build_command(script_path: &Path, event: &str) -> String {
+    // -NoProfile：hook 高频触发，跳过 profile 加载显著降低每次事件的延迟，
+    // 也避免用户 profile 报错干扰脚本执行
     format!(
-        "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -Event {}",
+        "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -Event {}",
         path_to_string(script_path),
         event
     )

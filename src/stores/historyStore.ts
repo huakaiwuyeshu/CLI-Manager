@@ -17,6 +17,7 @@ import type {
   HistoryStatsProjectEfficiencyItem,
   HistoryStatsProjectItem,
   HistoryStatsSourceItem,
+  HistoryToolCount,
   PromptScope,
   HistorySource,
   HistorySourceFilter,
@@ -215,12 +216,46 @@ function normalizeDetail(raw: unknown): HistorySessionDetail {
       role: normalizeRole(m.role),
       content: asString(m.content),
       timestamp: asString(m.timestamp ?? "") || null,
+      model: asString(m.model ?? "") || undefined,
+      input_tokens: asNumber(m.input_tokens ?? m.inputTokens),
+      output_tokens: asNumber(m.output_tokens ?? m.outputTokens),
+      cache_creation_tokens: asNumber(m.cache_creation_tokens ?? m.cacheCreationTokens),
+      cache_read_tokens: asNumber(m.cache_read_tokens ?? m.cacheReadTokens),
     };
   });
   return {
     ...summary,
+    usage: normalizeSessionUsage(rec.usage),
     messages,
   };
+}
+
+function normalizeSessionUsage(raw: unknown): HistorySessionDetail["usage"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const rec = raw as Record<string, unknown>;
+  return {
+    input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
+    output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd),
+    dominant_model: asString(rec.dominant_model ?? rec.dominantModel ?? "") || null,
+    context_window: asNumber(rec.context_window ?? rec.contextWindow) || null,
+    last_context_tokens: asNumber(rec.last_context_tokens ?? rec.lastContextTokens) || null,
+    tool_call_count: asNumber(rec.tool_call_count ?? rec.toolCallCount),
+    mcp_calls: normalizeToolCounts(rec.mcp_calls ?? rec.mcpCalls),
+    skill_calls: normalizeToolCounts(rec.skill_calls ?? rec.skillCalls),
+  };
+}
+
+function normalizeToolCounts(raw: unknown): HistoryToolCount[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const rec = (item ?? {}) as Record<string, unknown>;
+      return { name: asString(rec.name), count: asNumber(rec.count) };
+    })
+    .filter((item) => item.name.length > 0 && item.count > 0);
 }
 
 function normalizeHit(raw: unknown): HistorySearchHit {
@@ -260,6 +295,10 @@ function normalizeStatsProject(raw: unknown): HistoryStatsProjectItem {
     messages: asNumber(rec.messages),
     input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
     output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    unpriced_tokens: asNumber(rec.unpriced_tokens ?? rec.unpricedTokens),
   };
 }
 
@@ -269,6 +308,12 @@ function normalizeStatsModel(raw: unknown): HistoryStatsModelItem {
     model: asString(rec.model),
     sessions: asNumber(rec.sessions),
     ratio: asNumber(rec.ratio),
+    input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
+    output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    unpriced_tokens: asNumber(rec.unpriced_tokens ?? rec.unpricedTokens),
   };
 }
 
@@ -295,6 +340,10 @@ function normalizeDailySeries(raw: unknown): HistoryStatsDailySeriesItem {
     messages: asNumber(rec.messages),
     input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
     output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    unpriced_tokens: asNumber(rec.unpriced_tokens ?? rec.unpricedTokens),
   };
 }
 
@@ -306,6 +355,10 @@ function normalizeSourceDistribution(raw: unknown): HistoryStatsSourceItem {
     messages: asNumber(rec.messages),
     input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
     output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    unpriced_tokens: asNumber(rec.unpriced_tokens ?? rec.unpricedTokens),
   };
 }
 
@@ -317,6 +370,10 @@ function normalizeProjectEfficiency(raw: unknown): HistoryStatsProjectEfficiency
     messages: asNumber(rec.messages),
     input_tokens: asNumber(rec.input_tokens ?? rec.inputTokens),
     output_tokens: asNumber(rec.output_tokens ?? rec.outputTokens),
+    cache_read_tokens: asNumber(rec.cache_read_tokens ?? rec.cacheReadTokens),
+    cache_creation_tokens: asNumber(rec.cache_creation_tokens ?? rec.cacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    unpriced_tokens: asNumber(rec.unpriced_tokens ?? rec.unpricedTokens),
     avg_messages_per_session: asNumber(rec.avg_messages_per_session ?? rec.avgMessagesPerSession),
   };
 }
@@ -363,6 +420,10 @@ function normalizeStats(raw: unknown): HistoryStatsPayload {
     total_messages: asNumber(rec.total_messages ?? rec.totalMessages),
     total_input_tokens: asNumber(rec.total_input_tokens ?? rec.totalInputTokens),
     total_output_tokens: asNumber(rec.total_output_tokens ?? rec.totalOutputTokens),
+    total_cache_read_tokens: asNumber(rec.total_cache_read_tokens ?? rec.totalCacheReadTokens),
+    total_cache_creation_tokens: asNumber(rec.total_cache_creation_tokens ?? rec.totalCacheCreationTokens),
+    total_cost_usd: asNumber(rec.total_cost_usd ?? rec.totalCostUsd ?? rec.totalCostUSD),
+    total_unpriced_tokens: asNumber(rec.total_unpriced_tokens ?? rec.totalUnpricedTokens),
     project_ranking: projectRaw.map((item) => normalizeStatsProject(item)),
     model_distribution: modelRaw.map((item) => normalizeStatsModel(item)),
     heatmap: heatmapRaw.map((item) => normalizeHeatmapDay(item)),
@@ -394,6 +455,78 @@ function getHistoryPathArgs(): { claudeConfigDir: string | null; codexConfigDir:
     claudeConfigDir: settings.claudeHookConfigDir?.trim() || null,
     codexConfigDir: settings.codexHookConfigDir?.trim() || null,
   };
+}
+
+export interface TodayProjectStats {
+  sessions: number;
+  totalTokens: number;
+  totalCostUsd: number;
+}
+
+// 供终端统计面板使用：按项目路径取最近一次 CLI 会话详情，不改动历史工作区的选中状态。
+// source 非空时只匹配对应 CLI（claude/codex），供按终端工具区分的场景使用。
+// 传入 prev（上次结果的 file_path/updated_at）时，若最近会话未变化则返回 "unchanged"，
+// 跳过整个 jsonl 的重新解析，供轮询场景使用。
+export async function fetchLatestProjectSessionDetail(
+  projectPath: string,
+  prev?: { filePath: string; updatedAt: number },
+  source?: HistorySource | null
+): Promise<HistorySessionDetail | "unchanged" | null> {
+  try {
+    const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
+      source: source ?? null,
+      ...getHistoryPathArgs(),
+      projectPath,
+      query: null,
+      limit: 1,
+      offset: 0,
+    });
+    const summary = (summariesRaw ?? []).map((item) => normalizeSummary(item))[0];
+    if (!summary) return null;
+    if (prev && summary.file_path === prev.filePath && summary.updated_at === prev.updatedAt) {
+      return "unchanged";
+    }
+    const detailRaw = await invoke<unknown>("history_get_session", {
+      filePath: summary.file_path,
+      ...getHistoryPathArgs(),
+      source: summary.source,
+      projectKey: summary.project_key,
+    });
+    return normalizeDetail(detailRaw);
+  } catch {
+    return prev ? "unchanged" : null;
+  }
+}
+
+export async function fetchTodayProjectStats(
+  projectKey: string,
+  source?: HistorySource | null
+): Promise<TodayProjectStats | null> {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  try {
+    const raw = await invoke<unknown>("history_get_stats", {
+      source: source ?? null,
+      ...getHistoryPathArgs(),
+      projectKey,
+      rangeDays: null,
+      startAt: todayStart.getTime(),
+      endAt: Date.now(),
+      force: false,
+    });
+    const stats = normalizeStats(raw);
+    return {
+      sessions: stats.total_sessions,
+      totalTokens:
+        stats.total_input_tokens +
+        stats.total_output_tokens +
+        stats.total_cache_read_tokens +
+        stats.total_cache_creation_tokens,
+      totalCostUsd: stats.total_cost_usd,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function getHistoryPathCacheKey(): string {

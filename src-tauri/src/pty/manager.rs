@@ -1,6 +1,6 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -77,26 +77,43 @@ impl PtyManager {
     }
 
     fn powershell_runtime_monitor_args() -> Vec<String> {
+        // 标准 FinalTerm OSC 133 shell integration（前端 XTermTerminal 原始流解析）：
+        //   D[;exit] = 命令结束（无 exit 表示没跑命令：空回车 / prompt 处 Ctrl+C）
+        //   A = prompt 开始；B = prompt 结束
+        //   C = 命令开始执行（PSConsoleHostReadLine 提交非空行时发出）
+        // 是否真的跑过命令用 history id 判断，避免空回车误报 command_finished。
         let script = r#"
-$global:CliManagerPromptInitialized = $false
+$global:CliManagerLastHistoryId = $null
 $global:CliManagerPreviousPrompt = if (Test-Path function:\prompt) { (Get-Command prompt).ScriptBlock } else { $null }
-function global:__CliManagerEmitRuntimeEvent([string]$Event, $ExitCode) {
-  $esc = [char]27
-  $bel = [char]7
-  $payload = "$esc]777;cli-manager;session=$env:CLI_MANAGER_TAB_ID;event=$Event"
-  if ($null -ne $ExitCode) { $payload = "$payload;exit=$ExitCode" }
-  [Console]::Write($payload + $bel)
-}
 function global:prompt {
   $success = $?
   $nativeExitCode = $global:LASTEXITCODE
-  if ($global:CliManagerPromptInitialized) {
+  $esc = [char]27
+  $bel = [char]7
+  $lastHistory = Get-History -Count 1
+  $lastId = if ($lastHistory) { $lastHistory.Id } else { -1 }
+  $out = ""
+  if (($null -ne $global:CliManagerLastHistoryId) -and ($lastId -ne $global:CliManagerLastHistoryId)) {
     $exitCode = if ($success) { 0 } elseif ($nativeExitCode -is [int] -and $nativeExitCode -ne 0) { $nativeExitCode } else { 1 }
-    __CliManagerEmitRuntimeEvent 'command_finished' $exitCode
+    $out += "$esc]133;D;$exitCode$bel"
+  } else {
+    $out += "$esc]133;D$bel"
   }
-  __CliManagerEmitRuntimeEvent 'prompt_shown' $null
-  $global:CliManagerPromptInitialized = $true
-  if ($global:CliManagerPreviousPrompt) { & $global:CliManagerPreviousPrompt } else { 'PS ' + (Get-Location) + '> ' }
+  $global:CliManagerLastHistoryId = $lastId
+  $out += "$esc]133;A$bel"
+  $promptText = if ($global:CliManagerPreviousPrompt) { & $global:CliManagerPreviousPrompt } else { 'PS ' + (Get-Location) + '> ' }
+  "$out$promptText$esc]133;B$bel"
+}
+if (-not (Get-Module -Name PSReadLine)) { Import-Module PSReadLine -ErrorAction SilentlyContinue }
+if (Test-Path function:\PSConsoleHostReadLine) {
+  $global:CliManagerOriginalReadLine = $function:PSConsoleHostReadLine
+  function global:PSConsoleHostReadLine {
+    $line = & $global:CliManagerOriginalReadLine
+    if (($null -ne $line) -and ($line.Trim().Length -gt 0)) {
+      [Console]::Write("$([char]27)]133;C$([char]7)")
+    }
+    $line
+  }
 }
 "#;
         vec![
@@ -107,20 +124,78 @@ function global:prompt {
         ]
     }
 
+    /// Git Bash 的 OSC 133 集成 rcfile：先加载用户 ~/.bashrc 再追加我们的钩子，
+    /// 保证 PROMPT_COMMAND / PS0 不被用户配置覆盖。
+    /// PS0 仅在交互式命令真正执行前展开（bash 4.4+），用 `${PS0:0:$((var=1,0))}`
+    /// 技巧完成无输出赋值，替代 DEBUG trap（trap 会被 PROMPT_COMMAND 自身误触发）。
+    fn write_bash_integration_rcfile() -> Result<String, String> {
+        let script = r#"[ -f ~/.bashrc ] && . ~/.bashrc
+__cli_manager_prompt() {
+  local exit_code=$?
+  if [ "${__cli_manager_ran:-0}" = "1" ]; then
+    printf '\033]133;D;%s\007' "$exit_code"
+    __cli_manager_ran=0
+  else
+    printf '\033]133;D\007'
+  fi
+  printf '\033]133;A\007'
+}
+PROMPT_COMMAND="__cli_manager_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
+"#;
+        let path = std::env::temp_dir().join("cli-manager-bash-integration.bashrc");
+        std::fs::write(&path, script).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// cmd 经 PROMPT 环境变量注入 133 标记（$E=ESC，$E\ = ST 终止符）。
+    /// cmd 拿不到上一条命令的 exit code，D 恒不带参数；running 由前端输入侧
+    /// 猜测提供，prompt 重现（A）时收口为 done。
+    fn apply_cmd_prompt_integration(env_vars: &mut HashMap<String, String>) {
+        let base = env_vars
+            .get("PROMPT")
+            .cloned()
+            .or_else(|| std::env::var("PROMPT").ok())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "$P$G".to_string());
+        env_vars.insert(
+            "PROMPT".to_string(),
+            format!("$E]133;D$E\\$E]133;A$E\\{base}$E]133;B$E\\"),
+        );
+    }
+
     fn build_shell_args(
         shell: &str,
         env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(String, Vec<String>), String> {
         let monitoring_enabled = Self::shell_runtime_monitoring_enabled(env_vars);
-        if monitoring_enabled && (shell == "powershell" || shell == "pwsh") {
-            let exe = if shell == "pwsh" {
-                "pwsh.exe"
-            } else {
-                "powershell.exe"
-            };
-            return Ok((exe.to_string(), Self::powershell_runtime_monitor_args()));
+        if !monitoring_enabled {
+            return Self::resolve_shell(shell);
         }
-        Self::resolve_shell(shell)
+        match shell {
+            "powershell" | "pwsh" => {
+                let exe = if shell == "pwsh" {
+                    "pwsh.exe"
+                } else {
+                    "powershell.exe"
+                };
+                Ok((exe.to_string(), Self::powershell_runtime_monitor_args()))
+            }
+            // gitbash 是确定的 Windows 原生 bash，可安全注入 rcfile；
+            // "bash"（System32 的 WSL 启动器）与 wsl 一样无法可靠注入，
+            // 仅依赖前端识别用户自带的 OSC 133/633 集成。
+            "gitbash" => {
+                let (exe, args) = Self::resolve_shell(shell)?;
+                match Self::write_bash_integration_rcfile() {
+                    Ok(rcfile) => Ok((exe, vec!["--rcfile".to_string(), rcfile, "-i".to_string()])),
+                    Err(err) => {
+                        warn!("bash integration rcfile write failed, fallback to plain shell: {err}");
+                        Ok((exe, args))
+                    }
+                }
+            }
+            _ => Self::resolve_shell(shell),
+        }
     }
 
     pub fn create(
@@ -150,6 +225,10 @@ function global:prompt {
             })?;
 
         let shell_key = shell.unwrap_or("powershell");
+        let mut env_vars = env_vars;
+        if shell_key == "cmd" && Self::shell_runtime_monitoring_enabled(env_vars.as_ref()) {
+            Self::apply_cmd_prompt_integration(env_vars.get_or_insert_with(HashMap::new));
+        }
         let (exe, args) = Self::build_shell_args(shell_key, env_vars.as_ref()).map_err(|e| {
             error!(
                 "pty resolve shell failed: id={}, shell={}, error={}",

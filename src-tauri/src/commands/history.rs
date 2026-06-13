@@ -2,18 +2,19 @@ use log::debug;
 use memchr::memmem;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// BufReader 容量；默认 8KB 对几 MB 的 jsonl 文件 syscall 次数偏多。
 const READ_BUF_CAPACITY: usize = 64 * 1024;
 /// collect_session_files 的 TTL：避免分析看板/搜索短时间内反复全树扫盘。
-const SESSION_FILES_TTL_MS: i64 = 5_000;
+const SESSION_FILES_TTL_MS: i64 = 60_000;
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct HistoryRoots {
@@ -56,7 +57,22 @@ struct SessionSummaryScan {
 struct SessionStatsScan {
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    total_cost_usd: f64,
+    unpriced_tokens: u64,
     dominant_model: Option<String>,
+    model_usage: HashMap<String, UsageStatsScan>,
+    /// 模型上下文窗口大小（Codex token_count 事件的 model_context_window）。
+    context_window: Option<u64>,
+    /// 最近一次请求占用的上下文 token 数。
+    last_context_tokens: Option<u64>,
+    /// 工具调用总次数（Claude tool_use 块 / Codex function_call）。
+    tool_call_count: u64,
+    /// MCP 服务器 -> 调用次数（工具名 mcp__<server>__<tool>）。
+    mcp_calls: HashMap<String, u64>,
+    /// Skill / 斜杠命令 -> 调用次数。
+    skill_calls: HashMap<String, u64>,
 }
 
 #[derive(Clone, Default)]
@@ -80,10 +96,21 @@ struct SessionStatsCache {
     entries: HashMap<String, CachedSessionCacheEntry>,
 }
 
+#[derive(Default)]
+struct SessionProjectCache {
+    entries: HashMap<String, CachedSessionProjectCacheEntry>,
+}
+
 #[derive(Clone)]
 struct CachedSessionCacheEntry {
     fingerprint: SessionFileFingerprint,
     computed: CachedSessionComputation,
+}
+
+#[derive(Clone)]
+struct CachedSessionProjectCacheEntry {
+    fingerprint: SessionFileFingerprint,
+    scan: SessionProjectScan,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,7 +138,7 @@ struct HistorySessionIndex {
 
 static HISTORY_SESSION_INDEX: OnceLock<RwLock<HistorySessionIndex>> = OnceLock::new();
 
-const HISTORY_SESSION_INDEX_TTL_MS: i64 = 5_000;
+const HISTORY_SESSION_INDEX_TTL_MS: i64 = 60_000;
 
 #[derive(Clone)]
 struct CachedSessionFiles {
@@ -137,9 +164,10 @@ struct HistoryStatsAggregationCache {
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
 const DAY_MS: i64 = 24 * HOUR_MS;
-const MAX_STATS_RANGE_DAYS: usize = 180;
+const MAX_STATS_RANGE_DAYS: usize = 366;
 const HISTORY_STATS_AGGREGATION_CACHE_MAX: usize = 32;
 static SESSION_STATS_CACHE: OnceLock<Mutex<SessionStatsCache>> = OnceLock::new();
+static SESSION_PROJECT_CACHE: OnceLock<Mutex<SessionProjectCache>> = OnceLock::new();
 static SESSION_FILES_CACHE: OnceLock<Mutex<SessionFilesCache>> = OnceLock::new();
 static HISTORY_STATS_AGGREGATION_CACHE: OnceLock<Mutex<HistoryStatsAggregationCache>> = OnceLock::new();
 
@@ -149,6 +177,11 @@ pub struct HistoryMessage {
     pub role: String,
     pub content: String,
     pub timestamp: Option<String>,
+    pub model: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -167,6 +200,29 @@ pub struct HistorySessionSummary {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryToolCount {
+    pub name: String,
+    pub count: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub dominant_model: Option<String>,
+    pub context_window: Option<u64>,
+    pub last_context_tokens: Option<u64>,
+    pub tool_call_count: u64,
+    pub mcp_calls: Vec<HistoryToolCount>,
+    pub skill_calls: Vec<HistoryToolCount>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistorySessionDetail {
     pub session_id: String,
     pub source: String,
@@ -177,6 +233,7 @@ pub struct HistorySessionDetail {
     pub updated_at: i64,
     pub message_count: usize,
     pub branch: Option<String>,
+    pub usage: HistorySessionUsage,
     pub messages: Vec<HistoryMessage>,
 }
 
@@ -215,6 +272,10 @@ pub struct HistoryStatsProjectItem {
     pub messages: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub unpriced_tokens: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -223,6 +284,12 @@ pub struct HistoryStatsModelItem {
     pub model: String,
     pub sessions: usize,
     pub ratio: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub unpriced_tokens: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -243,6 +310,10 @@ pub struct HistoryStatsDailySeriesItem {
     pub messages: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub unpriced_tokens: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -253,6 +324,10 @@ pub struct HistoryStatsSourceItem {
     pub messages: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub unpriced_tokens: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -263,6 +338,10 @@ pub struct HistoryStatsProjectEfficiencyItem {
     pub messages: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub unpriced_tokens: u64,
     pub avg_messages_per_session: f64,
 }
 
@@ -282,6 +361,10 @@ pub struct HistoryStatsResponse {
     pub total_messages: usize,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cost_usd: f64,
+    pub total_unpriced_tokens: u64,
     pub project_ranking: Vec<HistoryStatsProjectItem>,
     pub model_distribution: Vec<HistoryStatsModelItem>,
     pub heatmap: Vec<HistoryStatsHeatmapDay>,
@@ -297,7 +380,30 @@ struct DayStatsAggregate {
     messages: usize,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    total_cost_usd: f64,
+    unpriced_tokens: u64,
     session_refs: Vec<HistorySessionSummary>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct UsageStatsScan {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    total_cost_usd: f64,
+    unpriced_tokens: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct UsageTokenScan {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    explicit_cost_usd: Option<f64>,
 }
 
 #[derive(Clone, Default)]
@@ -809,8 +915,12 @@ fn build_history_stats_response(
     let mut total_messages = 0usize;
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
+    let mut total_cache_read_tokens = 0u64;
+    let mut total_cache_creation_tokens = 0u64;
+    let mut total_cost_usd = 0.0f64;
+    let mut total_unpriced_tokens = 0u64;
     let mut project_map: HashMap<String, HistoryStatsProjectItem> = HashMap::new();
-    let mut model_map: HashMap<String, usize> = HashMap::new();
+    let mut model_map: HashMap<String, HistoryStatsModelItem> = HashMap::new();
     let mut source_map: HashMap<String, HistoryStatsSourceItem> = HashMap::new();
     let mut day_map: BTreeMap<i64, DayStatsAggregate> = BTreeMap::new();
     let mut hourly_map: Vec<HourStatsAggregate> = vec![HourStatsAggregate::default(); 24];
@@ -838,7 +948,14 @@ fn build_history_stats_response(
         total_messages += summary.message_count;
         total_input_tokens = total_input_tokens.saturating_add(computed.stats.input_tokens);
         total_output_tokens = total_output_tokens.saturating_add(computed.stats.output_tokens);
-        let hour = hour_of_day_utc(summary.updated_at);
+        total_cache_read_tokens =
+            total_cache_read_tokens.saturating_add(computed.stats.cache_read_tokens);
+        total_cache_creation_tokens =
+            total_cache_creation_tokens.saturating_add(computed.stats.cache_creation_tokens);
+        total_cost_usd += computed.stats.total_cost_usd;
+        total_unpriced_tokens =
+            total_unpriced_tokens.saturating_add(computed.stats.unpriced_tokens);
+        let hour = hour_of_day_for_stats(summary.updated_at, bounds);
         hourly_map[hour].sessions += 1;
         hourly_map[hour].messages += summary.message_count;
 
@@ -851,6 +968,10 @@ fn build_history_stats_response(
                     messages: 0,
                     input_tokens: 0,
                     output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    total_cost_usd: 0.0,
+                    unpriced_tokens: 0,
                 });
         project_entry.sessions += 1;
         project_entry.messages += summary.message_count;
@@ -860,6 +981,16 @@ fn build_history_stats_response(
         project_entry.output_tokens = project_entry
             .output_tokens
             .saturating_add(computed.stats.output_tokens);
+        project_entry.cache_read_tokens = project_entry
+            .cache_read_tokens
+            .saturating_add(computed.stats.cache_read_tokens);
+        project_entry.cache_creation_tokens = project_entry
+            .cache_creation_tokens
+            .saturating_add(computed.stats.cache_creation_tokens);
+        project_entry.total_cost_usd += computed.stats.total_cost_usd;
+        project_entry.unpriced_tokens = project_entry
+            .unpriced_tokens
+            .saturating_add(computed.stats.unpriced_tokens);
 
         let source_entry = source_map.entry(summary.source.clone()).or_insert(HistoryStatsSourceItem {
             source: summary.source.clone(),
@@ -867,6 +998,10 @@ fn build_history_stats_response(
             messages: 0,
             input_tokens: 0,
             output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_cost_usd: 0.0,
+            unpriced_tokens: 0,
         });
         source_entry.sessions += 1;
         source_entry.messages += summary.message_count;
@@ -876,18 +1011,106 @@ fn build_history_stats_response(
         source_entry.output_tokens = source_entry
             .output_tokens
             .saturating_add(computed.stats.output_tokens);
+        source_entry.cache_read_tokens = source_entry
+            .cache_read_tokens
+            .saturating_add(computed.stats.cache_read_tokens);
+        source_entry.cache_creation_tokens = source_entry
+            .cache_creation_tokens
+            .saturating_add(computed.stats.cache_creation_tokens);
+        source_entry.total_cost_usd += computed.stats.total_cost_usd;
+        source_entry.unpriced_tokens = source_entry
+            .unpriced_tokens
+            .saturating_add(computed.stats.unpriced_tokens);
 
         let model_name = computed
             .stats
             .dominant_model
+            .clone()
             .unwrap_or_else(|| "unknown".to_string());
-        *model_map.entry(model_name).or_insert(0) += 1;
+        let model_entry = model_map.entry(model_name.clone()).or_insert(HistoryStatsModelItem {
+            model: model_name,
+            sessions: 0,
+            ratio: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_cost_usd: 0.0,
+            unpriced_tokens: 0,
+        });
+        model_entry.sessions += 1;
+        let model_usage = computed
+            .stats
+            .model_usage
+            .get(&model_entry.model)
+            .copied()
+            .unwrap_or(UsageStatsScan {
+                input_tokens: computed.stats.input_tokens,
+                output_tokens: computed.stats.output_tokens,
+                cache_read_tokens: computed.stats.cache_read_tokens,
+                cache_creation_tokens: computed.stats.cache_creation_tokens,
+                total_cost_usd: computed.stats.total_cost_usd,
+                unpriced_tokens: computed.stats.unpriced_tokens,
+            });
+        model_entry.input_tokens = model_entry
+            .input_tokens
+            .saturating_add(model_usage.input_tokens);
+        model_entry.output_tokens = model_entry
+            .output_tokens
+            .saturating_add(model_usage.output_tokens);
+        model_entry.cache_read_tokens = model_entry
+            .cache_read_tokens
+            .saturating_add(model_usage.cache_read_tokens);
+        model_entry.cache_creation_tokens = model_entry
+            .cache_creation_tokens
+            .saturating_add(model_usage.cache_creation_tokens);
+        model_entry.total_cost_usd += model_usage.total_cost_usd;
+        model_entry.unpriced_tokens = model_entry
+            .unpriced_tokens
+            .saturating_add(model_usage.unpriced_tokens);
+
+        for (model_name, usage) in &computed.stats.model_usage {
+            if *model_name
+                == computed
+                    .stats
+                    .dominant_model
+                    .as_deref()
+                    .unwrap_or("unknown")
+            {
+                continue;
+            }
+            let entry = model_map.entry(model_name.clone()).or_insert(HistoryStatsModelItem {
+                model: model_name.clone(),
+                sessions: 0,
+                ratio: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                total_cost_usd: 0.0,
+                unpriced_tokens: 0,
+            });
+            entry.input_tokens = entry.input_tokens.saturating_add(usage.input_tokens);
+            entry.output_tokens = entry.output_tokens.saturating_add(usage.output_tokens);
+            entry.cache_read_tokens = entry
+                .cache_read_tokens
+                .saturating_add(usage.cache_read_tokens);
+            entry.cache_creation_tokens = entry
+                .cache_creation_tokens
+                .saturating_add(usage.cache_creation_tokens);
+            entry.total_cost_usd += usage.total_cost_usd;
+            entry.unpriced_tokens = entry.unpriced_tokens.saturating_add(usage.unpriced_tokens);
+        }
 
         let day_entry = day_map.entry(day_start).or_insert(DayStatsAggregate {
             sessions: 0,
             messages: 0,
             input_tokens: 0,
             output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_cost_usd: 0.0,
+            unpriced_tokens: 0,
             session_refs: Vec::new(),
         });
         day_entry.sessions += 1;
@@ -898,6 +1121,16 @@ fn build_history_stats_response(
         day_entry.output_tokens = day_entry
             .output_tokens
             .saturating_add(computed.stats.output_tokens);
+        day_entry.cache_read_tokens = day_entry
+            .cache_read_tokens
+            .saturating_add(computed.stats.cache_read_tokens);
+        day_entry.cache_creation_tokens = day_entry
+            .cache_creation_tokens
+            .saturating_add(computed.stats.cache_creation_tokens);
+        day_entry.total_cost_usd += computed.stats.total_cost_usd;
+        day_entry.unpriced_tokens = day_entry
+            .unpriced_tokens
+            .saturating_add(computed.stats.unpriced_tokens);
         day_entry.session_refs.push(summary);
     }
 
@@ -910,18 +1143,25 @@ fn build_history_stats_response(
     });
 
     let mut model_distribution: Vec<HistoryStatsModelItem> = model_map
-        .into_iter()
-        .map(|(model, sessions)| HistoryStatsModelItem {
-            model,
-            sessions,
-            ratio: if total_sessions == 0 {
+        .into_values()
+        .map(|mut item| {
+            item.ratio = if total_sessions == 0 {
                 0.0
             } else {
-                sessions as f64 / total_sessions as f64
-            },
+                item.sessions as f64 / total_sessions as f64
+            };
+            item
         })
         .collect();
-    model_distribution.sort_by(|a, b| b.sessions.cmp(&a.sessions).then(a.model.cmp(&b.model)));
+    model_distribution.sort_by(|a, b| {
+        b.sessions
+            .cmp(&a.sessions)
+            .then_with(|| {
+                history_stats_total_tokens(b)
+                    .cmp(&history_stats_total_tokens(a))
+            })
+            .then(a.model.cmp(&b.model))
+    });
 
     let mut source_distribution: Vec<HistoryStatsSourceItem> = source_map.into_values().collect();
     source_distribution.sort_by(|a, b| {
@@ -939,6 +1179,10 @@ fn build_history_stats_response(
             messages: item.messages,
             input_tokens: item.input_tokens,
             output_tokens: item.output_tokens,
+            cache_read_tokens: item.cache_read_tokens,
+            cache_creation_tokens: item.cache_creation_tokens,
+            total_cost_usd: item.total_cost_usd,
+            unpriced_tokens: item.unpriced_tokens,
             avg_messages_per_session: if item.sessions == 0 {
                 0.0
             } else {
@@ -988,6 +1232,10 @@ fn build_history_stats_response(
                 messages: day.messages,
                 input_tokens: day.input_tokens,
                 output_tokens: day.output_tokens,
+                cache_read_tokens: day.cache_read_tokens,
+                cache_creation_tokens: day.cache_creation_tokens,
+                total_cost_usd: day.total_cost_usd,
+                unpriced_tokens: day.unpriced_tokens,
             });
         } else {
             heatmap.push(HistoryStatsHeatmapDay {
@@ -1003,6 +1251,10 @@ fn build_history_stats_response(
                 messages: 0,
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                total_cost_usd: 0.0,
+                unpriced_tokens: 0,
             });
         }
     }
@@ -1013,6 +1265,10 @@ fn build_history_stats_response(
         total_messages,
         total_input_tokens,
         total_output_tokens,
+        total_cache_read_tokens,
+        total_cache_creation_tokens,
+        total_cost_usd,
+        total_unpriced_tokens,
         project_ranking,
         model_distribution,
         heatmap,
@@ -1126,6 +1382,10 @@ fn get_stats_cache() -> &'static Mutex<SessionStatsCache> {
     SESSION_STATS_CACHE.get_or_init(|| Mutex::new(SessionStatsCache::default()))
 }
 
+fn get_project_cache() -> &'static Mutex<SessionProjectCache> {
+    SESSION_PROJECT_CACHE.get_or_init(|| Mutex::new(SessionProjectCache::default()))
+}
+
 fn get_files_cache() -> &'static Mutex<SessionFilesCache> {
     SESSION_FILES_CACHE.get_or_init(|| Mutex::new(SessionFilesCache::default()))
 }
@@ -1139,6 +1399,9 @@ fn invalidate_history_caches() {
         cache.by_source.clear();
     }
     if let Ok(mut cache) = get_stats_cache().lock() {
+        cache.entries.clear();
+    }
+    if let Ok(mut cache) = get_project_cache().lock() {
         cache.entries.clear();
     }
     if let Ok(mut cache) = get_stats_aggregation_cache().lock() {
@@ -1199,7 +1462,8 @@ fn build_history_index(
         .unwrap_or_default();
     let previous_generation = previous.as_ref().map(|index| index.generation).unwrap_or(0);
     let files = collect_session_files_with_force(None, roots, force_file_scan);
-    let mut entries = Vec::with_capacity(files.len());
+    let mut entries: Vec<Option<HistoryIndexEntry>> = Vec::with_capacity(files.len());
+    let mut pending: Vec<(usize, SessionFileRef, SessionFileFingerprint)> = Vec::new();
 
     for file_ref in files {
         let path_key = path_to_key(&file_ref.path);
@@ -1213,22 +1477,54 @@ fn build_history_index(
                 existing.fingerprint = fingerprint;
                 existing.computed.created_at = fingerprint.created_at;
                 existing.computed.updated_at = fingerprint.updated_at;
-                entries.push(existing);
+                entries.push(Some(existing));
                 continue;
             }
         }
 
-        let computed = scan_session_computation(
-            &file_ref.path,
-            fingerprint.created_at,
-            fingerprint.updated_at,
-        );
-        entries.push(HistoryIndexEntry {
-            file_ref,
-            fingerprint,
-            computed,
-        });
+        pending.push((entries.len(), file_ref, fingerprint));
+        entries.push(None);
     }
+
+    // 缓存未命中的文件需要全量解析（CPU+IO 密集），按核数并行扫描；
+    // 首次构建索引时可能有上千个 jsonl，串行耗时不可接受。
+    if !pending.is_empty() {
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(pending.len());
+        let next_job = AtomicUsize::new(0);
+        let scanned: Mutex<Vec<(usize, HistoryIndexEntry)>> =
+            Mutex::new(Vec::with_capacity(pending.len()));
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| loop {
+                    let job = next_job.fetch_add(1, Ordering::Relaxed);
+                    let Some((slot, file_ref, fingerprint)) = pending.get(job) else {
+                        break;
+                    };
+                    let computed = scan_session_computation(
+                        &file_ref.path,
+                        fingerprint.created_at,
+                        fingerprint.updated_at,
+                    );
+                    let entry = HistoryIndexEntry {
+                        file_ref: file_ref.clone(),
+                        fingerprint: *fingerprint,
+                        computed,
+                    };
+                    if let Ok(mut scanned) = scanned.lock() {
+                        scanned.push((*slot, entry));
+                    }
+                });
+            }
+        });
+        for (slot, entry) in scanned.into_inner().unwrap_or_default() {
+            entries[slot] = Some(entry);
+        }
+    }
+
+    let mut entries: Vec<HistoryIndexEntry> = entries.into_iter().flatten().collect();
 
     entries.sort_by(|a, b| b.computed.updated_at.cmp(&a.computed.updated_at));
 
@@ -1425,6 +1721,19 @@ fn get_or_scan_session_computation(file_ref: &SessionFileRef) -> CachedSessionCo
 fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetail, String> {
     let computed = get_or_scan_session_computation(file_ref);
     let messages = read_session_messages(&file_ref.path)?;
+    let usage = HistorySessionUsage {
+        input_tokens: computed.stats.input_tokens,
+        output_tokens: computed.stats.output_tokens,
+        cache_read_tokens: computed.stats.cache_read_tokens,
+        cache_creation_tokens: computed.stats.cache_creation_tokens,
+        total_cost_usd: computed.stats.total_cost_usd,
+        dominant_model: computed.stats.dominant_model.clone(),
+        context_window: computed.stats.context_window,
+        last_context_tokens: computed.stats.last_context_tokens,
+        tool_call_count: computed.stats.tool_call_count,
+        mcp_calls: sorted_tool_counts(&computed.stats.mcp_calls),
+        skill_calls: sorted_tool_counts(&computed.stats.skill_calls),
+    };
     Ok(HistorySessionDetail {
         session_id: computed.session_id,
         source: file_ref.source.clone(),
@@ -1435,6 +1744,7 @@ fn build_session_detail(file_ref: &SessionFileRef) -> Result<HistorySessionDetai
         updated_at: computed.updated_at,
         message_count: messages.len(),
         branch: computed.branch,
+        usage,
         messages,
     })
 }
@@ -1586,12 +1896,7 @@ fn collect_codex_session_files(root: &Path) -> Vec<SessionFileRef> {
     files
         .into_iter()
         .map(|path| {
-            let project_key = path
-                .parent()
-                .and_then(|parent| parent.strip_prefix(&root).ok())
-                .map(path_to_key)
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "sessions".to_string());
+            let project_key = codex_project_key_from_session(&path, root);
             SessionFileRef {
                 source: "codex".to_string(),
                 project_key,
@@ -1599,6 +1904,34 @@ fn collect_codex_session_files(root: &Path) -> Vec<SessionFileRef> {
             }
         })
         .collect()
+}
+
+fn codex_project_key_from_session(path: &Path, root: &Path) -> String {
+    get_or_scan_session_project(path)
+        .cwd
+        .as_deref()
+        .and_then(project_key_from_cwd)
+        .unwrap_or_else(|| codex_project_key_from_path(path, root))
+}
+
+fn project_key_from_cwd(cwd: &str) -> Option<String> {
+    let normalized = cwd.trim().replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    trimmed
+        .rsplit('/')
+        .find(|segment| {
+            let segment = segment.trim();
+            !segment.is_empty() && segment != "." && segment != ".." && !segment.ends_with(':')
+        })
+        .map(|segment| segment.trim().to_string())
+}
+
+fn codex_project_key_from_path(path: &Path, root: &Path) -> String {
+    path.parent()
+        .and_then(|parent| parent.strip_prefix(root).ok())
+        .map(path_to_key)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "sessions".to_string())
 }
 
 fn collect_files_recursive(
@@ -1659,12 +1992,37 @@ fn session_matches_project_path(file_ref: &SessionFileRef, target_project_path: 
         return true;
     }
 
-    let scan = scan_session_project(&file_ref.path);
+    let scan = get_or_scan_session_project(&file_ref.path);
     scan.cwd
         .as_deref()
         .map(normalize_history_path)
         .map(|cwd| cwd == target_project_path || cwd.starts_with(&format!("{target_project_path}/")))
         .unwrap_or(false)
+}
+
+fn get_or_scan_session_project(path: &Path) -> SessionProjectScan {
+    let fingerprint = session_file_fingerprint(path);
+    let key = path_to_key(path);
+
+    if let Ok(cache) = get_project_cache().lock() {
+        if let Some(existing) = cache.entries.get(&key) {
+            if can_reuse_session_scan(existing.fingerprint, fingerprint) {
+                return existing.scan.clone();
+            }
+        }
+    }
+
+    let scan = scan_session_project(path);
+    if let Ok(mut cache) = get_project_cache().lock() {
+        cache.entries.insert(
+            key,
+            CachedSessionProjectCacheEntry {
+                fingerprint,
+                scan: scan.clone(),
+            },
+        );
+    }
+    scan
 }
 
 fn scan_session_project(path: &Path) -> SessionProjectScan {
@@ -1737,7 +2095,26 @@ fn scan_session_combined(path: &Path) -> (SessionSummaryScan, SessionStatsScan) 
     let mut branch: Option<String> = None;
     let mut input_tokens = 0u64;
     let mut output_tokens = 0u64;
+    let mut cache_read_tokens = 0u64;
+    let mut cache_creation_tokens = 0u64;
+    let mut total_cost_usd = 0.0f64;
+    let mut unpriced_tokens = 0u64;
     let mut model_hits: HashMap<String, usize> = HashMap::new();
+    let mut model_usage: HashMap<String, UsageStatsScan> = HashMap::new();
+    // Claude Code 流式写入会把同一条 assistant 消息写成多行（相同 message.id + requestId），
+    // 每行携带相同 usage；不去重会导致 token 统计虚高数倍。
+    let mut seen_usage_keys: HashSet<String> = HashSet::new();
+    // usage 行（如 Codex token_count 事件）可能不带 model，回退到最近一次出现的模型。
+    let mut current_model: Option<String> = None;
+    // Codex total_token_usage 是会话累计值，需相邻差分还原每回合用量。
+    let mut codex_prev_totals: Option<CodexCumulativeUsage> = None;
+    let mut context_window: Option<u64> = None;
+    let mut last_context_tokens: Option<u64> = None;
+    let mut tool_call_count = 0u64;
+    let mut mcp_calls: HashMap<String, u64> = HashMap::new();
+    let mut skill_calls: HashMap<String, u64> = HashMap::new();
+    // tool_use 块按块 id 去重：流式重复行携带相同块，避免重复计数。
+    let mut seen_tool_call_ids: HashSet<String> = HashSet::new();
 
     for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
         let trimmed = line.trim();
@@ -1761,12 +2138,80 @@ fn scan_session_combined(path: &Path) -> (SessionSummaryScan, SessionStatsScan) 
             }
         }
 
-        let (input, output) = extract_usage_tokens(&value);
-        input_tokens = input_tokens.saturating_add(input);
-        output_tokens = output_tokens.saturating_add(output);
+        let line_model = extract_model(&value).filter(|model| !is_synthetic_model(model));
+        if let Some(model) = &line_model {
+            *model_hits.entry(model.clone()).or_insert(0) += 1;
+            current_model = Some(model.clone());
+        }
 
-        if let Some(model) = extract_model(&value) {
-            *model_hits.entry(model).or_insert(0) += 1;
+        collect_tool_calls(
+            &value,
+            &mut seen_tool_call_ids,
+            &mut tool_call_count,
+            &mut mcp_calls,
+            &mut skill_calls,
+        );
+        if trimmed.contains("<command-name>") {
+            if let Some(command) = extract_command_name(trimmed) {
+                *skill_calls.entry(command).or_insert(0) += 1;
+            }
+        }
+
+        let usage = if let Some(current) = extract_codex_token_count(&value) {
+            let (window, last_context) = extract_codex_context_info(&value);
+            if window.is_some() {
+                context_window = window;
+            }
+            if last_context.is_some() {
+                last_context_tokens = last_context;
+            }
+            let usage = codex_usage_delta(codex_prev_totals, current);
+            codex_prev_totals = Some(current);
+            usage
+        } else {
+            let usage = extract_usage_tokens(&value);
+            // Claude 行的 prompt 部分（input + 缓存读写）即该请求的上下文占用。
+            let prompt_tokens = usage
+                .input_tokens
+                .saturating_add(usage.cache_read_tokens)
+                .saturating_add(usage.cache_creation_tokens);
+            if prompt_tokens > 0 {
+                last_context_tokens = Some(prompt_tokens);
+            }
+            usage
+        };
+        if usage_total_tokens(usage) == 0 && usage.explicit_cost_usd.is_none() {
+            continue;
+        }
+        if let Some(key) = extract_usage_dedup_key(&value) {
+            if !seen_usage_keys.insert(key) {
+                continue;
+            }
+        }
+
+        input_tokens = input_tokens.saturating_add(usage.input_tokens);
+        output_tokens = output_tokens.saturating_add(usage.output_tokens);
+        cache_read_tokens = cache_read_tokens.saturating_add(usage.cache_read_tokens);
+        cache_creation_tokens =
+            cache_creation_tokens.saturating_add(usage.cache_creation_tokens);
+
+        let attributed_model = line_model.or_else(|| current_model.clone());
+        let cost = calculate_usage_cost(attributed_model.as_deref(), usage);
+        total_cost_usd += cost.total_cost_usd;
+        unpriced_tokens = unpriced_tokens.saturating_add(cost.unpriced_tokens);
+
+        if let Some(model) = attributed_model {
+            let entry = model_usage.entry(model).or_default();
+            entry.input_tokens = entry.input_tokens.saturating_add(usage.input_tokens);
+            entry.output_tokens = entry.output_tokens.saturating_add(usage.output_tokens);
+            entry.cache_read_tokens = entry
+                .cache_read_tokens
+                .saturating_add(usage.cache_read_tokens);
+            entry.cache_creation_tokens = entry
+                .cache_creation_tokens
+                .saturating_add(usage.cache_creation_tokens);
+            entry.total_cost_usd += cost.total_cost_usd;
+            entry.unpriced_tokens = entry.unpriced_tokens.saturating_add(cost.unpriced_tokens);
         }
     }
 
@@ -1789,18 +2234,32 @@ fn scan_session_combined(path: &Path) -> (SessionSummaryScan, SessionStatsScan) 
         SessionStatsScan {
             input_tokens,
             output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            total_cost_usd,
+            unpriced_tokens,
             dominant_model,
+            model_usage,
+            context_window,
+            last_context_tokens,
+            tool_call_count,
+            mcp_calls,
+            skill_calls,
         },
     )
 }
 
 /// Stream parsed messages from a session file. Callback returns `false` to break early.
+/// 同一条消息的多个流式行携带相同 usage，去重后仅首行保留 token 字段，避免前端求和虚高。
 fn iter_session_messages<F>(path: &Path, mut callback: F) -> Result<(), String>
 where
     F: FnMut(usize, HistoryMessage) -> bool,
 {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mut index = 0usize;
+    let mut seen_usage_keys: HashSet<String> = HashSet::new();
+    // Codex 的 model 在 turn_context 行而非消息行，跟踪最近出现的模型用于回退（同 stats 扫描的 A3 口径）。
+    let mut current_model: Option<String> = None;
     for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1809,7 +2268,21 @@ where
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
-        if let Some(msg) = parse_message(&value) {
+        if let Some(model) = extract_model(&value).filter(|model| !is_synthetic_model(model)) {
+            current_model = Some(model);
+        }
+        if let Some(mut msg) = parse_message(&value) {
+            if msg.model.is_none() && msg.role == "assistant" {
+                msg.model = current_model.clone();
+            }
+            if let Some(key) = extract_usage_dedup_key(&value) {
+                if !seen_usage_keys.insert(key) {
+                    msg.input_tokens = None;
+                    msg.output_tokens = None;
+                    msg.cache_creation_tokens = None;
+                    msg.cache_read_tokens = None;
+                }
+            }
             if !callback(index, msg) {
                 return Ok(());
             }
@@ -1832,6 +2305,7 @@ where
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mut index = 0usize;
     let finder = memmem::Finder::new(lowercase_query.as_bytes());
+    let query_is_ascii = lowercase_query.is_ascii();
     for line in BufReader::with_capacity(READ_BUF_CAPACITY, file).lines().map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1839,10 +2313,14 @@ where
         }
         // Fast path: raw bytes 直接命中（绝大多数小写场景）
         let mut maybe_match = finder.find(trimmed.as_bytes()).is_some();
-        // Slow path: lower-case 整行后再找一次（mixed case 场景兜底）
+        // ASCII 查询走无分配大小写匹配；非 ASCII 保留 Unicode lowercase 兜底。
         if !maybe_match {
-            let lower = trimmed.to_lowercase();
-            maybe_match = finder.find(lower.as_bytes()).is_some();
+            maybe_match = if query_is_ascii {
+                contains_ascii_case_insensitive(trimmed.as_bytes(), lowercase_query.as_bytes())
+            } else {
+                let lower = trimmed.to_lowercase();
+                finder.find(lower.as_bytes()).is_some()
+            };
         }
         if !maybe_match {
             continue;
@@ -1860,6 +2338,18 @@ where
     Ok(())
 }
 
+fn contains_ascii_case_insensitive(haystack: &[u8], needle_lowercase: &[u8]) -> bool {
+    if needle_lowercase.is_empty() {
+        return true;
+    }
+    if needle_lowercase.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle_lowercase.len())
+        .any(|window| window.eq_ignore_ascii_case(needle_lowercase))
+}
+
 fn read_session_messages(path: &Path) -> Result<Vec<HistoryMessage>, String> {
     let mut messages = Vec::new();
     iter_session_messages(path, |_, msg| {
@@ -1869,7 +2359,7 @@ fn read_session_messages(path: &Path) -> Result<Vec<HistoryMessage>, String> {
     Ok(messages)
 }
 
-fn extract_usage_tokens(value: &Value) -> (u64, u64) {
+fn extract_usage_tokens(value: &Value) -> UsageTokenScan {
     let candidates = [
         Some(value),
         value.get("usage"),
@@ -1879,18 +2369,211 @@ fn extract_usage_tokens(value: &Value) -> (u64, u64) {
         value.get("response").and_then(|v| v.get("usage")),
     ];
 
+    // token 数与显式成本可能分布在不同层级（如顶层 costUSD + message.usage），
+    // 取首个带 token 的候选，同时保留任意候选上的显式成本，避免互相覆盖丢数据。
+    let mut explicit_cost_usd: Option<f64> = None;
     for candidate in candidates.into_iter().flatten() {
-        let (input, output) = extract_usage_tokens_from_value(candidate);
-        if input > 0 || output > 0 {
-            return (input, output);
+        let mut usage = extract_usage_tokens_from_value(candidate);
+        if explicit_cost_usd.is_none() {
+            explicit_cost_usd = usage.explicit_cost_usd;
+        }
+        if usage_total_tokens(usage) > 0 {
+            usage.explicit_cost_usd = usage.explicit_cost_usd.or(explicit_cost_usd);
+            return usage;
         }
     }
-    (0, 0)
+    UsageTokenScan {
+        explicit_cost_usd,
+        ..UsageTokenScan::default()
+    }
 }
 
-fn extract_usage_tokens_from_value(value: &Value) -> (u64, u64) {
+/// Codex rollout 的 `token_count` 事件：`payload.info.total_token_usage` 为会话累计值。
+#[derive(Clone, Copy, Default)]
+struct CodexCumulativeUsage {
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+fn extract_codex_token_count(value: &Value) -> Option<CodexCumulativeUsage> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return None;
+    }
+    let totals = payload
+        .get("info")?
+        .get("total_token_usage")?
+        .as_object()?;
+    Some(CodexCumulativeUsage {
+        input_tokens: extract_u64_by_keys(totals, &["input_tokens"]).unwrap_or(0),
+        cached_input_tokens: extract_u64_by_keys(totals, &["cached_input_tokens"]).unwrap_or(0),
+        output_tokens: extract_u64_by_keys(totals, &["output_tokens"]).unwrap_or(0),
+        total_tokens: extract_u64_by_keys(totals, &["total_tokens"]).unwrap_or(0),
+    })
+}
+
+/// Codex token_count 事件附带的上下文信息：模型窗口大小与最近一次请求的上下文占用。
+fn extract_codex_context_info(value: &Value) -> (Option<u64>, Option<u64>) {
+    let Some(info) = value.get("payload").and_then(|payload| payload.get("info")) else {
+        return (None, None);
+    };
+    let window = info
+        .get("model_context_window")
+        .and_then(extract_positive_u64)
+        .filter(|window| *window > 0);
+    let last_context = info
+        .get("last_token_usage")
+        .and_then(Value::as_object)
+        .map(|last| {
+            let total = extract_u64_by_keys(last, &["total_tokens"]).unwrap_or(0);
+            if total > 0 {
+                total
+            } else {
+                extract_u64_by_keys(last, &["input_tokens"])
+                    .unwrap_or(0)
+                    .saturating_add(extract_u64_by_keys(last, &["output_tokens"]).unwrap_or(0))
+            }
+        })
+        .filter(|tokens| *tokens > 0);
+    (window, last_context)
+}
+
+/// 统计工具调用：Claude content 块的 tool_use（按块 id 去重，流式重复行只计一次）、
+/// Codex 的 function_call / custom_tool_call（按 call_id 去重）。
+/// MCP 工具名形如 mcp__<server>__<tool>，按 server 聚合；Skill 工具取 input.skill。
+fn collect_tool_calls(
+    value: &Value,
+    seen_call_ids: &mut HashSet<String>,
+    tool_call_count: &mut u64,
+    mcp_calls: &mut HashMap<String, u64>,
+    skill_calls: &mut HashMap<String, u64>,
+) {
+    let mut record = |name: &str, call_id: Option<&str>, input: Option<&Value>| {
+        if let Some(id) = call_id.map(str::trim).filter(|id| !id.is_empty()) {
+            if !seen_call_ids.insert(id.to_string()) {
+                return;
+            }
+        }
+        *tool_call_count += 1;
+        if let Some(rest) = name.strip_prefix("mcp__") {
+            let server = rest.split("__").next().unwrap_or(rest);
+            if !server.is_empty() {
+                *mcp_calls.entry(server.to_string()).or_insert(0) += 1;
+            }
+        } else if name == "Skill" {
+            if let Some(skill) = input
+                .and_then(|input| input.get("skill"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|skill| !skill.is_empty())
+            {
+                *skill_calls.entry(skill.to_string()).or_insert(0) += 1;
+            }
+        }
+    };
+
+    if let Some(blocks) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+    {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            if let Some(name) = block.get("name").and_then(Value::as_str) {
+                record(
+                    name,
+                    block.get("id").and_then(Value::as_str),
+                    block.get("input"),
+                );
+            }
+        }
+    }
+
+    if let Some(payload) = value.get("payload") {
+        let payload_type = payload.get("type").and_then(Value::as_str);
+        if matches!(payload_type, Some("function_call") | Some("custom_tool_call")) {
+            if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                record(name, payload.get("call_id").and_then(Value::as_str), None);
+            }
+        }
+    }
+}
+
+/// 提取斜杠命令标记 `<command-name>/foo</command-name>` 中的命令名（去掉前导 "/"）。
+fn extract_command_name(line: &str) -> Option<String> {
+    let start = line.find("<command-name>")? + "<command-name>".len();
+    let end = line[start..].find("</command-name>")? + start;
+    let name = line[start..end].trim().trim_start_matches('/').trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn sorted_tool_counts(map: &HashMap<String, u64>) -> Vec<HistoryToolCount> {
+    let mut items: Vec<HistoryToolCount> = map
+        .iter()
+        .map(|(name, count)| HistoryToolCount {
+            name: name.clone(),
+            count: *count,
+        })
+        .collect();
+    items.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    items
+}
+
+/// 相邻差分还原单回合用量；累计值变小视为会话重置，直接取当前值。
+/// Codex 的 `input_tokens` 包含 `cached_input_tokens`，此处归一化为
+/// 非缓存 input + cache_read，与 Claude 口径一致。
+fn codex_usage_delta(
+    previous: Option<CodexCumulativeUsage>,
+    current: CodexCumulativeUsage,
+) -> UsageTokenScan {
+    let previous = previous.unwrap_or_default();
+    let delta = if current.total_tokens < previous.total_tokens {
+        current
+    } else {
+        CodexCumulativeUsage {
+            input_tokens: current.input_tokens.saturating_sub(previous.input_tokens),
+            cached_input_tokens: current
+                .cached_input_tokens
+                .saturating_sub(previous.cached_input_tokens),
+            output_tokens: current.output_tokens.saturating_sub(previous.output_tokens),
+            total_tokens: current.total_tokens.saturating_sub(previous.total_tokens),
+        }
+    };
+    UsageTokenScan {
+        input_tokens: delta.input_tokens.saturating_sub(delta.cached_input_tokens),
+        output_tokens: delta.output_tokens,
+        cache_read_tokens: delta.cached_input_tokens,
+        cache_creation_tokens: 0,
+        explicit_cost_usd: None,
+    }
+}
+
+fn extract_usage_dedup_key(value: &Value) -> Option<String> {
+    let message_id = value
+        .get("message")
+        .and_then(|m| m.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?;
+    let request_id = value
+        .get("requestId")
+        .or_else(|| value.get("request_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Some(format!("{message_id}|{request_id}"))
+}
+
+fn is_synthetic_model(model: &str) -> bool {
+    model.trim().eq_ignore_ascii_case("<synthetic>")
+}
+
+fn extract_usage_tokens_from_value(value: &Value) -> UsageTokenScan {
     let Value::Object(map) = value else {
-        return (0, 0);
+        return UsageTokenScan::default();
     };
 
     let mut input = extract_u64_by_keys(
@@ -1917,8 +2600,60 @@ fn extract_usage_tokens_from_value(value: &Value) -> (u64, u64) {
         ],
     )
     .unwrap_or(0);
+    let cache_read = extract_u64_by_keys(
+        map,
+        &[
+            "cache_read_tokens",
+            "cacheReadTokens",
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+        ],
+    )
+    .unwrap_or(0);
+    // OpenAI 风格的 cached_tokens 包含在 prompt/input 内（与 Anthropic 的
+    // cache_read_input_tokens 不同），归一化时需从 input 中扣除，避免双计。
+    let openai_cached = extract_u64_by_keys(map, &["cached_tokens", "cachedTokens"])
+        .or_else(|| {
+            map.get("input_tokens_details")
+                .or_else(|| map.get("inputTokensDetails"))
+                .and_then(Value::as_object)
+                .and_then(|details| {
+                    extract_u64_by_keys(details, &["cached_tokens", "cachedTokens"])
+                })
+        })
+        .unwrap_or(0);
+    let cache_read = if cache_read == 0 && openai_cached > 0 {
+        input = input.saturating_sub(openai_cached);
+        openai_cached
+    } else {
+        cache_read
+    };
+    let cache_creation = extract_u64_by_keys(
+        map,
+        &[
+            "cache_creation_tokens",
+            "cacheCreationTokens",
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+        ],
+    )
+    .unwrap_or(0);
+    let explicit_cost_usd = extract_f64_by_keys(
+        map,
+        &[
+            "total_cost_usd",
+            "totalCostUsd",
+            "totalCostUSD",
+            "cost_usd",
+            "costUsd",
+            "costUSD",
+            "total_cost",
+            "totalCost",
+            "cost",
+        ],
+    );
 
-    if input == 0 && output == 0 {
+    if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
         if let Some(total) =
             extract_u64_by_keys(map, &["total_tokens", "totalTokens", "token_count"])
         {
@@ -1926,7 +2661,13 @@ fn extract_usage_tokens_from_value(value: &Value) -> (u64, u64) {
         }
     }
 
-    (input, output)
+    UsageTokenScan {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation,
+        explicit_cost_usd,
+    }
 }
 
 fn extract_u64_by_keys(
@@ -1936,6 +2677,328 @@ fn extract_u64_by_keys(
     keys.iter()
         .filter_map(|key| map.get(*key))
         .find_map(extract_positive_u64)
+}
+
+fn extract_f64_by_keys(
+    map: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<f64> {
+    keys.iter()
+        .filter_map(|key| map.get(*key))
+        .find_map(extract_non_negative_f64)
+}
+
+fn extract_non_negative_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(v) => v.as_f64().filter(|n| n.is_finite() && *n >= 0.0),
+        Value::String(v) => v
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0),
+        _ => None,
+    }
+}
+
+fn usage_total_tokens(usage: UsageTokenScan) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.cache_creation_tokens)
+}
+
+fn history_stats_total_tokens(item: &HistoryStatsModelItem) -> u64 {
+    item.input_tokens
+        .saturating_add(item.output_tokens)
+        .saturating_add(item.cache_read_tokens)
+        .saturating_add(item.cache_creation_tokens)
+}
+
+fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStatsScan {
+    let total_tokens = usage_total_tokens(usage);
+    if total_tokens == 0 {
+        return UsageStatsScan {
+            total_cost_usd: usage.explicit_cost_usd.unwrap_or(0.0),
+            ..UsageStatsScan::default()
+        };
+    }
+
+    if let Some(cost) = usage.explicit_cost_usd {
+        return UsageStatsScan {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            total_cost_usd: cost,
+            unpriced_tokens: 0,
+        };
+    }
+
+    let Some(pricing) = model.and_then(find_history_model_pricing) else {
+        return UsageStatsScan {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            total_cost_usd: 0.0,
+            unpriced_tokens: total_tokens,
+        };
+    };
+
+    // 所有提取路径已归一化：input_tokens 不含缓存命中部分，无需再按来源扣减。
+    let million = 1_000_000.0;
+    let total_cost_usd = (usage.input_tokens as f64 * pricing.input_per_million
+        + usage.output_tokens as f64 * pricing.output_per_million
+        + usage.cache_read_tokens as f64 * pricing.cache_read_per_million
+        + usage.cache_creation_tokens as f64 * pricing.cache_creation_per_million)
+        / million;
+
+    UsageStatsScan {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens,
+        total_cost_usd,
+        unpriced_tokens: 0,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HistoryModelPricing {
+    model_id: &'static str,
+    input_per_million: f64,
+    output_per_million: f64,
+    cache_read_per_million: f64,
+    cache_creation_per_million: f64,
+}
+
+const HISTORY_MODEL_PRICING: &[HistoryModelPricing] = &[
+    HistoryModelPricing {
+        model_id: "claude-opus-4-1",
+        input_per_million: 15.0,
+        output_per_million: 75.0,
+        cache_read_per_million: 1.5,
+        cache_creation_per_million: 18.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-opus-4",
+        input_per_million: 15.0,
+        output_per_million: 75.0,
+        cache_read_per_million: 1.5,
+        cache_creation_per_million: 18.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-sonnet-4-5",
+        input_per_million: 3.0,
+        output_per_million: 15.0,
+        cache_read_per_million: 0.3,
+        cache_creation_per_million: 3.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-sonnet-4",
+        input_per_million: 3.0,
+        output_per_million: 15.0,
+        cache_read_per_million: 0.3,
+        cache_creation_per_million: 3.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-haiku-4",
+        input_per_million: 0.8,
+        output_per_million: 4.0,
+        cache_read_per_million: 0.08,
+        cache_creation_per_million: 1.0,
+    },
+    HistoryModelPricing {
+        model_id: "claude-fable-5",
+        input_per_million: 15.0,
+        output_per_million: 75.0,
+        cache_read_per_million: 1.5,
+        cache_creation_per_million: 18.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-7-sonnet",
+        input_per_million: 3.0,
+        output_per_million: 15.0,
+        cache_read_per_million: 0.3,
+        cache_creation_per_million: 3.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-5-sonnet",
+        input_per_million: 3.0,
+        output_per_million: 15.0,
+        cache_read_per_million: 0.3,
+        cache_creation_per_million: 3.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-5-haiku",
+        input_per_million: 0.8,
+        output_per_million: 4.0,
+        cache_read_per_million: 0.08,
+        cache_creation_per_million: 1.0,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-opus",
+        input_per_million: 15.0,
+        output_per_million: 75.0,
+        cache_read_per_million: 1.5,
+        cache_creation_per_million: 18.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-sonnet",
+        input_per_million: 3.0,
+        output_per_million: 15.0,
+        cache_read_per_million: 0.3,
+        cache_creation_per_million: 3.75,
+    },
+    HistoryModelPricing {
+        model_id: "claude-3-haiku",
+        input_per_million: 0.25,
+        output_per_million: 1.25,
+        cache_read_per_million: 0.03,
+        cache_creation_per_million: 0.3,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-5",
+        input_per_million: 1.25,
+        output_per_million: 10.0,
+        cache_read_per_million: 0.125,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-5-mini",
+        input_per_million: 0.25,
+        output_per_million: 2.0,
+        cache_read_per_million: 0.025,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-5-nano",
+        input_per_million: 0.05,
+        output_per_million: 0.4,
+        cache_read_per_million: 0.005,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-4-1",
+        input_per_million: 2.0,
+        output_per_million: 8.0,
+        cache_read_per_million: 0.5,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-4-1-mini",
+        input_per_million: 0.4,
+        output_per_million: 1.6,
+        cache_read_per_million: 0.1,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-4o",
+        input_per_million: 2.5,
+        output_per_million: 10.0,
+        cache_read_per_million: 1.25,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "gpt-4o-mini",
+        input_per_million: 0.15,
+        output_per_million: 0.6,
+        cache_read_per_million: 0.075,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "o3",
+        input_per_million: 2.0,
+        output_per_million: 8.0,
+        cache_read_per_million: 0.5,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "o3-mini",
+        input_per_million: 0.55,
+        output_per_million: 2.2,
+        cache_read_per_million: 0.55,
+        cache_creation_per_million: 0.0,
+    },
+    HistoryModelPricing {
+        model_id: "o4-mini",
+        input_per_million: 1.1,
+        output_per_million: 4.4,
+        cache_read_per_million: 0.275,
+        cache_creation_per_million: 0.0,
+    },
+];
+
+fn find_history_model_pricing(model: &str) -> Option<&'static HistoryModelPricing> {
+    let normalized = normalize_pricing_model_id(model)?;
+    HISTORY_MODEL_PRICING
+        .iter()
+        .find(|pricing| normalized == pricing.model_id)
+        .or_else(|| {
+            HISTORY_MODEL_PRICING
+                .iter()
+                .filter(|pricing| {
+                    normalized.starts_with(pricing.model_id)
+                        && normalized
+                            .as_bytes()
+                            .get(pricing.model_id.len())
+                            .is_some_and(|byte| *byte == b'-')
+                })
+                .max_by_key(|pricing| pricing.model_id.len())
+        })
+}
+
+fn normalize_pricing_model_id(model: &str) -> Option<String> {
+    let mut value = model.trim().to_lowercase();
+    // 剥离 "[1m]" 之类的上下文窗口变体后缀，否则无法命中定价表。
+    if let Some(idx) = value.find('[') {
+        value.truncate(idx);
+    }
+    if value.is_empty() || value == "unknown" {
+        return None;
+    }
+    if let Some((_, tail)) = value.rsplit_once('/') {
+        value = tail.to_string();
+    }
+    if let Some((head, _)) = value.split_once(':') {
+        value = head.to_string();
+    }
+    value = value.replace('@', "-").replace('.', "-");
+    while let Some(stripped) = value.strip_prefix("global-anthropic-") {
+        value = stripped.to_string();
+    }
+    while let Some(stripped) = value.strip_prefix("anthropic-") {
+        value = stripped.to_string();
+    }
+    if let Some(stripped) = value.strip_prefix("claude-gpt-") {
+        value = format!("gpt-{stripped}");
+    }
+    value = strip_model_date_suffix(&value).unwrap_or(value);
+    if let Some(stripped) = value.strip_suffix("-v1") {
+        value = stripped.to_string();
+    }
+    Some(value)
+}
+
+fn strip_model_date_suffix(model: &str) -> Option<String> {
+    let bytes = model.as_bytes();
+    if bytes.len() < 11 {
+        return None;
+    }
+    let date_start = bytes.len() - 10;
+    if bytes.get(date_start - 1) != Some(&b'-') {
+        return None;
+    }
+    let date = &bytes[date_start..];
+    let is_date = date
+        .iter()
+        .enumerate()
+        .all(|(idx, byte)| matches!(idx, 4 | 7) && *byte == b'-' || !matches!(idx, 4 | 7) && byte.is_ascii_digit());
+    if !is_date {
+        return None;
+    }
+    Some(model[..date_start - 1].to_string())
 }
 
 fn extract_positive_u64(value: &Value) -> Option<u64> {
@@ -2008,6 +3071,14 @@ fn hour_of_day_utc(ts: i64) -> usize {
     (normalized / HOUR_MS) as usize
 }
 
+fn hour_of_day_for_stats(ts: i64, bounds: StatsTimeBounds) -> usize {
+    if !bounds.explicit {
+        return hour_of_day_utc(ts);
+    }
+    let normalized = (((ts - bounds.start_day) % DAY_MS) + DAY_MS) % DAY_MS;
+    (normalized / HOUR_MS) as usize
+}
+
 fn calc_heat_level(value: usize, max_value: usize) -> u8 {
     if value == 0 || max_value == 0 {
         return 0;
@@ -2021,6 +3092,21 @@ fn calc_heat_level(value: usize, max_value: usize) -> u8 {
         3
     } else {
         4
+    }
+}
+
+/// content 块全部为 tool_result 时视为工具结果行。
+fn is_tool_result_message(value: &Value) -> bool {
+    let blocks = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .or_else(|| value.get("content"))
+        .and_then(Value::as_array);
+    match blocks {
+        Some(blocks) if !blocks.is_empty() => blocks
+            .iter()
+            .all(|block| block.get("type").and_then(Value::as_str) == Some("tool_result")),
+        _ => false,
     }
 }
 
@@ -2058,6 +3144,11 @@ fn parse_message(value: &Value) -> Option<HistoryMessage> {
                 role: "tool".to_string(),
                 content,
                 timestamp: extract_timestamp(value),
+                model: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
             });
         } else if matches!(
             root_type,
@@ -2077,17 +3168,51 @@ fn parse_message(value: &Value) -> Option<HistoryMessage> {
         }
     }
 
-    let role = extract_role(value).unwrap_or_else(|| "assistant".to_string());
+    let mut role = extract_role(value).unwrap_or_else(|| "assistant".to_string());
+    // Claude 把工具结果写成 user 角色的行（content 全为 tool_result 块），归类为 tool，
+    // 避免"用户"消息数被工具往返虚高。
+    if role == "user" && is_tool_result_message(value) {
+        role = "tool".to_string();
+    }
     let content = extract_content(value)?;
     if content.trim().is_empty() {
         return None;
     }
     let timestamp = extract_timestamp(value);
 
+    // Extract token usage from the message
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("tokenCounts"))
+        .or_else(|| value.get("message").and_then(|m| m.get("usage")));
+    let input_tokens = usage
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| usage.and_then(|u| u.get("inputTokens")).and_then(Value::as_u64));
+    let output_tokens = usage
+        .and_then(|u| u.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| usage.and_then(|u| u.get("outputTokens")).and_then(Value::as_u64));
+    let cache_creation_tokens = usage
+        .and_then(|u| u.get("cache_creation_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| usage.and_then(|u| u.get("cacheCreationTokens")).and_then(Value::as_u64))
+        .or_else(|| usage.and_then(|u| u.get("cache_creation_input_tokens")).and_then(Value::as_u64));
+    let cache_read_tokens = usage
+        .and_then(|u| u.get("cache_read_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| usage.and_then(|u| u.get("cacheReadTokens")).and_then(Value::as_u64))
+        .or_else(|| usage.and_then(|u| u.get("cache_read_input_tokens")).and_then(Value::as_u64));
+
     Some(HistoryMessage {
         role,
         content,
         timestamp,
+        model: extract_model(value).filter(|model| !is_synthetic_model(model)),
+        input_tokens,
+        output_tokens,
+        cache_creation_tokens,
+        cache_read_tokens,
     })
 }
 
@@ -2268,8 +3393,12 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_file(path: &Path) {
+        write_text(path, "{}\n");
+    }
+
+    fn write_text(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "{}\n").unwrap();
+        std::fs::write(path, content).unwrap();
     }
 
     fn expect_string_err<T>(result: Result<T, String>) -> String {
@@ -2373,5 +3502,350 @@ mod tests {
 
         assert_eq!(wrong_project, "session_file_not_indexed");
         assert_eq!(wrong_source, "session_file_not_indexed");
+    }
+
+    #[test]
+    fn resolve_stats_time_bounds_accepts_full_year_range() {
+        let start_at = DAY_MS;
+        let full_year_end_at = start_at + 366 * DAY_MS - 1;
+        let too_large_end_at = start_at + 367 * DAY_MS - 1;
+
+        let bounds = resolve_stats_time_bounds(None, Some(start_at), Some(full_year_end_at)).unwrap();
+        let err = expect_string_err(resolve_stats_time_bounds(
+            None,
+            Some(start_at),
+            Some(too_large_end_at),
+        ));
+
+        assert_eq!(bounds.range_days, 366);
+        assert_eq!(err, "date_range_too_large");
+    }
+
+    #[test]
+    fn hour_of_day_for_stats_uses_explicit_range_anchor() {
+        let local_day_start_at_utc_plus_8 = 16 * HOUR_MS;
+        let local_10_am = local_day_start_at_utc_plus_8 + 10 * HOUR_MS;
+        let bounds = StatsTimeBounds {
+            start_at: local_day_start_at_utc_plus_8,
+            end_at: local_day_start_at_utc_plus_8 + DAY_MS - 1,
+            start_day: local_day_start_at_utc_plus_8,
+            range_days: 1,
+            explicit: true,
+        };
+
+        assert_eq!(hour_of_day_utc(local_10_am), 2);
+        assert_eq!(hour_of_day_for_stats(local_10_am, bounds), 10);
+    }
+
+    #[test]
+    fn collect_codex_session_files_uses_cwd_project_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().join(".codex");
+        let file = root
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("12")
+            .join("rollout-session.jsonl");
+        write_text(
+            &file,
+            r#"{"type":"session_meta","payload":{"cwd":"D:\\work\\pythonProject\\CLI-Manager"}}"#,
+        );
+
+        let files = collect_codex_session_files(&root);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].source, "codex");
+        assert_eq!(files[0].project_key, "CLI-Manager");
+        assert_eq!(files[0].path, file);
+    }
+
+    #[test]
+    fn get_or_scan_session_project_reuses_matching_fingerprint_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            r#"{"type":"session_meta","payload":{"cwd":"D:\\work\\ActualProject"}}"#,
+        );
+        let key = path_to_key(&file);
+        let fingerprint = session_file_fingerprint(&file);
+
+        get_project_cache().lock().unwrap().entries.insert(
+            key.clone(),
+            CachedSessionProjectCacheEntry {
+                fingerprint,
+                scan: SessionProjectScan {
+                    cwd: Some("D:\\work\\CachedProject".to_string()),
+                },
+            },
+        );
+
+        let scan = get_or_scan_session_project(&file);
+
+        get_project_cache().lock().unwrap().entries.remove(&key);
+        assert_eq!(scan.cwd.as_deref(), Some("D:\\work\\CachedProject"));
+    }
+
+    #[test]
+    fn iter_session_messages_filtered_matches_ascii_case_insensitive() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("session.jsonl");
+        write_text(
+            &file,
+            r#"{"role":"user","content":"Find MIXED Case Text"}"#,
+        );
+        let mut hits = Vec::new();
+
+        iter_session_messages_filtered(&file, "mixed case", |_, msg| {
+            hits.push(msg.content);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(hits, vec!["Find MIXED Case Text".to_string()]);
+    }
+
+    #[test]
+    fn scan_session_combined_dedups_streamed_usage_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("session.jsonl");
+        let line_a = r#"{"type":"assistant","requestId":"req_1","message":{"id":"msg_1","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}"#;
+        let line_b = r#"{"type":"assistant","requestId":"req_2","message":{"id":"msg_2","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"world"}],"usage":{"input_tokens":200,"output_tokens":80,"cache_read_input_tokens":20,"cache_creation_input_tokens":0}}}"#;
+        // line_a 重复两次，模拟 Claude Code 同一条消息的多个流式行
+        write_text(&file, &format!("{line_a}\n{line_a}\n{line_b}\n"));
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.input_tokens, 300);
+        assert_eq!(stats.output_tokens, 130);
+        assert_eq!(stats.cache_read_tokens, 30);
+        assert_eq!(stats.cache_creation_tokens, 5);
+        assert_eq!(stats.unpriced_tokens, 0);
+        assert_eq!(stats.dominant_model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn scan_session_combined_diffs_codex_cumulative_token_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.5"}}"#, "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100}}}}"#, "\n",
+                // 重复累计事件：差分为 0，不应重复计数
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100}}}}"#, "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3000,"cached_input_tokens":1600,"output_tokens":300,"total_tokens":3300}}}}"#, "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        // input 不含缓存命中：(1000-400) + (2000-1200) = 1400
+        assert_eq!(stats.input_tokens, 1400);
+        assert_eq!(stats.cache_read_tokens, 1600);
+        assert_eq!(stats.output_tokens, 300);
+        // token_count 事件不带 model，应回退归因到 turn_context 的 gpt-5.5 并完成定价
+        assert_eq!(stats.unpriced_tokens, 0);
+        assert!(stats.model_usage.contains_key("gpt-5.5"));
+        assert!(stats.total_cost_usd > 0.0);
+    }
+
+    #[test]
+    fn scan_session_combined_extracts_codex_context_window() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("rollout-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100},"model_context_window":272000}}}"#, "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3000,"cached_input_tokens":1600,"output_tokens":300,"total_tokens":3300},"last_token_usage":{"input_tokens":2000,"cached_input_tokens":1200,"output_tokens":200,"total_tokens":2200},"model_context_window":272000}}}"#, "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.context_window, Some(272000));
+        // 取最后一次 last_token_usage 的 total_tokens
+        assert_eq!(stats.last_context_tokens, Some(2200));
+    }
+
+    #[test]
+    fn scan_session_combined_tracks_claude_last_context_tokens() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("claude-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                r#"{"type":"assistant","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"cache_read_input_tokens":90000,"cache_creation_input_tokens":5000,"output_tokens":200}}}"#, "\n",
+                r#"{"type":"assistant","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4-5","usage":{"input_tokens":20,"cache_read_input_tokens":95000,"cache_creation_input_tokens":1000,"output_tokens":300}}}"#, "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        // 最近一条请求的上下文占用 = input + 缓存读 + 缓存写
+        assert_eq!(stats.last_context_tokens, Some(96020));
+        // Claude 行不带 model_context_window
+        assert_eq!(stats.context_window, None);
+    }
+
+    #[test]
+    fn pricing_matches_model_with_context_window_suffix() {
+        assert!(find_history_model_pricing("claude-sonnet-4-5[1m]").is_some());
+        assert!(find_history_model_pricing("claude-sonnet-4-5-20250929[1m]").is_some());
+        assert!(find_history_model_pricing("claude-fable-5[1m]").is_some());
+        assert!(find_history_model_pricing("claude-haiku-4-5-20251001").is_some());
+    }
+
+    #[test]
+    fn scan_session_combined_counts_tool_mcp_and_skill_calls() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("claude-session.jsonl");
+        write_text(
+            &file,
+            concat!(
+                // 普通工具 + MCP 工具
+                r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}},{"type":"tool_use","id":"t2","name":"mcp__exa__web_search_exa","input":{}}]}}"#, "\n",
+                // 流式重复行：相同块 id，不应重复计数
+                r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t2","name":"mcp__exa__web_search_exa","input":{}}]}}"#, "\n",
+                // Skill 工具调用
+                r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"goal"}}]}}"#, "\n",
+                // 斜杠命令标记
+                r#"{"type":"user","message":{"role":"user","content":"<command-name>/compact</command-name>"}}"#, "\n",
+                // Codex function_call
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c1"}}"#, "\n",
+            ),
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.tool_call_count, 4);
+        assert_eq!(stats.mcp_calls.get("exa"), Some(&1));
+        assert_eq!(stats.skill_calls.get("goal"), Some(&1));
+        assert_eq!(stats.skill_calls.get("compact"), Some(&1));
+    }
+
+    #[test]
+    fn extract_command_name_strips_slash() {
+        assert_eq!(
+            extract_command_name(r#"text <command-name>/goal</command-name> rest"#),
+            Some("goal".to_string())
+        );
+        assert_eq!(extract_command_name("no marker"), None);
+    }
+
+    #[test]
+    fn parse_message_classifies_tool_result_lines_as_tool() {
+        // Claude 的工具结果行：user 角色 + content 全为 tool_result 块 → 归类为 tool
+        let tool_result_line: Value = serde_json::from_str(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_message(&tool_result_line).unwrap().role, "tool");
+
+        // 真实用户输入保持 user
+        let user_line: Value = serde_json::from_str(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_message(&user_line).unwrap().role, "user");
+    }
+
+    #[test]
+    fn codex_usage_delta_resets_when_cumulative_shrinks() {
+        let previous = CodexCumulativeUsage {
+            input_tokens: 5000,
+            cached_input_tokens: 2000,
+            output_tokens: 500,
+            total_tokens: 5500,
+        };
+        let current = CodexCumulativeUsage {
+            input_tokens: 300,
+            cached_input_tokens: 100,
+            output_tokens: 30,
+            total_tokens: 330,
+        };
+
+        let usage = codex_usage_delta(Some(previous), current);
+
+        assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, 100);
+        assert_eq!(usage.output_tokens, 30);
+    }
+
+    #[test]
+    fn scan_session_combined_ignores_synthetic_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("session.jsonl");
+        write_text(
+            &file,
+            r#"{"type":"assistant","message":{"id":"e1","role":"assistant","model":"<synthetic>","content":"Prompt is too long","usage":{"input_tokens":1,"output_tokens":0}}}"#,
+        );
+
+        let (_, stats) = scan_session_combined(&file);
+
+        assert_eq!(stats.dominant_model, None);
+        assert!(stats.model_usage.is_empty());
+    }
+
+    #[test]
+    fn extract_usage_tokens_merges_top_level_cost_with_nested_tokens() {
+        let value: Value = serde_json::from_str(
+            r#"{"costUSD":0.5,"message":{"usage":{"input_tokens":100,"output_tokens":50}}}"#,
+        )
+        .unwrap();
+
+        let usage = extract_usage_tokens(&value);
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.explicit_cost_usd, Some(0.5));
+    }
+
+    #[test]
+    fn iter_session_messages_blanks_duplicate_usage_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("session.jsonl");
+        let line = r#"{"type":"assistant","requestId":"req_1","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":100,"output_tokens":50}}}"#;
+        write_text(&file, &format!("{line}\n{line}\n"));
+        let mut messages = Vec::new();
+
+        iter_session_messages(&file, |_, msg| {
+            messages.push(msg);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].input_tokens, Some(100));
+        assert_eq!(messages[0].output_tokens, Some(50));
+        assert_eq!(messages[1].input_tokens, None);
+        assert_eq!(messages[1].output_tokens, None);
+    }
+
+    #[test]
+    fn iter_session_messages_extracts_model_with_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("session.jsonl");
+        let claude_line = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#;
+        let codex_turn_context = r#"{"type":"turn_context","payload":{"model":"gpt-5-codex"}}"#;
+        let codex_message = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#;
+        write_text(
+            &file,
+            &format!("{claude_line}\n{codex_turn_context}\n{codex_message}\n"),
+        );
+        let mut messages = Vec::new();
+
+        iter_session_messages(&file, |_, msg| {
+            messages.push(msg);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(messages[1].model.as_deref(), Some("gpt-5-codex"));
     }
 }

@@ -53,6 +53,8 @@ export interface ShellRuntimePayload {
   event: ShellRuntimeEventName;
   exitCode?: number | null;
   timestamp?: string | null;
+  /** osc = shell integration 序列驱动（可信）；input = 前端回车猜测（仅 cmd 接受） */
+  origin?: "osc" | "input";
 }
 
 const SHELL_RUNTIME_MONITORING_ENV = "CLI_MANAGER_SHELL_RUNTIME_MONITORING";
@@ -176,6 +178,9 @@ function logTerminalExitStatus(session: TerminalSession, payload: PtyStatusPaylo
 
 function mapCliHookEvent(event: CliHookEventName): TabNotificationState | null {
   if (event === "UserPromptSubmit") return "running";
+  // Notification 经 settings.json matcher 过滤，只有 permission_prompt /
+  // idle_prompt（需要用户介入）会送达
+  if (event === "Notification") return "attention";
   if (event === "PermissionRequest") return "attention";
   if (event === "StopFailure") return "failed";
   if (event === "Stop") return "done";
@@ -243,18 +248,55 @@ function buildTabStatusUpdate(
   };
 }
 
-function supportsShellRuntimeMonitoring(shell?: string | null): boolean {
+// Shell 注入支持：这些 shell 由 pty/manager.rs 注入 shell integration
+// （powershell/pwsh：prompt 函数；gitbash：rcfile；cmd：PROMPT 环境变量）。
+// bash（System32 WSL 启动器）与 wsl 无法可靠注入，不在此列。
+// 事件接受不按 shell 过滤——任何 shell 里用户自带的 OSC 133/633 集成
+// （oh-my-posh、VS Code shell integration 等）同样可信。
+function supportsShellRuntimeInjection(shell?: string | null): boolean {
   const normalized = normalizeShellKey(shell);
-  return normalized === undefined || normalized === "powershell" || normalized === "pwsh";
+  return (
+    normalized === undefined ||
+    normalized === "powershell" ||
+    normalized === "pwsh" ||
+    normalized === "cmd" ||
+    normalized === "gitbash"
+  );
 }
 
-function isShellRuntimeMonitoringActive(shell?: string | null): boolean {
-  return useSettingsStore.getState().shellRuntimeMonitoringEnabled && supportsShellRuntimeMonitoring(shell);
+function isShellRuntimeMonitoringEnabled(): boolean {
+  return useSettingsStore.getState().shellRuntimeMonitoringEnabled;
+}
+
+// hook running 超时回退：Stop/StopFailure 丢失（hook 脚本失败、bridge 不可达）
+// 时 Tab 会永久停留 running，超时后回退为 none（未知）。阈值取宽（Claude 长任务
+// 可合法运行很久），只兜底明显异常的滞留。
+const HOOK_RUNNING_TIMEOUT_MS = 30 * 60 * 1000;
+const hookRunningTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearHookRunningTimeout(tabId: string) {
+  const timer = hookRunningTimeouts.get(tabId);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  hookRunningTimeouts.delete(tabId);
+}
+
+function scheduleHookRunningTimeout(tabId: string, updatedAt: string) {
+  clearHookRunningTimeout(tabId);
+  const timer = setTimeout(() => {
+    hookRunningTimeouts.delete(tabId);
+    const store = useTerminalStore.getState();
+    if (!store.sessions.some((session) => session.id === tabId)) return;
+    const current = store.tabStatuses[tabId];
+    if (current?.hook !== "running" || current.hookUpdatedAt !== updatedAt) return;
+    useTerminalStore.setState((state) => buildTabStatusUpdate(state, tabId, "hook", "none", new Date().toISOString()));
+  }, HOOK_RUNNING_TIMEOUT_MS);
+  hookRunningTimeouts.set(tabId, timer);
 }
 
 function buildPtyEnvVars(envVars?: Record<string, string> | null, shell?: string | null): Record<string, string> | null {
   const next = { ...(envVars ?? {}) };
-  if (isShellRuntimeMonitoringActive(shell)) {
+  if (isShellRuntimeMonitoringEnabled() && supportsShellRuntimeInjection(shell)) {
     next[SHELL_RUNTIME_MONITORING_ENV] = "1";
   } else {
     delete next[SHELL_RUNTIME_MONITORING_ENV];
@@ -427,7 +469,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   markAttentionInputHandled: (sessionId) => {
     const tabId = resolvePrimaryTabId(sessionId, get().splits);
     if (get().tabStatuses[tabId]?.hook !== "attention") return;
-    set((state) => buildTabStatusUpdate(state, tabId, "hook", "running", new Date().toISOString()));
+    const updatedAt = new Date().toISOString();
+    scheduleHookRunningTimeout(tabId, updatedAt);
+    set((state) => buildTabStatusUpdate(state, tabId, "hook", "running", updatedAt));
   },
 
   handleCliHookEvent: (payload) => {
@@ -436,6 +480,19 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const updatedAt = payload.timestamp ?? new Date().toISOString();
     const status = mapCliHookEvent(payload.event);
     if (!status) return tabId;
+    // 乱序防御：各 hook 事件由独立进程上报，到达顺序不保证；丢弃比已记录
+    // 状态更旧的事件（如 Stop 之后才迟到的 UserPromptSubmit）。
+    const previousAt = get().tabStatuses[tabId]?.hookUpdatedAt;
+    if (previousAt) {
+      const incoming = Date.parse(updatedAt);
+      const existing = Date.parse(previousAt);
+      if (Number.isFinite(incoming) && Number.isFinite(existing) && incoming < existing) return tabId;
+    }
+    if (status === "running") {
+      scheduleHookRunningTimeout(tabId, updatedAt);
+    } else {
+      clearHookRunningTimeout(tabId);
+    }
     set((state) => {
       const next = buildTabStatusUpdate(state, tabId, "hook", status, updatedAt);
       if (status !== "done" && status !== "failed") return next;
@@ -457,10 +514,21 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   handleShellRuntimeEvent: (payload) => {
     const tabId = resolvePrimaryTabId(payload.sessionId, get().splits);
     const session = get().sessions.find((item) => item.id === tabId);
-    if (!session || !isShellRuntimeMonitoringActive(session.shell)) return null;
+    if (!session || !isShellRuntimeMonitoringEnabled()) return null;
+    // 回车猜测只对 cmd 生效：cmd 无法注入 C 序列，输入侧猜测是它唯一的
+    // command_started 信号；其余 shell 由 OSC 133/633/777 驱动，猜测只会误判
+    // （多行输入、TUI 内回车、历史命令均不可靠）。
+    if (payload.origin === "input" && normalizeShellKey(session.shell) !== "cmd") return null;
+    const updatedAt = payload.timestamp ?? new Date().toISOString();
+    if (payload.event === "prompt_shown") {
+      // prompt 重新出现 = 前一条命令已结束。仅在 shell 来源仍是 running 时收口
+      // 为 done，覆盖拿不到 D;exit 的场景（Ctrl+C 中断、cmd 无 exit code）。
+      if (get().tabStatuses[tabId]?.shell !== "running") return tabId;
+      set((state) => buildTabStatusUpdate(state, tabId, "shell", "done", updatedAt));
+      return tabId;
+    }
     const status = mapShellRuntimeEvent(payload.event, payload.exitCode ?? null);
     if (status === "none") return tabId;
-    const updatedAt = payload.timestamp ?? new Date().toISOString();
     set((state) => buildTabStatusUpdate(state, tabId, "shell", status, updatedAt));
     return tabId;
   },

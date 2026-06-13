@@ -2,6 +2,43 @@
 
 ## [V1.0.5] - 2026-06-12
 
+### 终端状态通知准确性优化
+
+- Shell 状态检测升级为标准 OSC 133 shell integration：`command_started` 改由 shell 在命令真正执行时发出（C 序列），不再依赖前端"猜回车"，历史命令（↑+回车）、多行输入、TUI 内回车不再误判。
+- PowerShell/pwsh 注入脚本用 history id 判断是否真的执行了命令：空回车 / prompt 处 Ctrl+C 发不带 exit code 的 `D`，不再误报"已完成"。
+- 前端 OSC 解析重写：支持 OSC 133 / 633（VS Code）/ 777（私有）三种序列、BEL 与 ST 两种终止符、跨 chunk 前缀缓冲；用户使用 oh-my-posh、VS Code shell integration 等自带集成时状态监控不再失效。
+- Shell 覆盖扩展：Git Bash 经 rcfile 注入（PROMPT_COMMAND + PS0）、cmd 经 PROMPT 环境变量注入 133 标记（cmd 无 exit code，不区分成功/失败）；WSL 与 System32 bash 启动器不主动注入，但可识别用户自带的 shell integration 序列。
+- Claude `Notification` hook 增加 matcher 细分：仅 `permission_prompt`（等待审批）与 `idle_prompt`（等待输入）会把 Tab 置为 attention，`auth_success` 等不再干扰。
+- hook running 状态增加 30 分钟超时回退：`Stop` 事件丢失（脚本失败、bridge 不可达）时 Tab 不再永久停留"运行中"。
+- hook 事件按 timestamp 丢弃乱序旧事件（如 `Stop` 之后才迟到的 `UserPromptSubmit`）。
+- hook 上报脚本改用 `curl.exe` 优先（失败回退 `Invoke-RestMethod`），hook 命令加 `-NoProfile`，显著降低每次事件的延迟；安装 hook 时自动清理旧版本注册条目（需在设置页重新安装一次 hook 以生效）。
+
+### 分析看板与用量统计
+
+- 分析看板改造为 ccusage 风格：支持全部 / 日 / 周 / 月 / 年 / 自定义时间范围筛选，并显示最近刷新时间、当前统计范围与加载骨架屏。
+- 后端历史统计扩展 Token 口径：新增 cache read / cache creation、费用估算、未定价 Token、模型级用量聚合，并同步到项目排行、模型排行、来源分布、日趋势与热力图数据。
+- 新增模型价格匹配与费用估算逻辑，支持 Claude、OpenAI GPT / o 系列常见模型，并保留显式 cost 字段优先策略。
+- Codex 历史项目归属改为优先读取 session metadata 中的 cwd，避免按 `sessions/yyyy/mm/dd` 路径错误归类；相关扫描结果增加缓存。
+- 统计查询范围从 180 天扩展到 366 天，并将历史文件 / 索引缓存 TTL 调整为 60 秒，减少分析看板频繁扫描开销。
+
+### 历史会话统计面板
+
+- 历史会话详情新增右侧「统计」面板，可查看会话项目、路径、分支、Token 构成、估算费用、模型信息、上下文使用、工具/扩展调用与当天项目会话数。
+- 历史消息解析新增 input / output / cache creation / cache read Token 字段，前端类型与 Store 归一化逻辑同步扩展。
+
+### 终端实时统计面板
+
+- 终端工具栏新增「统计」面板，按当前 Tab 的项目路径与 CLI 来源自动拉取最近一次会话，复用 Token 构成、费用估算、模型上下文、工具调用与今日项目用量卡片。
+- 最近会话轮询按 `file_path` / `updated_at` 跳过未变化的 jsonl 重解析，支持手动刷新，并在切换 Tab、项目或 CLI 来源时清空旧数据避免串项目。
+
+### 终端输入修复
+
+- IME composition 锚点增加静默光标采样、TUI 边框输入行识别与更多提示符支持，减少 Claude / Codex 重绘时候选框错误锚到尾行。
+
+### 版本发布
+
+- 应用版本同步升级到 1.0.5（npm、Cargo、Tauri 配置）。
+
 ### 云同步自定义远程目录
 
 - WebDAV 配置新增「远程目录」输入框，支持自定义云端存储根目录（默认 `cli-manager`），设备快照子结构 `devices/{device}.json` 保持不变。

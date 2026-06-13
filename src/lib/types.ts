@@ -124,9 +124,34 @@ export interface HistoryMessage {
   role: string;
   content: string;
   timestamp?: string | null;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_tokens?: number;
+}
+
+export interface HistoryToolCount {
+  name: string;
+  count: number;
+}
+
+export interface HistorySessionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  dominant_model?: string | null;
+  context_window?: number | null;
+  last_context_tokens?: number | null;
+  tool_call_count?: number;
+  mcp_calls?: HistoryToolCount[];
+  skill_calls?: HistoryToolCount[];
 }
 
 export interface HistorySessionDetail extends HistorySessionSummary {
+  usage?: HistorySessionUsage;
   messages: HistoryMessage[];
 }
 
@@ -181,12 +206,22 @@ export interface HistoryStatsProjectItem {
   messages: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
 }
 
 export interface HistoryStatsModelItem {
   model: string;
   sessions: number;
   ratio: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
 }
 
 export interface HistoryStatsHeatmapDay {
@@ -203,6 +238,10 @@ export interface HistoryStatsDailySeriesItem {
   messages: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
 }
 
 export interface HistoryStatsSourceItem {
@@ -211,6 +250,10 @@ export interface HistoryStatsSourceItem {
   messages: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
 }
 
 export interface HistoryStatsProjectEfficiencyItem {
@@ -219,6 +262,10 @@ export interface HistoryStatsProjectEfficiencyItem {
   messages: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  unpriced_tokens: number;
   avg_messages_per_session: number;
 }
 
@@ -234,6 +281,10 @@ export interface HistoryStatsPayload {
   total_messages: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  total_cost_usd: number;
+  total_unpriced_tokens: number;
   project_ranking: HistoryStatsProjectItem[];
   model_distribution: HistoryStatsModelItem[];
   heatmap: HistoryStatsHeatmapDay[];

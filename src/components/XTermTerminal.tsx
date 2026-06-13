@@ -21,8 +21,62 @@ const MIN_TERMINAL_COLS = 40;
 const MIN_TERMINAL_ROWS = 8;
 const ACTIVE_WRITE_FRAME_BUDGET = 64 * 1024;
 const SEARCH_HIGHLIGHT_LIMIT = 1000;
+// IME anchor trust thresholds: if no PTY write landed within this window the
+// live buffer cursor is parked at the app's input caret and can be trusted.
+const CURSOR_TRUST_IDLE_MS = 150;
+// After a write burst settles, wait this long before sampling the parked cursor.
+const QUIET_CURSOR_SAMPLE_DELAY_MS = 60;
+// A quiet-cursor sample older than this is stale (viewport may have scrolled).
+const QUIET_CURSOR_MAX_AGE_MS = 5000;
+// Box-drawing glyphs used by TUI input boxes (Claude Code / Codex draw "│ > … │").
+const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏]$/u;
+const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
 import { toast } from "sonner";
 import { logError } from "../lib/logger";
+
+// Shell integration OSC 序列在原始 PTY 流上解析（而非 xterm parser hook）：
+// 后台 Tab 的输出会进入 inactive ring buffer 且可能被截断丢弃，状态事件必须
+// 在丢弃之前提取，否则后台 Tab 不再上报状态。
+// 777 为本应用私有协议（消费后剥离）；133/633 为 FinalTerm / VS Code 标准
+// shell integration 序列（消费后原样放行，xterm 会忽略），借此兼容 oh-my-posh、
+// VS Code shell integration 等用户自带集成。
+const LEGACY_RUNTIME_OSC_PREFIX = "\x1b]777;cli-manager;";
+const INTEGRATION_OSC_PREFIXES = ["\x1b]133;", "\x1b]633;", LEGACY_RUNTIME_OSC_PREFIX];
+const OSC_CARRY_BUFFER_MAX = 8192;
+
+type OscPrefixMatch =
+  | { kind: "match"; prefix: string }
+  | { kind: "partial" }
+  | { kind: "none" };
+
+const matchIntegrationOscPrefix = (text: string, start: number): OscPrefixMatch => {
+  let partial = false;
+  for (const prefix of INTEGRATION_OSC_PREFIXES) {
+    const available = Math.min(prefix.length, text.length - start);
+    if (text.startsWith(prefix.slice(0, available), start)) {
+      if (available === prefix.length) return { kind: "match", prefix };
+      partial = true;
+    }
+  }
+  return partial ? { kind: "partial" } : { kind: "none" };
+};
+
+// 终止符：BEL 或 ST（ESC \）。null 表示序列尚未完整（跨 chunk，需缓冲）。
+type OscTerminator = { index: number; length: number } | { abortAt: number } | null;
+
+const findOscTerminator = (text: string, from: number): OscTerminator => {
+  for (let i = from; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code === 0x07) return { index: i, length: 1 };
+    if (code === 0x1b) {
+      if (i + 1 >= text.length) return null;
+      if (text[i + 1] === "\\") return { index: i, length: 2 };
+      // OSC body 内不应出现裸 ESC，按非法序列放行避免吞掉正常输出
+      return { abortAt: i };
+    }
+  }
+  return null;
+};
 
 interface SearchResultState {
   resultIndex: number;
@@ -102,6 +156,9 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
   const activeWriteQueueRef = useRef<string[]>([]);
   const activeWriteRafRef = useRef<number | null>(null);
   const cursorShowTimerRef = useRef<number | null>(null);
+  const lastTerminalWriteAtRef = useRef(0);
+  const quietCursorCellRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const quietCursorSampleTimerRef = useRef<number | null>(null);
   const INACTIVE_BUFFER_MAX = 256 * 1024;
   const runtimeOscBufferRef = useRef("");
   const terminalScrollbackRows = useSettingsStore((s) => s.terminalScrollbackRows);
@@ -198,8 +255,12 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
     }, 80);
   };
 
-  const handleShellRuntimeOsc = (marker: string) => {
-    const body = marker.slice("\x1b]777;cli-manager;".length, -1);
+  const emitShellRuntimeEvent = (event: ShellRuntimeEventName, exitCode: number | null) => {
+    useTerminalStore.getState().handleShellRuntimeEvent({ sessionId, event, exitCode, origin: "osc" });
+  };
+
+  // 私有 OSC 777：session=<id>;event=<name>[;exit=<code>]
+  const handleLegacyRuntimeOsc = (body: string) => {
     const fields = Object.fromEntries(body.split(";").map((part) => {
       const separator = part.indexOf("=");
       return separator < 0 ? [part, ""] : [part.slice(0, separator), part.slice(separator + 1)];
@@ -208,38 +269,82 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
     const eventName = fields.event;
     if (eventName !== "command_started" && eventName !== "command_finished" && eventName !== "prompt_shown") return;
     const exitCode = fields.exit !== undefined && fields.exit !== "" ? Number(fields.exit) : null;
-    useTerminalStore.getState().handleShellRuntimeEvent({
-      sessionId,
-      event: eventName as ShellRuntimeEventName,
-      exitCode: Number.isFinite(exitCode) ? exitCode : null,
-    });
+    emitShellRuntimeEvent(eventName as ShellRuntimeEventName, Number.isFinite(exitCode) ? exitCode : null);
   };
 
-  const stripShellRuntimeOsc = (text: string) => {
+  // 标准 OSC 133/633：A=prompt 开始，C=命令开始执行，D[;exit]=命令结束。
+  // D 不带 exit code 表示没跑命令（空回车 / prompt 处 Ctrl+C），不改变状态。
+  const handleStandardIntegrationOsc = (body: string) => {
+    const separator = body.indexOf(";");
+    const command = separator < 0 ? body : body.slice(0, separator);
+    const rest = separator < 0 ? "" : body.slice(separator + 1);
+    if (command === "A") {
+      emitShellRuntimeEvent("prompt_shown", null);
+    } else if (command === "C") {
+      emitShellRuntimeEvent("command_started", null);
+    } else if (command === "D") {
+      const exitField = rest.split(";")[0] ?? "";
+      const exitCode = exitField === "" ? null : Number(exitField);
+      emitShellRuntimeEvent("command_finished", Number.isFinite(exitCode) ? exitCode : null);
+    }
+  };
+
+  const processShellIntegrationOsc = (text: string) => {
     const combined = runtimeOscBufferRef.current + text;
     runtimeOscBufferRef.current = "";
     let output = "";
     let cursor = 0;
 
     while (cursor < combined.length) {
-      const start = combined.indexOf("\x1b]777;cli-manager;", cursor);
+      const start = combined.indexOf("\x1b]", cursor);
       if (start < 0) {
-        output += combined.slice(cursor);
+        // 尾部孤立 ESC 可能是下个 chunk 里 "\x1b]" 的前半，留待拼接；
+        // 扣下的字符不会渲染出任何可见内容，显示安全。
+        if (combined.charCodeAt(combined.length - 1) === 0x1b) {
+          output += combined.slice(cursor, combined.length - 1);
+          runtimeOscBufferRef.current = "\x1b";
+        } else {
+          output += combined.slice(cursor);
+        }
         break;
       }
 
-      output += combined.slice(cursor, start);
-      const end = combined.indexOf("\x07", start);
-      if (end < 0) {
+      const matched = matchIntegrationOscPrefix(combined, start);
+      if (matched.kind === "none") {
+        output += combined.slice(cursor, start + 2);
+        cursor = start + 2;
+        continue;
+      }
+      if (matched.kind === "partial") {
+        output += combined.slice(cursor, start);
         runtimeOscBufferRef.current = combined.slice(start);
         break;
       }
 
-      handleShellRuntimeOsc(combined.slice(start, end + 1));
-      cursor = end + 1;
+      const terminator = findOscTerminator(combined, start + matched.prefix.length);
+      if (terminator === null) {
+        output += combined.slice(cursor, start);
+        runtimeOscBufferRef.current = combined.slice(start);
+        break;
+      }
+      if ("abortAt" in terminator) {
+        output += combined.slice(cursor, terminator.abortAt);
+        cursor = terminator.abortAt;
+        continue;
+      }
+
+      const body = combined.slice(start + matched.prefix.length, terminator.index);
+      const sequenceEnd = terminator.index + terminator.length;
+      if (matched.prefix === LEGACY_RUNTIME_OSC_PREFIX) {
+        handleLegacyRuntimeOsc(body);
+      } else {
+        handleStandardIntegrationOsc(body);
+        output += combined.slice(start, sequenceEnd);
+      }
+      cursor = sequenceEnd;
     }
 
-    if (runtimeOscBufferRef.current.length > 8192) {
+    if (runtimeOscBufferRef.current.length > OSC_CARRY_BUFFER_MAX) {
       runtimeOscBufferRef.current = "";
     }
 
@@ -267,11 +372,34 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
     return processed + text.slice(lastIndex);
   };
 
+  // TUI apps (Claude Code/Codex) park the hardware cursor at their input caret
+  // between redraw frames. Record write activity and, once a burst settles,
+  // sample that parked position — it is the trustworthy IME anchor when
+  // compositionstart fires mid-redraw and the live cursor sits on a tail line.
+  const noteTerminalWriteActivity = () => {
+    lastTerminalWriteAtRef.current = performance.now();
+    if (quietCursorSampleTimerRef.current !== null) {
+      window.clearTimeout(quietCursorSampleTimerRef.current);
+    }
+    quietCursorSampleTimerRef.current = window.setTimeout(() => {
+      quietCursorSampleTimerRef.current = null;
+      const terminal = terminalRef.current;
+      if (!terminal || isComposingRef.current) return;
+      const buffer = terminal.buffer.active;
+      quietCursorCellRef.current = {
+        x: Math.min(Math.max(0, buffer.cursorX), Math.max(0, terminal.cols - 1)),
+        y: Math.min(Math.max(0, buffer.cursorY), Math.max(0, terminal.rows - 1)),
+        at: performance.now(),
+      };
+    }, QUIET_CURSOR_SAMPLE_DELAY_MS);
+  };
+
   const flushActiveWriteQueue = () => {
     activeWriteRafRef.current = null;
     if (!isActiveRef.current || activeWriteQueueRef.current.length === 0) return;
     const terminal = terminalRef.current;
     if (!terminal) return;
+    noteTerminalWriteActivity();
 
     let budget = ACTIVE_WRITE_FRAME_BUDGET;
     while (budget > 0 && activeWriteQueueRef.current.length > 0) {
@@ -517,7 +645,9 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
         const cmd = inputBuffer.current;
         if (cmd.trim()) {
           addCommand(getProjectId(), cmd);
-          useTerminalStore.getState().handleShellRuntimeEvent({ sessionId, event: "command_started" });
+          // 回车猜测仅作为 cmd 的 command_started 信号（store 按 origin 过滤）；
+          // 其余 shell 由 shell integration OSC 序列驱动，猜测会误判。
+          useTerminalStore.getState().handleShellRuntimeEvent({ sessionId, event: "command_started", origin: "input" });
         }
         inputBuffer.current = "";
       } else if (data === "\x7f" || data === "\b") {
@@ -595,7 +725,7 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
       for (let i = 0; i < binaryString.length; i += 1) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      const text = stripShellRuntimeOsc(textDecoder.decode(bytes, { stream: true }));
+      const text = processShellIntegrationOsc(textDecoder.decode(bytes, { stream: true }));
       if (!text) return;
       if (isActiveRef.current) {
         pendingChunks.push(text);
@@ -686,7 +816,7 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
 
     const resolveCompositionAnchorCell = () => {
       const buffer = terminal.buffer.active;
-      const inputPromptPattern = /^(?:[>$#\u203a]|PS(?:\s|>))/u;
+      const inputPromptPattern = /^(?:[>$#\u203a\u276f\u00bb\u2023]|PS(?:\s|>))/u;
       const clampX = (x: number) => Math.min(Math.max(0, x), Math.max(0, terminal.cols - 1));
       const clampY = (y: number) => Math.min(Math.max(0, y), Math.max(0, terminal.rows - 1));
       const cursor = {
@@ -698,20 +828,37 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
         const line = buffer.getLine(buffer.viewportY + row);
         if (!line) return null;
         const text = line.translateToString(true);
-        const trimmed = text.trimStart();
+        // Strip leading box-drawing borders so Claude Code/Codex bordered input
+        // rows are recognized as input rows, not just bare "> " prompts.
+        const trimmed = text.trimStart().replace(TUI_BORDER_PREFIX_PATTERN, "");
         if (!trimmed || !inputPromptPattern.test(trimmed)) return null;
 
         for (let x = Math.min(terminal.cols, line.length) - 1; x >= 0; x -= 1) {
           const cell = line.getCell(x);
-          if (!cell || !cell.getChars().trim()) continue;
+          const chars = cell?.getChars().trim();
+          // Skip blanks and the right border glyph; anchor after the typed text.
+          if (!cell || !chars || TUI_BORDER_CHAR_PATTERN.test(chars)) continue;
           return { x: clampX(x + Math.max(1, cell.getWidth())), y: row };
         }
 
         return { x: clampX(text.length + 1), y: row };
       };
 
+      const now = performance.now();
+      // Terminal quiet: the app has parked the cursor where it accepts input.
+      if (now - lastTerminalWriteAtRef.current > CURSOR_TRUST_IDLE_MS) return cursor;
+
+      // Output streaming, but the cursor sits on an input-looking row; trust it.
       if (getInputAnchorCell(cursor.y)) return cursor;
 
+      // Cursor likely caught mid-redraw on a tail/status line. Reuse the parked
+      // position sampled after the previous write burst settled.
+      const quietCell = quietCursorCellRef.current;
+      if (quietCell && now - quietCell.at <= QUIET_CURSOR_MAX_AGE_MS) {
+        return { x: clampX(quietCell.x), y: clampY(quietCell.y) };
+      }
+
+      // Last resort: nearest row that looks like an input prompt.
       for (let offset = 1; offset < terminal.rows; offset += 1) {
         const upperRow = cursor.y - offset;
         if (upperRow >= 0) {
@@ -915,6 +1062,10 @@ export function XTermTerminal({ sessionId, isActive = true, fontSize = 14, fontF
       if (compositionAnchorTimeoutId !== null) {
         window.clearTimeout(compositionAnchorTimeoutId);
         compositionAnchorTimeoutId = null;
+      }
+      if (quietCursorSampleTimerRef.current !== null) {
+        window.clearTimeout(quietCursorSampleTimerRef.current);
+        quietCursorSampleTimerRef.current = null;
       }
       if (writeRafId !== null) {
         cancelAnimationFrame(writeRafId);

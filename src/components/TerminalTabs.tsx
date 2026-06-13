@@ -25,8 +25,9 @@ import { SplitTerminalView } from "./SplitTerminalView";
 import { XTermTerminal } from "./XTermTerminal";
 import { CommandTemplatePanel } from "./CommandTemplatePanel";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
+import { TerminalStatsPanel } from "./terminal/TerminalStatsPanel";
 import { openWindowsTerminal } from "../lib/externalTerminal";
-import { Terminal, Plus, Search, X, Maximize2, Minimize2, ChevronDown, ChevronRight } from "./icons";
+import { Terminal, Plus, Search, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3 } from "./icons";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
 import type { HistorySourceFilter, Project, TerminalSession } from "../lib/types";
@@ -1030,6 +1031,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   const [splitPicker, setSplitPicker] = useState<SplitPickerState>(null);
   const [activeDragSessionId, setActiveDragSessionId] = useState<string | null>(null);
   const [activeDropPreview, setActiveDropPreview] = useState<PaneDropPreview>(null);
+  const [statsPanelOpen, setStatsPanelOpen] = useState(false);
   const splitPickerOpenFrameRef = useRef<number | null>(null);
   const splitPickerOpenTimerRef = useRef<number | null>(null);
   const splitPickerOutsideGuardUntilRef = useRef(0);
@@ -1270,6 +1272,21 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
           {showToolbarText && <span>会话历史</span>}
         </button>
       )}
+      <button
+        onClick={() => setStatsPanelOpen((prev) => !prev)}
+        className={
+          showToolbarText
+            ? `ui-flat-action ui-toolbar-button ${statsPanelOpen ? "ui-primary-action" : ""}`
+            : "ui-focus-ring ui-icon-action"
+        }
+        data-active={statsPanelOpen ? "true" : "false"}
+        title={statsPanelOpen ? "关闭统计面板" : "打开统计面板"}
+        aria-label={statsPanelOpen ? "关闭统计面板" : "打开统计面板"}
+        aria-pressed={statsPanelOpen}
+      >
+        <BarChart3 size={13} strokeWidth={1.8} />
+        {showToolbarText && <span>统计</span>}
+      </button>
     </div>
   ), [
     fullscreen,
@@ -1279,6 +1296,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     onToggleFullscreen,
     sessionHistoryShortcut,
     showToolbarText,
+    statsPanelOpen,
     terminalToolbarVisibility.commandHistory,
     terminalToolbarVisibility.fullscreen,
     terminalToolbarVisibility.sessionHistory,
@@ -1380,42 +1398,45 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
           </div>
         )}
         <div
-          className="ui-terminal-well absolute inset-0 min-h-0"
+          className="ui-terminal-well absolute inset-0 min-h-0 flex"
           data-terminal-mode={terminalThemeMode}
-          style={{ display: historyActive ? "none" : "block" }}
+          style={{ display: historyActive ? "none" : "flex" }}
         >
-          {paneTree && sessions.length > 0 ? (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={terminalTabCollisionDetection}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-              onDragCancel={clearDragState}
-              onDragEnd={handleDragEnd}
-            >
-              <SplitTerminalView node={paneTree} renderLeaf={renderLeaf} />
-              <DragOverlay dropAnimation={null}>
-                {activeDragSession ? (
-                  <DragOverlayTab
-                    title={activeDragSession.title}
-                    notification={tabNotifications[activeDragSession.id] ?? "none"}
-                    statusUpdatedAt={tabStatusDetails[activeDragSession.id]?.updatedAt ?? null}
-                  />
-                ) : null}
-              </DragOverlay>
-            </DndContext>
-          ) : null}
-          {sessions.length === 0 && !useExternalTerminal && (
-            <div className="flex h-full items-center justify-center">
-              <EmptyState
-                icon={<Terminal size={40} strokeWidth={1} />}
-                title="无活跃终端"
-                description="Ctrl+Shift+T 新建终端，或从左侧项目列表双击启动"
-                tone="inverse"
-                action={{ label: "打开终端", onClick: handleNewTab }}
-              />
-            </div>
-          )}
+          <div className="flex-1 min-h-0 min-w-0">
+            {paneTree && sessions.length > 0 ? (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={terminalTabCollisionDetection}
+                onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
+                onDragCancel={clearDragState}
+                onDragEnd={handleDragEnd}
+              >
+                <SplitTerminalView node={paneTree} renderLeaf={renderLeaf} />
+                <DragOverlay dropAnimation={null}>
+                  {activeDragSession ? (
+                    <DragOverlayTab
+                      title={activeDragSession.title}
+                      notification={tabNotifications[activeDragSession.id] ?? "none"}
+                      statusUpdatedAt={tabStatusDetails[activeDragSession.id]?.updatedAt ?? null}
+                    />
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            ) : null}
+            {sessions.length === 0 && !useExternalTerminal && (
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
+                  icon={<Terminal size={40} strokeWidth={1} />}
+                  title="无活跃终端"
+                  description="Ctrl+Shift+T 新建终端，或从左侧项目列表双击启动"
+                  tone="inverse"
+                  action={{ label: "打开终端", onClick: handleNewTab }}
+                />
+              </div>
+            )}
+          </div>
+          <TerminalStatsPanel activeSessionId={activeSessionId} open={statsPanelOpen} />
         </div>
       </div>
     </div>

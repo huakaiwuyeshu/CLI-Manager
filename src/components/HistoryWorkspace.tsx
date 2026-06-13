@@ -8,6 +8,7 @@ import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { HistoryListPane } from "./history/HistoryListPane";
 import { SessionDetailPane } from "./history/SessionDetailPane";
+import { SessionStatsPanel } from "./history/SessionStatsPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { toGroupLabel, type TimeGroupLabel } from "./history/historyViewUtils";
 
@@ -82,6 +83,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_PAGE_SIZE);
   const [debouncedSessionQuery, setDebouncedSessionQuery] = useState(sessionQuery);
   const [deleteTarget, setDeleteTarget] = useState<HistorySessionView | null>(null);
+  const [statsPanelOpen, setStatsPanelOpen] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSessionQuery(sessionQuery), 150);
@@ -463,43 +465,53 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
         ref={(el) => {
           setDiffContainer(el);
         }}
-        className="ui-history-detail relative grid min-h-0 min-w-0 flex-1 grid-rows-[auto_1fr] overflow-hidden"
+        className="ui-history-detail relative flex min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        <SessionDetailPane
+        <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_1fr] overflow-hidden">
+          <SessionDetailPane
+            activeView={activeView}
+            activeSession={activeSession}
+            loadingSessionDetail={loadingSessionDetail}
+            aliasDraft={aliasDraft}
+            tagsDraft={tagsDraft}
+            sessionQuery={sessionQuery}
+            matchIndices={matchIndices}
+            matchCursor={matchCursor}
+            focusedMessageIndex={focusedMessageIndex}
+            focusedMessageSeq={focusedMessageSeq}
+            visibleMessages={visibleMessages}
+            visibleMessageCount={visibleMessageCount}
+            hasMoreMessages={hasMoreMessages}
+            totalMessageCount={activeSession?.messages.length ?? 0}
+            messageListRef={messageListRef}
+            sessionSearchRef={sessionSearchRef}
+            messageRefs={messageRefs}
+            statsPanelOpen={statsPanelOpen}
+            onMessageListScroll={handleMessageListScroll}
+            onAliasDraftChange={setAliasDraft}
+            onTagsDraftChange={setTagsDraft}
+            onSessionQueryChange={setSessionQuery}
+            onSaveMeta={() => {
+              void saveMeta();
+            }}
+            onJumpPrev={jumpPrev}
+            onJumpNext={jumpNext}
+            onOpenPrompt={() => setPromptOpen(true)}
+            onOpenDiff={() => setDiffOpen(true)}
+            onToggleStar={() => {
+              void toggleStar();
+            }}
+            onLoadMoreMessages={() =>
+              setVisibleMessageCount((prev) => Math.min(activeSession?.messages.length ?? 0, prev + MESSAGE_PAGE_SIZE))
+            }
+            onToggleStatsPanel={() => setStatsPanelOpen((prev) => !prev)}
+          />
+        </div>
+
+        <SessionStatsPanel
           activeView={activeView}
           activeSession={activeSession}
-          loadingSessionDetail={loadingSessionDetail}
-          aliasDraft={aliasDraft}
-          tagsDraft={tagsDraft}
-          sessionQuery={sessionQuery}
-          matchIndices={matchIndices}
-          matchCursor={matchCursor}
-          focusedMessageIndex={focusedMessageIndex}
-          focusedMessageSeq={focusedMessageSeq}
-          visibleMessages={visibleMessages}
-          visibleMessageCount={visibleMessageCount}
-          hasMoreMessages={hasMoreMessages}
-          totalMessageCount={activeSession?.messages.length ?? 0}
-          messageListRef={messageListRef}
-          sessionSearchRef={sessionSearchRef}
-          messageRefs={messageRefs}
-          onMessageListScroll={handleMessageListScroll}
-          onAliasDraftChange={setAliasDraft}
-          onTagsDraftChange={setTagsDraft}
-          onSessionQueryChange={setSessionQuery}
-          onSaveMeta={() => {
-            void saveMeta();
-          }}
-          onJumpPrev={jumpPrev}
-          onJumpNext={jumpNext}
-          onOpenPrompt={() => setPromptOpen(true)}
-          onOpenDiff={() => setDiffOpen(true)}
-          onToggleStar={() => {
-            void toggleStar();
-          }}
-          onLoadMoreMessages={() =>
-            setVisibleMessageCount((prev) => Math.min(activeSession?.messages.length ?? 0, prev + MESSAGE_PAGE_SIZE))
-          }
+          open={statsPanelOpen}
         />
 
         <PromptLibrary

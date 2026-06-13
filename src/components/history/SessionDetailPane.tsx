@@ -1,5 +1,5 @@
 ﻿import { useVirtualizer } from "@tanstack/react-virtual";
-import { BookCopy, Copy, GitCompare, Star } from "lucide-react";
+import { BookCopy, Copy, GitCompare, Star, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import type { HistoryMessage, HistorySessionDetail, HistorySessionView } from "../../lib/types";
@@ -27,6 +27,7 @@ interface SessionDetailPaneProps {
   messageListRef: RefObject<HTMLDivElement | null>;
   sessionSearchRef: RefObject<HTMLInputElement | null>;
   messageRefs: RefObject<Record<number, HTMLDivElement | null>>;
+  statsPanelOpen: boolean;
   onMessageListScroll: () => void;
   onAliasDraftChange: (value: string) => void;
   onTagsDraftChange: (value: string) => void;
@@ -38,6 +39,7 @@ interface SessionDetailPaneProps {
   onOpenDiff: () => void;
   onToggleStar: () => void;
   onLoadMoreMessages: () => void;
+  onToggleStatsPanel: () => void;
 }
 
 export function SessionDetailPane({
@@ -58,6 +60,7 @@ export function SessionDetailPane({
   messageListRef,
   sessionSearchRef,
   messageRefs,
+  statsPanelOpen,
   onMessageListScroll,
   onAliasDraftChange,
   onTagsDraftChange,
@@ -69,6 +72,7 @@ export function SessionDetailPane({
   onOpenDiff,
   onToggleStar,
   onLoadMoreMessages,
+  onToggleStatsPanel,
 }: SessionDetailPaneProps) {
   // matchIndices.includes(idx) 在 visibleMessages.map 内对每个可见消息做 O(N) 扫描，
   // 当匹配数 N 和可见消息数 M 都达到几百时累计 O(N·M)。改 Set 后是 O(1) lookup。
@@ -96,12 +100,25 @@ export function SessionDetailPane({
 
   if (!activeView) {
     return (
-      <div className="row-span-2 flex min-h-0 items-center justify-center">
-        <EmptyState
-          icon={<BookCopy size={34} strokeWidth={1.5} />}
-          title="未选择会话"
-          description="从左侧选择会话查看详情"
-        />
+      <div className="row-span-2 flex min-h-0 flex-col">
+        <div className="flex shrink-0 justify-end p-2">
+          <button
+            onClick={onToggleStatsPanel}
+            aria-label={statsPanelOpen ? "收起统计面板" : "展开统计面板"}
+            className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+            title={statsPanelOpen ? "收起统计" : "展开统计"}
+          >
+            {statsPanelOpen ? <PanelRightClose size={12} /> : <PanelRightOpen size={12} />}
+            统计
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <EmptyState
+            icon={<BookCopy size={34} strokeWidth={1.5} />}
+            title="未选择会话"
+            description="从左侧选择会话查看详情"
+          />
+        </div>
       </div>
     );
   }
@@ -152,6 +169,15 @@ export function SessionDetailPane({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={onToggleStatsPanel}
+              aria-label={statsPanelOpen ? "收起统计面板" : "展开统计面板"}
+              className="ui-flat-action ui-toolbar-button ui-toolbar-button-compact"
+              title={statsPanelOpen ? "收起统计" : "展开统计"}
+            >
+              {statsPanelOpen ? <PanelRightClose size={12} /> : <PanelRightOpen size={12} />}
+              统计
+            </button>
             <button
               onClick={onOpenPrompt}
               aria-label="打开历史 Prompt 库"
