@@ -284,6 +284,7 @@ pub fn run() {
             commands::logging::set_debug_logging,
             commands::fs::check_paths_exist,
             commands::shell::open_windows_terminal,
+            commands::shell::open_folder_in_explorer,
             commands::history::history_list_sessions,
             commands::history::history_get_session,
             commands::history::history_delete_session,
@@ -316,6 +317,7 @@ pub fn run() {
             commands::ccswitch::ccswitch_apply_provider,
             commands::ccswitch::ccswitch_reset_project_provider,
             commands::ccswitch::ccswitch_probe_projects,
+            commands::git::get_current_git_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

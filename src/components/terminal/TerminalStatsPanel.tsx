@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2, GitBranch, RefreshCw } from "lucide-react";
+import { FolderGit2, GitBranch, RefreshCw, FolderOpen } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import type { HistorySessionDetail, HistorySource } from "../../lib/types";
 import {
   fetchLatestProjectSessionDetail,
@@ -47,10 +48,52 @@ function inferHistorySource(haystack: string): HistorySource | null {
   return null;
 }
 
-function SessionInfoCard({ session, projectName, projectPath }: {
+/**
+ * 实时查询项目当前 git 分支
+ */
+function useCurrentGitBranch(projectPath: string | null, enabled: boolean): string | null {
+  const [branch, setBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !projectPath) {
+      setBranch(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchBranch = async () => {
+      try {
+        const result = await invoke<string | null>("get_current_git_branch", { path: projectPath });
+        if (!cancelled) {
+          setBranch(result);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBranch(null);
+        }
+      }
+    };
+
+    void fetchBranch();
+    const timer = window.setInterval(() => {
+      void fetchBranch();
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [projectPath, enabled]);
+
+  return branch;
+}
+
+function SessionInfoCard({ session, projectName, projectPath, currentBranch }: {
   session: HistorySessionDetail;
   projectName: string;
   projectPath: string;
+  currentBranch: string | null;
 }) {
   const roleCounts = useMemo(() => {
     const counts: Record<string, number> = { user: 0, assistant: 0, tool: 0 };
@@ -62,7 +105,15 @@ function SessionInfoCard({ session, projectName, projectPath }: {
   }, [session.messages]);
 
   const duration = formatDuration(session.updated_at - session.created_at);
-  const branch = session.branch || "—";
+  // 实时统计面板优先显示当前实时分支，回退到会话记录的静态分支
+  const branch = currentBranch ?? session.branch ?? "—";
+
+  // 双击打开项目文件夹
+  const handleOpenFolder = useCallback(() => {
+    void invoke("open_folder_in_explorer", { path: projectPath }).catch((err) => {
+      console.error("Failed to open folder:", err);
+    });
+  }, [projectPath]);
 
   return (
     <StatCard
@@ -72,8 +123,15 @@ function SessionInfoCard({ session, projectName, projectPath }: {
         <HeaderPill color={SOURCE_COLORS[session.source] ?? TERM.cyan}>{session.source}</HeaderPill>
       }
     >
-      <Row label="项目" value={projectName} title={projectName} />
-      <Row label="路径" value={truncatePath(projectPath, 3)} color={TERM.dim} title={projectPath} />
+      <Row icon={<FolderGit2 size={10} />} label="项目" value={projectName} title={projectName} />
+      <Row
+        icon={<FolderOpen size={10} />}
+        label="路径"
+        value={truncatePath(projectPath, 3)}
+        color={TERM.dim}
+        title={`${projectPath}\n\n双击打开文件夹`}
+        onDoubleClick={handleOpenFolder}
+      />
       <div className="flex items-baseline justify-between gap-2 text-[11px] leading-5">
         <span className="flex shrink-0 items-center gap-1" style={{ color: TERM.dim }}>
           <GitBranch size={10} />
@@ -161,6 +219,7 @@ export function TerminalStatsPanel({ activeSessionId, open }: TerminalStatsPanel
   const awaitingSessionId = Boolean(sourceFilter) && anyCliBound && !terminalSession?.cliSessionId;
 
   // 轮询该项目最近一次 CLI 会话：updated_at 未变化时跳过 jsonl 重解析
+  // 多窗口隔离：传入 activeSessionId 作为 tabId，确保不同终端窗口的数据独立
   useEffect(() => {
     if (!open || !projectPath || awaitingSessionId) {
       lastPathRef.current = null;
@@ -169,8 +228,9 @@ export function TerminalStatsPanel({ activeSessionId, open }: TerminalStatsPanel
       if (awaitingSessionId) setUpdatedAt(null);
       return;
     }
-    // 切换 Tab（项目路径或 CLI 来源变化）时立即清空旧数据，避免短暂展示错误的模型/上下文
-    const scopeKey = `${projectPath}|${sourceFilter ?? ""}|${terminalSession?.cliSessionId ?? ""}`;
+    // 切换 Tab（项目路径、CLI 来源或 Tab ID 变化）时立即清空旧数据，避免短暂展示错误的模型/上下文
+    // activeSessionId 加入 scopeKey，确保切换 Tab 时即使同项目、同 CLI 来源也会重新查询
+    const scopeKey = `${activeSessionId}|${projectPath}|${sourceFilter ?? ""}|${terminalSession?.cliSessionId ?? ""}`;
     if (lastPathRef.current !== scopeKey) {
       lastPathRef.current = scopeKey;
       latestRef.current = null;
@@ -185,7 +245,13 @@ export function TerminalStatsPanel({ activeSessionId, open }: TerminalStatsPanel
       const prev = current
         ? { filePath: current.file_path, updatedAt: current.updated_at }
         : undefined;
-      const result = await fetchLatestProjectSessionDetail(projectPath, prev, sourceFilter, terminalSession?.cliSessionId);
+      const result = await fetchLatestProjectSessionDetail(
+        projectPath,
+        prev,
+        sourceFilter,
+        terminalSession?.cliSessionId,
+        activeSessionId // 传入 tabId 用于多窗口隔离
+      );
       if (cancelled) return;
       if (result !== "unchanged") {
         latestRef.current = result;
@@ -244,6 +310,9 @@ export function TerminalStatsPanel({ activeSessionId, open }: TerminalStatsPanel
     setRefreshSeq((prev) => prev + 1);
   }, []);
 
+  // 实时查询当前项目的 git 分支
+  const currentBranch = useCurrentGitBranch(projectPath, open && !awaitingSessionId);
+
   if (!open) return null;
 
   const projectName = project?.name || latestSession?.project_key || "—";
@@ -285,7 +354,7 @@ export function TerminalStatsPanel({ activeSessionId, open }: TerminalStatsPanel
         <EmptyHint text={`该项目暂无 ${sourceFilter ?? "CLI"} 会话记录`} />
       ) : (
         <>
-          <SessionInfoCard session={latestSession} projectName={projectName} projectPath={projectPath} />
+          <SessionInfoCard session={latestSession} projectName={projectName} projectPath={projectPath} currentBranch={currentBranch} />
           <TokenUsageCard stats={stats} />
           <TrendCard session={latestSession} />
           <ModelContextCard stats={stats} session={latestSession} />

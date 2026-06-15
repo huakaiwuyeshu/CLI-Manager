@@ -208,18 +208,28 @@ export function Row({
   value,
   color = TERM.fg,
   title,
+  icon,
+  onDoubleClick,
 }: {
   label: string;
   value: string;
   color?: string;
   title?: string;
+  icon?: React.ReactNode;
+  onDoubleClick?: () => void;
 }) {
   return (
     <div className="flex items-baseline justify-between gap-2 text-[11px] leading-5">
-      <span className="shrink-0" style={{ color: TERM.dim }}>
+      <span className="flex shrink-0 items-center gap-1" style={{ color: TERM.dim }}>
+        {icon}
         {label}
       </span>
-      <span className="truncate text-right" style={{ color }} title={title ?? value}>
+      <span
+        className={`truncate text-right ${onDoubleClick ? "cursor-pointer hover:underline" : ""}`}
+        style={{ color }}
+        title={title ?? value}
+        onDoubleClick={onDoubleClick}
+      >
         {value}
       </span>
     </div>

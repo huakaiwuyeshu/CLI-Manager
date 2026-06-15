@@ -132,3 +132,44 @@ pub async fn open_windows_terminal(tabs: Vec<ExternalTab>) -> Result<(), String>
 
     Ok(())
 }
+
+/// 在系统文件管理器中打开指定路径
+#[tauri::command]
+pub async fn open_folder_in_explorer(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
+
+    // 检查路径是否存在
+    if !path_buf.exists() {
+        return Err(format!("路径不存在: {}", path));
+    }
+
+    // Windows 上使用 explorer 打开
+    #[cfg(target_os = "windows")]
+    {
+        let result = if path_buf.is_file() {
+            // 如果是文件，使用 /select 参数在文件管理器中选中该文件
+            Command::new("explorer")
+                .args(&["/select,", &path])
+                .spawn()
+        } else {
+            // 如果是目录，直接打开
+            Command::new("explorer")
+                .arg(&path)
+                .spawn()
+        };
+
+        result.map_err(|e| {
+            error!("Failed to open folder in explorer: {}", e);
+            format!("无法打开文件夹: {}", e)
+        })?;
+    }
+
+    // 非 Windows 平台的占位实现
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("当前平台不支持打开文件夹".to_string());
+    }
+
+    info!("Opened folder in explorer: {}", path);
+    Ok(())
+}
