@@ -7,19 +7,10 @@ import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } 
 import { getMaterialFileIcon, getMaterialFolderIcon } from "@baybreezy/file-extension-icon";
 import { StageCheckbox, type StageState } from "./StageCheckbox";
 
-// 收集某节点下所有文件变更（含子目录），用于目录级三态暂存框与批量勾选。
+// 收集某节点下所有文件变更（含子目录），用于目录级三态勾选框与批量操作。
 function collectFileChanges(node: GitTreeNode): GitFileChange[] {
   if (node.type === "file") return node.change ? [node.change] : [];
   return (node.children ?? []).flatMap(collectFileChanges);
-}
-
-// 由一组文件的暂存状态推导三态。
-function aggregateStageState(files: GitFileChange[]): StageState {
-  if (files.length === 0) return "unchecked";
-  const staged = files.filter((f) => f.staged).length;
-  if (staged === 0) return "unchecked";
-  if (staged === files.length) return "checked";
-  return "indeterminate";
 }
 
 interface GitTreeNodeProps {
@@ -33,7 +24,7 @@ interface GitTreeNodeProps {
 }
 
 export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onRequestDiscard, onToggleStage, onToggleStagePaths }: GitTreeNodeProps) {
-  const { collapsedDirs, toggleDir } = useGitStore();
+  const { collapsedDirs, toggleDir, selectedUntracked, toggleUntrackedSelection, deselectedAdded, toggleAddedDeselection, setAddedDeselection } = useGitStore();
   // 折叠 key 按分区前缀隔离：已跟踪树与未跟踪树同名目录互不影响。
   const collapseKey = `${treeId}:${node.path}`;
   const isCollapsed = collapsedDirs.has(collapseKey);
@@ -70,12 +61,18 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
 
     // 已跟踪文件才可回滚；未跟踪(U/??)排除。
     const canDiscard = !!node.change && node.change.status !== "U" && node.change.status !== "??";
+    // 未跟踪文件：复选框走前端「选中」态，勾选不立即 git add，提交时再统一 add。
+    const isUntracked = node.change?.status === "U" || node.change?.status === "??";
+    const untrackedSelected = isUntracked && selectedUntracked.has(node.path);
+    // 已加入跟踪(A)文件：复选框为「本次是否提交」选择态，取消勾选不会 unstage（保持跟踪）。
+    const isAdded = node.change?.status === "A";
+    const addedSelected = isAdded && !deselectedAdded.has(node.path);
 
     return (
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            className="group flex items-center gap-1.5 rounded py-0.5 px-1 cursor-pointer text-[11px]"
+            className="group flex items-center gap-1.5 rounded py-0.5 px-1 cursor-pointer text-[13px]"
             style={{ paddingLeft: indentPx, backgroundColor: "transparent" }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = `${TERM.cyan}20`)}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
@@ -84,11 +81,36 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
             {/* 占位对齐：文件行无 chevron，补一个等宽占位让复选框列与目录行对齐 */}
             <span className="inline-flex shrink-0" style={{ width: 10 }} aria-hidden="true" />
             <StageCheckbox
-              state={node.change?.staged ? "checked" : "unchecked"}
+              state={
+                isUntracked
+                  ? untrackedSelected
+                    ? "checked"
+                    : "unchecked"
+                  : isAdded
+                    ? addedSelected
+                      ? "checked"
+                      : "unchecked"
+                    : node.change?.staged
+                      ? "checked"
+                      : "unchecked"
+              }
               onToggle={() => {
-                if (node.change) onToggleStage(node.path, node.change.staged);
+                if (!node.change) return;
+                if (isUntracked) toggleUntrackedSelection([node.path]);
+                else if (isAdded) toggleAddedDeselection([node.path]);
+                else onToggleStage(node.path, node.change.staged);
               }}
-              title={node.change?.staged ? "取消暂存（移出暂存区）" : "暂存此文件（git add）"}
+              title={
+                isUntracked
+                  ? "选中以在提交时纳入（提交时才执行 git add）"
+                  : isAdded
+                    ? addedSelected
+                      ? "取消勾选（保持跟踪，本次提交不包含）"
+                      : "勾选以本次提交包含"
+                    : node.change?.staged
+                      ? "取消暂存（移出暂存区）"
+                      : "暂存此文件（git add）"
+              }
             />
             <img
               src={iconDataUri}
@@ -117,7 +139,7 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
               <>
                 <GitStatusIcon status={node.change.status} size={12} />
                 {(node.change.added > 0 || node.change.deleted > 0) && (
-                  <span className="text-[10px]" style={{ color: TERM.dim }}>
+                  <span className="text-[11px]" style={{ color: TERM.dim }}>
                     {node.change.added > 0 && (
                       <span style={{ color: TERM.green }}>+{node.change.added}</span>
                     )}
@@ -132,15 +154,28 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem
-            className="flex items-center gap-2"
-            onSelect={() => {
-              if (node.change) onToggleStage(node.path, node.change.staged);
-            }}
-          >
-            {node.change?.staged ? <Minus size={12} /> : <Check size={12} />}
-            {node.change?.staged ? "取消暂存" : "暂存（git add）"}
-          </ContextMenuItem>
+          {isUntracked ? (
+            // 未跟踪文件右键：真实「加入跟踪（git add）」立即操作（与复选框的「选中」区分开）。
+            <ContextMenuItem
+              className="flex items-center gap-2"
+              onSelect={() => {
+                if (node.change) onToggleStage(node.path, false);
+              }}
+            >
+              <Check size={12} />
+              加入跟踪（git add）
+            </ContextMenuItem>
+          ) : (
+            <ContextMenuItem
+              className="flex items-center gap-2"
+              onSelect={() => {
+                if (node.change) onToggleStage(node.path, node.change.staged);
+              }}
+            >
+              {node.change?.staged ? <Minus size={12} /> : <Check size={12} />}
+              {node.change?.staged ? "取消暂存" : "暂存（git add）"}
+            </ContextMenuItem>
+          )}
           <ContextMenuItem
             danger
             disabled={!canDiscard}
@@ -160,16 +195,49 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
   // 目录节点 - 使用 Material Design 文件夹图标
   const hasChildren = node.children && node.children.length > 0;
   const folderIconDataUri = getMaterialFolderIcon(node.name, !isCollapsed);
-  // 目录三态暂存：聚合子孙文件的暂存状态
   const dirFiles = collectFileChanges(node);
-  const dirStageState = aggregateStageState(dirFiles);
+  // 目录下全部为未跟踪文件时，复选框走「选中」态（与文件行一致）。
+  const dirAllUntracked =
+    dirFiles.length > 0 && dirFiles.every((f) => f.status === "U" || f.status === "??");
+  const dirSelectedCount = dirAllUntracked
+    ? dirFiles.filter((f) => selectedUntracked.has(f.path)).length
+    : 0;
+  const dirUntrackedState: StageState =
+    dirSelectedCount === 0 ? "unchecked" : dirSelectedCount === dirFiles.length ? "checked" : "indeterminate";
+
+  // 「改动」树目录：M/D/R 走真实暂存态，A 文件走「本次是否提交」选择态（取消不 unstage，保持跟踪）。
+  const dirModFiles = dirFiles.filter((f) => f.status !== "A" && f.status !== "U" && f.status !== "??");
+  const dirAddedFiles = dirFiles.filter((f) => f.status === "A");
+  const dirCheckedCount =
+    dirModFiles.filter((f) => f.staged).length + dirAddedFiles.filter((f) => !deselectedAdded.has(f.path)).length;
+  const dirTrackedState: StageState =
+    dirCheckedCount === 0 ? "unchecked" : dirCheckedCount === dirFiles.length ? "checked" : "indeterminate";
+  // 目录复选框最终三态：未跟踪目录用选中态，否则用「改动」组合态。
+  const dirState: StageState = dirAllUntracked ? dirUntrackedState : dirTrackedState;
+
+  // 目录级切换：未跟踪→切选中；改动→M/D/R 真实暂存切换 + A 文件仅切换勾选（不 unstage）。
+  const handleDirToggle = () => {
+    if (dirFiles.length === 0) return;
+    if (dirAllUntracked) {
+      toggleUntrackedSelection(dirFiles.map((f) => f.path));
+      return;
+    }
+    const makeChecked = dirTrackedState !== "checked"; // 部分/未选 → 全选；全选 → 全不选
+    if (dirModFiles.length > 0) {
+      // onToggleStagePaths(paths, allStaged): allStaged=true → 取消暂存；false → 暂存。
+      onToggleStagePaths(dirModFiles.map((f) => f.path), !makeChecked);
+    }
+    if (dirAddedFiles.length > 0) {
+      setAddedDeselection(dirAddedFiles.map((f) => f.path), !makeChecked);
+    }
+  };
 
   return (
     <div>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            className="flex items-center gap-1.5 rounded py-0.5 px-1 hover:bg-opacity-10 cursor-pointer font-medium text-[11px]"
+            className="flex items-center gap-1.5 rounded py-0.5 px-1 hover:bg-opacity-10 cursor-pointer font-medium text-[13px]"
             style={{ paddingLeft: indentPx, backgroundColor: "transparent" }}
             onClick={() => toggleDir(collapseKey)}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = `${TERM.cyan}20`)}
@@ -186,13 +254,9 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
             </span>
             {dirFiles.length > 0 && (
               <StageCheckbox
-                state={dirStageState}
-                onToggle={() => {
-                  // 部分/未暂存 → 全部暂存；全部暂存 → 全部取消
-                  const allStaged = dirStageState === "checked";
-                  onToggleStagePaths(dirFiles.map((f) => f.path), allStaged);
-                }}
-                title={dirStageState === "checked" ? "取消暂存该目录（移出暂存区）" : "暂存该目录全部文件（git add）"}
+                state={dirState}
+                onToggle={handleDirToggle}
+                title={dirAllUntracked ? "选中以在提交时纳入（提交时才执行 git add）" : dirState === "checked" ? "取消勾选该目录（A 文件保持跟踪，仅本次不提交）" : "勾选该目录全部文件"}
               />
             )}
             <img
@@ -205,7 +269,7 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
             />
             <span className="flex-1 truncate" style={{ color: TERM.fg }}>{node.name}</span>
             {hasChildren && (
-              <span className="text-[9px] rounded px-1 py-0" style={{ color: TERM.dim, backgroundColor: `${TERM.dim}20` }}>
+              <span className="text-[11px] rounded px-1 py-0" style={{ color: TERM.dim, backgroundColor: `${TERM.dim}20` }}>
                 {node.children!.length}
               </span>
             )}
@@ -216,12 +280,27 @@ export function GitTreeNodeComponent({ node, depth, treeId, onFileClick, onReque
             className="flex items-center gap-2"
             disabled={dirFiles.length === 0}
             onSelect={() => {
-              const allStaged = dirStageState === "checked";
-              onToggleStagePaths(dirFiles.map((f) => f.path), allStaged);
+              if (dirAllUntracked) {
+                // 未跟踪目录右键：真实「加入跟踪」立即 git add 全部文件。
+                onToggleStagePaths(dirFiles.map((f) => f.path), false);
+              } else {
+                // 改动目录：M/D/R 真实切换暂存，A 文件仅切换勾选（不 unstage，保持跟踪）。
+                handleDirToggle();
+              }
             }}
           >
-            {dirStageState === "checked" ? <Minus size={12} /> : <Check size={12} />}
-            {dirStageState === "checked" ? "取消暂存该目录" : "暂存该目录（git add）"}
+            {dirAllUntracked ? (
+              <Check size={12} />
+            ) : dirTrackedState === "checked" ? (
+              <Minus size={12} />
+            ) : (
+              <Check size={12} />
+            )}
+            {dirAllUntracked
+              ? "加入跟踪该目录（git add）"
+              : dirTrackedState === "checked"
+                ? "取消勾选该目录"
+                : "勾选该目录"}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

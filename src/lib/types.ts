@@ -365,3 +365,13 @@ export interface GitTreeNode {
   children?: GitTreeNode[];
   change?: GitFileChange;
 }
+
+// 当前分支与远端跟踪状态（对应后端 git_branch_status）
+export interface GitBranchStatus {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  hasUpstream: boolean;
+  detached: boolean;
+}

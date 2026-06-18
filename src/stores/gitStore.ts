@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { GitFileChange, GitTreeNode } from "../lib/types";
+import type { GitFileChange, GitTreeNode, GitBranchStatus } from "../lib/types";
 
 type GitStatusFilter = "all" | "M" | "A" | "D" | "U";
 
@@ -19,14 +19,22 @@ interface GitStore {
   tree: GitTreeNode[];
   untrackedTree: GitTreeNode[];
   collapsedDirs: Set<string>;
+  /** 未跟踪文件的「选中」集合（前端态）：勾选不立即 git add，提交时才统一 add。 */
+  selectedUntracked: Set<string>;
+  /** 已加入跟踪（状态 A）但被取消勾选的文件：保持暂存/跟踪，仅本次提交不包含。 */
+  deselectedAdded: Set<string>;
   loading: boolean;
   discarding: boolean;
   committing: boolean;
+  pushing: boolean;
+  pulling: boolean;
+  branchStatus: GitBranchStatus | null;
   error: string | null;
   currentProjectPath: string | null;
   statusFilter: GitStatusFilter;
 
   fetchChanges: (projectPath: string, silent?: boolean) => Promise<void>;
+  fetchBranchStatus: (projectPath: string) => Promise<void>;
   discardFile: (filePath: string, status: string) => Promise<void>;
   discardAll: () => Promise<void>;
   revertHunk: (diffText: string, hunkIndex: number) => Promise<void>;
@@ -37,7 +45,19 @@ interface GitStore {
   unstagePaths: (paths: string[]) => Promise<void>;
   stageAll: () => Promise<void>;
   unstageAll: () => Promise<void>;
+  /** 设置一组未跟踪文件的选中态（仅前端）。 */
+  setUntrackedSelection: (paths: string[], selected: boolean) => void;
+  /** 切换一组未跟踪文件：全选中→全取消，否则全选中。 */
+  toggleUntrackedSelection: (paths: string[]) => void;
+  /** 清空未跟踪选中集合。 */
+  clearUntrackedSelection: () => void;
+  /** 切换一组已加入跟踪(A)文件的「取消勾选」态：不动 git 索引，仅影响本次提交是否包含。 */
+  toggleAddedDeselection: (paths: string[]) => void;
+  /** 设置一组 A 文件的取消勾选态（true=取消勾选/不提交，false=勾选/提交）。 */
+  setAddedDeselection: (paths: string[], deselected: boolean) => void;
   commit: (message: string) => Promise<string>;
+  push: () => Promise<string>;
+  pullFfOnly: () => Promise<string>;
   toggleDir: (path: string) => void;
   collapseAllDirs: () => void;
   expandAllDirs: () => void;
@@ -120,9 +140,14 @@ export const useGitStore = create<GitStore>((set, get) => ({
   tree: [],
   untrackedTree: [],
   collapsedDirs: new Set(),
+  selectedUntracked: new Set(),
+  deselectedAdded: new Set(),
   loading: false,
   discarding: false,
   committing: false,
+  pushing: false,
+  pulling: false,
+  branchStatus: null,
   error: null,
   currentProjectPath: null,
   statusFilter: "all",
@@ -142,7 +167,15 @@ export const useGitStore = create<GitStore>((set, get) => ({
       // 应用筛选并拆分已跟踪 / 未跟踪两棵树
       const { statusFilter } = get();
       const { tree, untrackedTree } = rebuildTrees(changes, statusFilter);
-      set({ changes, tree, untrackedTree, loading: false });
+      // 选中集合按当前未跟踪文件裁剪：已被 add/删除的路径不再保留，避免悬挂选中。
+      const untrackedNow = new Set(changes.filter((c) => isUntracked(c.status)).map((c) => c.path));
+      const prevSelected = get().selectedUntracked;
+      const selectedUntracked = new Set([...prevSelected].filter((p) => untrackedNow.has(p)));
+      // 取消勾选集合按当前 A 文件裁剪：已提交/已不再是 A 的路径移除。
+      const addedNow = new Set(changes.filter((c) => c.status === "A").map((c) => c.path));
+      const prevDeselected = get().deselectedAdded;
+      const deselectedAdded = new Set([...prevDeselected].filter((p) => addedNow.has(p)));
+      set({ changes, tree, untrackedTree, selectedUntracked, deselectedAdded, loading: false });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[GitStore] 获取 Git 变更失败:`, err);
@@ -151,6 +184,24 @@ export const useGitStore = create<GitStore>((set, get) => ({
         set({ loading: false });
       } else {
         set({ error: errorMsg, loading: false, changes: [], tree: [] });
+      }
+    }
+
+    // 分支状态独立刷新，失败不影响变更列表展示。
+    void get().fetchBranchStatus(projectPath);
+  },
+
+  fetchBranchStatus: async (projectPath: string) => {
+    try {
+      const branchStatus = await invoke<GitBranchStatus>("git_branch_status", { projectPath });
+      // 仅当仍是当前项目时写入，避免切换项目时的竞态覆盖。
+      if (get().currentProjectPath === projectPath) {
+        set({ branchStatus });
+      }
+    } catch (err) {
+      console.warn(`[GitStore] 获取分支状态失败:`, err);
+      if (get().currentProjectPath === projectPath) {
+        set({ branchStatus: null });
       }
     }
   },
@@ -316,21 +367,138 @@ export const useGitStore = create<GitStore>((set, get) => ({
     }
   },
 
+  setUntrackedSelection: (paths: string[], selected: boolean) => {
+    if (paths.length === 0) return;
+    set((state) => {
+      const next = new Set(state.selectedUntracked);
+      for (const p of paths) {
+        if (selected) next.add(p);
+        else next.delete(p);
+      }
+      return { selectedUntracked: next };
+    });
+  },
+
+  toggleUntrackedSelection: (paths: string[]) => {
+    if (paths.length === 0) return;
+    const selected = get().selectedUntracked;
+    const allSelected = paths.every((p) => selected.has(p));
+    get().setUntrackedSelection(paths, !allSelected);
+  },
+
+  clearUntrackedSelection: () => {
+    if (get().selectedUntracked.size === 0) return;
+    set({ selectedUntracked: new Set() });
+  },
+
+  toggleAddedDeselection: (paths: string[]) => {
+    if (paths.length === 0) return;
+    const deselected = get().deselectedAdded;
+    // 全部已取消勾选 → 重新勾选；否则全部取消勾选。
+    const allDeselected = paths.every((p) => deselected.has(p));
+    get().setAddedDeselection(paths, !allDeselected);
+  },
+
+  setAddedDeselection: (paths: string[], deselected: boolean) => {
+    if (paths.length === 0) return;
+    set((state) => {
+      const next = new Set(state.deselectedAdded);
+      for (const p of paths) {
+        if (deselected) next.add(p);
+        else next.delete(p);
+      }
+      return { deselectedAdded: next };
+    });
+  },
+
   commit: async (message: string) => {
-    const { currentProjectPath } = get();
+    const { currentProjectPath, selectedUntracked, deselectedAdded, changes } = get();
     if (!currentProjectPath) throw new Error("no_project");
     set({ committing: true, error: null });
     try {
-      const shortId = await invoke<string>("git_commit", { projectPath: currentProjectPath, message });
+      // 提交前先 add 选中的未跟踪文件（延迟到此刻才真正 git add）。
+      const toAdd = [...selectedUntracked];
+      if (toAdd.length > 0) {
+        await invoke("git_stage_paths", { projectPath: currentProjectPath, paths: toAdd });
+      }
+
+      let shortId: string;
+      if (deselectedAdded.size === 0) {
+        // 无「取消勾选的 A 文件」→ 走整库索引提交（保持既有语义）。
+        shortId = await invoke<string>("git_commit", { projectPath: currentProjectPath, message });
+      } else {
+        // 有取消勾选的 A 文件 → 仅提交选中的路径（pathspec），被取消勾选者保持暂存不提交。
+        const includedStaged = changes
+          .filter((c) => c.staged && !(c.status === "A" && deselectedAdded.has(c.path)))
+          .map((c) => c.path);
+        const commitPaths = [...new Set([...includedStaged, ...toAdd])];
+        if (commitPaths.length === 0) throw new Error("nothing_staged");
+        shortId = await invoke<string>("git_commit_paths", {
+          projectPath: currentProjectPath,
+          message,
+          paths: commitPaths,
+        });
+      }
+
+      set({ selectedUntracked: new Set() });
       await get().fetchChanges(currentProjectPath, true);
       return shortId;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[GitStore] 提交失败:`, err);
       set({ error: errorMsg });
+      // 失败后刷新一次：若已 add 部分未跟踪，让 UI 反映真实索引状态。
+      await get().fetchChanges(currentProjectPath, true);
       throw err;
     } finally {
       set({ committing: false });
+    }
+  },
+
+  push: async () => {
+    const { currentProjectPath, branchStatus } = get();
+    if (!currentProjectPath) throw new Error("no_project");
+    // 无 upstream 时建立跟踪：push -u origin <branch>。
+    const setUpstream = !!branchStatus && !branchStatus.hasUpstream;
+    const branch = branchStatus?.branch ?? null;
+    if (setUpstream && !branch) throw new Error("empty_branch");
+    set({ pushing: true, error: null });
+    try {
+      const out = await invoke<string>("git_push", {
+        projectPath: currentProjectPath,
+        setUpstream,
+        branch: setUpstream ? branch : null,
+      });
+      await get().fetchBranchStatus(currentProjectPath);
+      return out;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[GitStore] 推送失败:`, err);
+      set({ error: errorMsg });
+      // 推送被拒可能因落后远端，刷新状态以便展示 behind / 拉取入口。
+      void get().fetchBranchStatus(currentProjectPath);
+      throw err;
+    } finally {
+      set({ pushing: false });
+    }
+  },
+
+  pullFfOnly: async () => {
+    const { currentProjectPath } = get();
+    if (!currentProjectPath) throw new Error("no_project");
+    set({ pulling: true, error: null });
+    try {
+      const out = await invoke<string>("git_pull_ff_only", { projectPath: currentProjectPath });
+      // 拉取改动工作区与提交，需同时刷新变更列表与分支状态。
+      await get().fetchChanges(currentProjectPath, true);
+      return out;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[GitStore] 拉取失败:`, err);
+      set({ error: errorMsg });
+      throw err;
+    } finally {
+      set({ pulling: false });
     }
   },
 
@@ -372,9 +540,14 @@ export const useGitStore = create<GitStore>((set, get) => ({
       tree: [],
       untrackedTree: [],
       collapsedDirs: new Set(),
+      selectedUntracked: new Set(),
+      deselectedAdded: new Set(),
       loading: false,
       discarding: false,
       committing: false,
+      pushing: false,
+      pulling: false,
+      branchStatus: null,
       error: null,
       currentProjectPath: null,
       statusFilter: "all",

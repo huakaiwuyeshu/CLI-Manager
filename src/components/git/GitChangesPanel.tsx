@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import { RefreshCw, GitBranch, Undo2, Files, FilePen, FilePlus, FileMinus, GitCommitHorizontal } from "lucide-react";
+import { RefreshCw, GitBranch, Undo2, Files, FilePen, FilePlus, FileMinus, GitCommitHorizontal, ArrowUp, ArrowDown, Upload, Download } from "lucide-react";
 import { useGitStore } from "../../stores/gitStore";
 import { GitChangesTree } from "./GitChangesTree";
 import { StageCheckbox, type StageState } from "./StageCheckbox";
@@ -21,6 +21,17 @@ interface GitChangesPanelProps {
 
 // 降级慢轮询间隔：仅当 fs-watcher 初始化失败（网络盘/WSL 等 notify 不可用）时启用。
 const FALLBACK_POLL_INTERVAL_MS = 15000;
+
+// 把后端 git 网络错误码（形如 "auth_failed: <原文>"）映射为可读中文 toast。
+function formatGitNetError(prefix: string, raw: string): string {
+  if (raw.includes("auth_failed")) return `${prefix}：认证失败，请检查远端凭据`;
+  if (raw.includes("not_fast_forward")) return `${prefix}：远端有新提交，请先拉取`;
+  if (raw.includes("no_upstream")) return `${prefix}：当前分支未跟踪远端`;
+  if (raw.includes("no_remote")) return `${prefix}：未配置远端或无法连接远端`;
+  if (raw.includes("git_not_found")) return `${prefix}：未找到 git，可执行文件不在 PATH`;
+  // 其余去掉错误码前缀，保留原始片段。
+  return `${prefix}：${raw.replace(/^[a-z_]+:\s*/, "")}`;
+}
 
 function collectDirectoryPaths(nodes: GitTreeNode[], treeId: string): string[] {
   const paths: string[] = [];
@@ -57,10 +68,18 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
     unstageFile,
     stagePaths,
     unstagePaths,
-    stageAll,
-    unstageAll,
     commit,
     committing,
+    branchStatus,
+    pushing,
+    pulling,
+    push,
+    pullFfOnly,
+    selectedUntracked,
+    setUntrackedSelection,
+    clearUntrackedSelection,
+    deselectedAdded,
+    setAddedDeselection,
   } = useGitStore();
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ path: string; name: string; status: string } | null>(null);
@@ -172,15 +191,47 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
   // 总增删行数聚合（真实 diff 行数，后端 git_get_changes 提供）。
   const totalAdded = changes.reduce((sum, c) => sum + (c.added || 0), 0);
   const totalDeleted = changes.reduce((sum, c) => sum + (c.deleted || 0), 0);
-  // 已暂存文件数，驱动全选三态与提交栏。
+  // 已暂存文件数（真实 git 索引，含 A/M/D/R）。
   const stagedCount = changes.filter((c) => c.staged).length;
-  // 顶部全选三态：全暂存=checked，部分=indeterminate，无=unchecked。
+  // 被取消勾选的已加入跟踪(A)文件：仍暂存/跟踪，但本次提交不计入。
+  const deselectedAddedCount = changes.filter((c) => c.status === "A" && deselectedAdded.has(c.path)).length;
+  // 选中的未跟踪文件数（前端态，提交时才 git add）。
+  const selectedUntrackedCount = selectedUntracked.size;
+  // 待提交总数 = 已暂存 − 取消勾选的 A 文件 + 选中未跟踪。
+  const committableCount = stagedCount - deselectedAddedCount + selectedUntrackedCount;
+  // 顶部全选三态：以「待提交」与总变更数比较。
   const selectAllState: StageState =
-    changes.length === 0 || stagedCount === 0
+    changes.length === 0 || committableCount === 0
       ? "unchecked"
-      : stagedCount === changes.length
+      : committableCount >= changes.length
         ? "checked"
         : "indeterminate";
+
+  // 各类路径分组，用于全选/全不选。
+  const allUntrackedPaths = changes.filter((c) => c.status === "U" || c.status === "??").map((c) => c.path);
+  const addedPaths = changes.filter((c) => c.status === "A").map((c) => c.path);
+  // 已跟踪且非新增(M/D/R)的路径：全选/全不选时走真实 stage/unstage。
+  const trackedModPaths = changes
+    .filter((c) => c.status !== "U" && c.status !== "??" && c.status !== "A")
+    .map((c) => c.path);
+
+  const handleToggleSelectAll = () => {
+    if (selectAllState === "checked") {
+      // 全部取消：取消暂存 M/D/R + 清空未跟踪选中 + 取消勾选全部 A（A 保持跟踪，不 unstage）。
+      if (trackedModPaths.length > 0) {
+        void unstagePaths(trackedModPaths).catch(() => toast.error("全部取消暂存失败"));
+      }
+      clearUntrackedSelection();
+      if (addedPaths.length > 0) setAddedDeselection(addedPaths, true);
+    } else {
+      // 全选：暂存 M/D/R + 选中全部未跟踪 + 勾选回全部 A。
+      if (trackedModPaths.length > 0) {
+        void stagePaths(trackedModPaths).catch(() => toast.error("全部暂存失败"));
+      }
+      if (allUntrackedPaths.length > 0) setUntrackedSelection(allUntrackedPaths, true);
+      if (addedPaths.length > 0) setAddedDeselection(addedPaths, false);
+    }
+  };
 
   const handleToggleStage = (filePath: string, staged: boolean) => {
     void (staged ? unstageFile(filePath) : stageFile(filePath)).catch(() => {
@@ -196,7 +247,7 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
 
   const handleCommit = async () => {
     const msg = commitMsg.trim();
-    if (!msg || stagedCount === 0 || committing) return;
+    if (!msg || committableCount === 0 || committing) return;
     try {
       const shortId = await commit(msg);
       setCommitMsg("");
@@ -209,6 +260,33 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
         toast.error("没有已暂存的改动");
       } else {
         toast.error(`提交失败：${m}`);
+      }
+    }
+  };
+
+  const handlePush = async () => {
+    if (pushing) return;
+    const settingUpstream = !!branchStatus && !branchStatus.hasUpstream;
+    try {
+      await push();
+      toast.success(settingUpstream ? "已建立跟踪分支并推送" : "已推送到远端");
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      toast.error(formatGitNetError("推送失败", m));
+    }
+  };
+
+  const handlePull = async () => {
+    if (pulling) return;
+    try {
+      await pullFfOnly();
+      toast.success("已拉取远端更新");
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      if (m.includes("not_fast_forward")) {
+        toast.error("远端与本地分叉，无法快进。请到终端手动合并/变基。");
+      } else {
+        toast.error(formatGitNetError("拉取失败", m));
       }
     }
   };
@@ -240,11 +318,8 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
           {changes.length > 0 && (
             <StageCheckbox
               state={selectAllState}
-              onToggle={() => {
-                if (selectAllState === "checked") void unstageAll().catch(() => toast.error("全部取消暂存失败"));
-                else void stageAll().catch(() => toast.error("全部暂存失败"));
-              }}
-              title={selectAllState === "checked" ? "全部取消暂存（移出暂存区）" : "全部暂存（git add 所有变更）"}
+              onToggle={handleToggleSelectAll}
+              title={selectAllState === "checked" ? "全部取消（取消暂存 + 清空未跟踪选中）" : "全选（暂存已跟踪改动 + 选中未跟踪文件）"}
             />
           )}
           {hasDirectories && (
@@ -390,6 +465,60 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
         )}
       </div>
 
+      {/* 分支状态行：分支名 + ↑ahead ↓behind + 推送/拉取按钮。提交后即使无变更也展示，便于推送已有提交。 */}
+      {projectPath && branchStatus && (branchStatus.branch || branchStatus.detached) && (() => {
+        const { branch, ahead, behind, hasUpstream, detached } = branchStatus;
+        const canPush = !detached && !!branch && (ahead > 0 || !hasUpstream);
+        const showPull = !detached && hasUpstream && behind > 0;
+        return (
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-2 py-1.5" style={{ borderColor: TERM.dim }}>
+            <span className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: TERM.fg }}>
+              <GitBranch size={12} strokeWidth={2} style={{ color: TERM.dim }} className="shrink-0" />
+              <span className="truncate">{detached ? "detached HEAD" : branch}</span>
+              {!detached && hasUpstream && (
+                <span className="flex shrink-0 items-center gap-1.5" style={{ color: TERM.dim }}>
+                  <span className="flex items-center" style={{ color: ahead > 0 ? TERM.fg : TERM.dim }}>
+                    <ArrowUp size={10} strokeWidth={2} />{ahead}
+                  </span>
+                  <span className="flex items-center" style={{ color: behind > 0 ? TERM.fg : TERM.dim }}>
+                    <ArrowDown size={10} strokeWidth={2} />{behind}
+                  </span>
+                </span>
+              )}
+              {!detached && branch && !hasUpstream && (
+                <span className="shrink-0 text-[10px]" style={{ color: TERM.dim }}>未跟踪远端</span>
+              )}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              {showPull && (
+                <button
+                  type="button"
+                  onClick={() => void handlePull()}
+                  disabled={pulling}
+                  className="ui-focus-ring flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80 disabled:opacity-40"
+                  style={{ color: TERM.cyan, border: `1px solid ${TERM.cyan}55` }}
+                  title="拉取远端更新（仅快进）"
+                >
+                  <Download size={12} />
+                  {pulling ? "拉取中…" : `拉取 ${behind}`}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handlePush()}
+                disabled={pushing || !canPush}
+                className="ui-focus-ring flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80 disabled:opacity-40"
+                style={{ color: TERM.green, border: `1px solid ${TERM.green}55` }}
+                title={hasUpstream ? "推送到远端" : "推送并建立远端跟踪分支"}
+              >
+                <Upload size={12} />
+                {pushing ? "推送中…" : ahead > 0 ? `推送 ${ahead}` : "推送"}
+              </button>
+            </span>
+          </div>
+        );
+      })()}
+
       {/* 提交栏：仅文件级 stage + commit（无 AI） */}
       {projectPath && changes.length > 0 && (
         <div className="shrink-0 border-t px-2 py-2" style={{ borderColor: TERM.dim }}>
@@ -404,24 +533,27 @@ export function GitChangesPanel({ open, projectPath, visible = true, embedded = 
               }
             }}
             rows={2}
-            placeholder={stagedCount > 0 ? "提交信息（Ctrl+Enter 提交）" : "勾选文件以暂存后再提交"}
+            placeholder={committableCount > 0 ? "提交信息（Ctrl+Enter 提交）" : "勾选文件后再提交"}
             className="ui-thin-scroll w-full resize-none rounded px-2 py-1 text-[11px] outline-none"
             style={{ backgroundColor: TERM.bg, color: TERM.fg, border: `1px solid ${TERM.dim}` }}
           />
           <div className="mt-1 flex items-center justify-between">
             <span className="text-[10px]" style={{ color: TERM.dim }}>
-              已暂存 <span style={{ color: stagedCount > 0 ? TERM.green : TERM.dim }}>{stagedCount}</span> 个文件
+              待提交 <span style={{ color: committableCount > 0 ? TERM.green : TERM.dim }}>{committableCount}</span> 个文件
+              {selectedUntrackedCount > 0 && (
+                <span style={{ color: TERM.dim }}>（含 {selectedUntrackedCount} 未跟踪）</span>
+              )}
             </span>
             <button
               type="button"
               onClick={() => void handleCommit()}
-              disabled={committing || stagedCount === 0 || commitMsg.trim().length === 0}
+              disabled={committing || committableCount === 0 || commitMsg.trim().length === 0}
               className="ui-focus-ring flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80 disabled:opacity-40"
               style={{ color: TERM.green, border: `1px solid ${TERM.green}55` }}
-              title="提交已暂存的改动"
+              title="提交已暂存与选中的改动"
             >
               <GitCommitHorizontal size={12} />
-              {committing ? "提交中…" : `提交 (${stagedCount})`}
+              {committing ? "提交中…" : `提交 (${committableCount})`}
             </button>
           </div>
         </div>

@@ -1003,6 +1003,253 @@ pub async fn git_commit(project_path: String, message: String) -> Result<String,
     .map_err(|e| format!("task_failed: {e}"))?
 }
 
+/// 仅提交指定路径（pathspec / `git commit --only -- <paths>`）。
+///
+/// 用于「选中部分文件提交」：未列入的已暂存文件（如取消勾选但保持跟踪的新增文件）
+/// 不会被提交，且保持其暂存状态不变。shell out 系统 git 以获得 --only 语义。
+#[tauri::command]
+pub async fn git_commit_paths(
+    project_path: String,
+    message: String,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    let msg = message.trim().to_string();
+    if msg.is_empty() {
+        return Err("empty_message".to_string());
+    }
+    if paths.is_empty() {
+        return Err("nothing_staged".to_string());
+    }
+    for p in &paths {
+        validate_repo_relative_path(p)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut args: Vec<&str> = vec!["commit", "-m", &msg, "--"];
+        for p in &paths {
+            args.push(p.as_str());
+        }
+        match run_git_cli(&project_path, &args) {
+            Ok(_) => run_git_cli(&project_path, &["rev-parse", "--short", "HEAD"]),
+            Err(e) => {
+                let low = e.to_lowercase();
+                if low.contains("who you are") || low.contains("identity") || low.contains("user.email") {
+                    Err("no_git_identity".to_string())
+                } else if low.contains("nothing to commit") || low.contains("no changes added") {
+                    Err("nothing_staged".to_string())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("task_failed: {e}"))?
+}
+
+/// 当前分支与远端跟踪状态（只读，git2）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchStatus {
+    /// 分支短名（如 "main"）；detached HEAD 或 unborn 时为 None。
+    pub branch: Option<String>,
+    /// upstream 全名（如 "origin/main"）；无跟踪时为 None。
+    pub upstream: Option<String>,
+    /// 本地领先 upstream 的提交数（待推送）。
+    pub ahead: usize,
+    /// 本地落后 upstream 的提交数（待拉取）。
+    pub behind: usize,
+    /// 是否已配置 upstream 跟踪分支。
+    pub has_upstream: bool,
+    /// 是否处于 detached HEAD。
+    pub detached: bool,
+}
+
+/// 查询当前分支名、upstream 及 ahead/behind。全只读，不触网。
+///
+/// 边界：非仓库 → 错误；unborn（无提交）→ branch=None 全 0；
+/// detached HEAD → detached=true、branch=None；无 upstream → has_upstream=false、ahead/behind=0。
+#[tauri::command]
+pub async fn git_branch_status(project_path: String) -> Result<GitBranchStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        let path = Path::new(&project_path);
+        if !path.exists() {
+            return Err("path_not_found".to_string());
+        }
+        let repo = Repository::open(path).map_err(|e| format!("open_repo_failed: {e}"))?;
+
+        let empty = GitBranchStatus {
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            has_upstream: false,
+            detached: false,
+        };
+
+        // HEAD 不存在 → unborn 分支（尚无提交）。
+        let head = match repo.head() {
+            Ok(h) => h,
+            Err(_) => return Ok(empty),
+        };
+
+        let detached = repo.head_detached().unwrap_or(false);
+        let branch = head.shorthand().map(|s| s.to_string());
+        let local_oid = head.target();
+
+        if detached {
+            return Ok(GitBranchStatus {
+                branch: None,
+                detached: true,
+                ..empty
+            });
+        }
+
+        // 查 upstream 与 ahead/behind。
+        let mut upstream = None;
+        let mut ahead = 0usize;
+        let mut behind = 0usize;
+        let mut has_upstream = false;
+
+        if let Some(shorthand) = head.shorthand() {
+            if let Ok(local_branch) = repo.find_branch(shorthand, git2::BranchType::Local) {
+                if let Ok(up) = local_branch.upstream() {
+                    has_upstream = true;
+                    if let Ok(Some(name)) = up.name() {
+                        upstream = Some(name.to_string());
+                    }
+                    if let (Some(local), Some(up_oid)) = (local_oid, up.get().target()) {
+                        if let Ok((a, b)) = repo.graph_ahead_behind(local, up_oid) {
+                            ahead = a;
+                            behind = b;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(GitBranchStatus {
+            branch,
+            upstream,
+            ahead,
+            behind,
+            has_upstream,
+            detached: false,
+        })
+    })
+    .await
+    .map_err(|e| format!("task_failed: {e}"))?
+}
+
+/// 把 git stderr 映射为稳定错误码 + 原始片段，供前端 toast 展示。
+/// 形如 "not_fast_forward: <git 原文>"。
+fn map_git_cli_error(stderr: &str) -> String {
+    let s = stderr.to_lowercase();
+    let code = if s.contains("authentication failed")
+        || s.contains("could not read username")
+        || s.contains("could not read password")
+        || s.contains("permission denied")
+        || s.contains("invalid username or password")
+    {
+        "auth_failed"
+    } else if s.contains("non-fast-forward")
+        || s.contains("fetch first")
+        || s.contains("updates were rejected")
+        || s.contains("[rejected]")
+        || s.contains("not possible to fast-forward")
+        || s.contains("diverging")
+        || s.contains("divergent")
+    {
+        "not_fast_forward"
+    } else if s.contains("no upstream") || s.contains("has no upstream") {
+        "no_upstream"
+    } else if s.contains("could not read from remote")
+        || s.contains("does not appear to be a git repository")
+        || s.contains("no configured push destination")
+        || s.contains("no such remote")
+        || s.contains("'origin' does not appear")
+    {
+        "no_remote"
+    } else {
+        "git_failed"
+    };
+    let snippet: String = stderr.trim().chars().take(300).collect();
+    format!("{code}: {snippet}")
+}
+
+/// shell out 系统 `git` 执行网络操作，继承用户凭据管理器 / SSH / git config 代理。
+/// 用 args 数组（非 shell）避免注入；成功返回合并输出，失败返回映射错误码。
+fn run_git_cli(project_path: &str, args: &[&str]) -> Result<String, String> {
+    let path = Path::new(project_path);
+    if !path.exists() {
+        return Err("path_not_found".to_string());
+    }
+    let output = std::process::Command::new("git")
+        .current_dir(path)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "git_not_found".to_string()
+            } else {
+                format!("spawn_failed: {e}")
+            }
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        Ok(format!("{stdout}{stderr}").trim().to_string())
+    } else {
+        Err(map_git_cli_error(&stderr))
+    }
+}
+
+/// 校验分支名安全：非空、不以 '-' 开头（防被当作 git flag）、无空白/控制字符。
+fn validate_branch_name(branch: &str) -> Result<(), String> {
+    if branch.is_empty() {
+        return Err("empty_branch".into());
+    }
+    if branch.starts_with('-') {
+        return Err("invalid_branch".into());
+    }
+    if branch.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("invalid_branch".into());
+    }
+    Ok(())
+}
+
+/// 推送当前分支。set_upstream=true 时 `push -u origin <branch>` 建立跟踪。
+/// shell out 系统 git；失败错误码见 map_git_cli_error。
+#[tauri::command]
+pub async fn git_push(
+    project_path: String,
+    set_upstream: bool,
+    branch: Option<String>,
+) -> Result<String, String> {
+    if set_upstream {
+        let b = branch.clone().ok_or_else(|| "empty_branch".to_string())?;
+        validate_branch_name(&b)?;
+    }
+    tokio::task::spawn_blocking(move || {
+        if set_upstream {
+            let b = branch.unwrap();
+            run_git_cli(&project_path, &["push", "-u", "origin", &b])
+        } else {
+            run_git_cli(&project_path, &["push"])
+        }
+    })
+    .await
+    .map_err(|e| format!("task_failed: {e}"))?
+}
+
+/// 仅快进拉取（`git pull --ff-only`）。无法快进 → not_fast_forward，由前端引导去终端处理。
+/// 绝不产生合并提交或冲突状态。
+#[tauri::command]
+pub async fn git_pull_ff_only(project_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || run_git_cli(&project_path, &["pull", "--ff-only"]))
+        .await
+        .map_err(|e| format!("task_failed: {e}"))?
+}
+
 /// 开始监听项目目录文件变化（fs-watcher）。失败返回错误，前端据此降级为慢轮询。
 #[tauri::command]
 pub async fn git_watch_start(
