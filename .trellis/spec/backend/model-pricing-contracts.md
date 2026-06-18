@@ -81,11 +81,9 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 - Price units are **USD per 1M tokens** at every boundary. Remote provider values that are per-token must be multiplied by `1_000_000` before storing or returning to the frontend.
 - Valid price fields are non-negative finite numbers. Invalid, NaN, infinite, or negative values must be rejected or ignored before they reach cost calculation.
 - `model_prices` is persisted by the WebView using `getDb()` / `tauri-plugin-sql`. Rust receives a runtime cache through `model_prices_set_cache`; this avoids coupling Rust commands to plugin-sql's internal database path.
-- Frontend startup must load/seed `model_prices` and then best-effort push the full table to `model_prices_set_cache` before history stats are likely opened. Failure to push the cache must not crash the app; history calculation falls back only while the cache is unavailable.
+- Frontend startup must load/seed `model_prices` and then best-effort push the full table to `model_prices_set_cache` before history stats are likely opened. Failure to push the cache must not crash the app; history calculation reports unpriced tokens until the cache is available.
 - Once the DB-backed table is loaded and pushed, the model-price cache is authoritative. If a model is missing from the loaded table, cost calculation must return unpriced tokens, not fall back to stale hardcoded defaults for that model.
-- Hardcoded prices are seed/fallback data only:
-  - seed: when `model_prices` is empty, insert default rows with `source='builtin'`;
-  - fallback: when frontend table/backend cache is unavailable during startup or failure.
+- Hardcoded prices are seed data only: when `model_prices` is empty, insert default rows with `source='builtin'`. Runtime cost calculation must not maintain a second hardcoded pricing table.
 - Remote sync is advisory. `model_prices_sync` fetches LiteLLM and OpenRouter, parses remote rows, matches targets, and returns matched/candidate/unmatched results. The command does **not** write SQLite; the frontend writes accepted prices and then pushes the cache.
 - Auto-apply sync matches only when confidence is deterministic (exact or case-insensitive identity after normalization). Tail, alnum, and Levenshtein similarity matches must be presented as candidates for user confirmation.
 - `ccusage` reports keep using the external ccusage tool's own cost fields. Do not override ccusage costs with the local `model_prices` table unless a future task explicitly changes that contract.
@@ -95,14 +93,14 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 | Condition | Required behavior |
 |---|---|
 | `model_prices` table is empty | Insert default seed rows, set `priceTableReady=true`, push backend cache. |
-| Startup cache push fails | Log/handle as best effort; app remains usable; backend uses fallback until cache is set. |
+| Startup cache push fails | Log/handle as best effort; app remains usable; backend reports usage as unpriced until cache is set. |
 | User deletes a model price after table load | Remove row, push cache; that model becomes unpriced in frontend and backend calculations. |
 | Remote source fails but another source succeeds | Return partial success with source status/error; do not fail the entire sync if at least one source yielded data. |
 | All remote sources fail | Return a clear error from `model_prices_sync`; frontend keeps existing prices unchanged. |
 | Remote row lacks input/output/cache price fields | Skip that row or mark source skipped; never store a row with accidental zero prices unless zero was explicitly present. |
 | Too many sync targets | Deduplicate and cap targets before remote matching to avoid UI-triggered expensive matching work. |
 | Candidate accepted | Upsert accepted price, clear stale candidates for that target, push backend cache. |
-| Explicit cost exists in history JSONL | Use explicit cost and ignore local model-price estimation for that usage entry. |
+| Explicit cost exists in history JSONL | Do not use it as billing authority; calculate from local model prices when possible, otherwise mark tokens unpriced. |
 | Model is unknown with loaded cache | Add usage tokens to `unpriced_tokens`; do not estimate cost. |
 
 ### 5. Good/Base/Bad Cases
@@ -122,7 +120,7 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 - Rust checks:
   - `cd src-tauri && cargo check` must pass after changing command signatures or history pricing.
   - Unit tests (when added) should assert exact/case-insensitive matches auto-apply while tail/Levenshtein matches remain candidates.
-  - Unit tests should assert missing model with loaded cache returns `unpriced_tokens` instead of fallback cost.
+  - Unit tests should assert missing/unavailable model pricing returns `unpriced_tokens` instead of fallback cost.
 - Manual UI checks:
   - Open Settings → 模型价格, identify local models, sync prices, edit/delete a row, and confirm a candidate.
   - Open history stats after an edit and confirm cost changes consistently with terminal realtime estimate.
@@ -143,11 +141,11 @@ This lets stale built-in defaults override a user's delete/edit decision.
 match find_cached_model_pricing(model) {
     CacheLookup::Hit(price) => Some(price),
     CacheLookup::MissLoaded => None,
-    CacheLookup::Unavailable => find_hardcoded_price(model),
+    CacheLookup::Unavailable => None,
 }
 ```
 
-Only use hardcoded pricing while the DB-backed cache is unavailable; once loaded, the user's table is authoritative.
+Only calculate cost from the DB-backed cache. Built-in prices seed the table on first launch; they are not a second runtime pricing source.
 
 #### Wrong
 

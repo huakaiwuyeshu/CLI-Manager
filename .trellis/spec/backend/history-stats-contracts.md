@@ -94,8 +94,8 @@ interface TerminalSession {
 - Stats aggregates must include input, output, cache read, cache creation, estimated cost, and unpriced token counts at every exposed usage level: total, project, model, source, daily series, and hourly activity.
 - Heatmap-compatible buckets must include `sessions`, `messages`, `level`, and `session_refs`. Daily heatmap buckets use `day_start_utc`; hourly activity buckets use `hour_start_utc` plus `hour` so the frontend can render 24-hour drilldowns without guessing local bucket anchors.
 - `historyStore` must accept snake_case payload fields and legacy camelCase fallbacks when normalizing stats data. `normalizeDetail` must pass message token fields through (it previously dropped them, making per-session token panels read 0).
-- Unknown or unsupported models must not fake a price. They contribute to `unpriced_tokens` and `total_cost_usd` remains unaffected unless an explicit cost exists in the source payload.
-- Explicit cost fields from the source payload take priority over local model-price estimation. Explicit cost and token counts may live on different JSON levels (e.g. top-level `costUSD` + `message.usage`); extraction must merge them instead of returning the first matching candidate.
+- Unknown or unsupported models must not fake a price. They contribute to `unpriced_tokens` and `total_cost_usd` remains unaffected.
+- Explicit cost fields from the source payload are not billing authority for CLI-Manager history stats. Local `model_prices` decides cost when model pricing is available; otherwise usage is counted as unpriced.
 - Codex session project keys should prefer session metadata `cwd`; path-derived keys are only a fallback.
 - Codex session identity should prefer `session_meta.payload.id` for rollout JSONL files (`rollout-*.jsonl`) so `HistorySessionSummary.session_id` / `HistorySessionDetail.session_id` match the hook-reported `TerminalSession.cliSessionId`. If the metadata id is missing, fall back to the file stem. This Codex-only normalization must not change Claude Code session identity, which continues to use the existing file-stem id.
 - Terminal realtime stats bind strictly to the current terminal's `TerminalSession.cliSessionId` (from CLI hook payload). When a session id is present, look up **only** that session; if it is not yet found in history (e.g. JSONL not flushed), keep that terminal's own empty/loading state and **never** fall back to a different session. Project-level "latest session" lookup is used only when the terminal has no session id at all.
@@ -116,7 +116,7 @@ interface TerminalSession {
 | No session id, but a hook already bound a CLI session this run | Show an explicit awaiting-identification empty state for the CLI terminal; do not borrow project latest. |
 | No session id and no hook ever bound (no-hook environment) | Fall back to project latest-session lookup; do not blank the realtime stats panel. |
 | Model pricing not found | Add all usage tokens to `unpriced_tokens`; do not estimate cost. |
-| Explicit cost is present | Use explicit cost and do not add those tokens to `unpriced_tokens`. |
+| Explicit cost is present | Ignore it for CLI-Manager billing; calculate from local model prices when possible, otherwise add tokens to `unpriced_tokens`. |
 | Date range exceeds 366 days | Return `date_range_too_large`. |
 | Codex session lacks metadata cwd | Fall back to the path-derived project key. |
 | Codex rollout session lacks `session_meta.payload.id` | Fall back to the file-stem `session_id`. |

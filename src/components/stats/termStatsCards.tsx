@@ -45,8 +45,8 @@ export function TokenUsageCard({ stats }: { stats: TokenStats }) {
         <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5">
           <StatChip dotColor={TERM.green} label="输入" value={formatCompactCount(stats.inputTokens)} />
           <StatChip dotColor={TERM.yellow} label="输出" value={formatCompactCount(stats.outputTokens)} />
-          <StatChip dotColor={TERM.blue} label="缓存读" value={formatCompactCount(stats.cacheReadTokens)} />
-          <StatChip dotColor={TERM.magenta} label="缓存写" value={formatCompactCount(stats.cacheCreationTokens)} />
+          <StatChip dotColor={TERM.blue} label="缓存命中" value={formatCompactCount(stats.cacheReadTokens)} />
+          <StatChip dotColor={TERM.magenta} label="缓存写入" value={formatCompactCount(stats.cacheCreationTokens)} />
         </div>
       </div>
       <div

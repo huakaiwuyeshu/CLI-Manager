@@ -371,7 +371,7 @@ export function HookSettingsPage() {
 
   return (
     <Stack gap="md">
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="md">
           <Box>
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -429,9 +429,9 @@ export function HookSettingsPage() {
             </Group>
           </Card>
         </Stack>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="lg">
           <Group justify="space-between" align="flex-start" gap="md">
             <Box>
@@ -571,9 +571,9 @@ export function HookSettingsPage() {
             </Button>
           </Group>
         </Stack>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="lg">
           <Group justify="space-between" align="flex-start" gap="md">
             <Box>
@@ -718,7 +718,7 @@ export function HookSettingsPage() {
             </Button>
           </Group>
         </Stack>
-      </Card>
+      </section>
     </Stack>
   );
 }

@@ -434,7 +434,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
     <Stack gap="lg" h="100%" style={{ minHeight: 0 }}>
       <style>{modelPricingStyles}</style>
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Group justify="space-between" align="flex-start" gap="md" wrap="nowrap">
           <Stack gap="sm" className="min-w-0">
             <Group gap="sm" align="center" wrap="nowrap">
@@ -475,9 +475,9 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
             </Button>
           </Group>
         </Group>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card" p="md" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <section className="ui-surface-card rounded-2xl border border-border p-4" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Group justify="space-between" align="center" mb="md">
           <SegmentedControl<FilterMode>
             value={filter}
@@ -515,7 +515,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                 <Table.Th ta="right">输入</Table.Th>
                 <Table.Th ta="right">输出</Table.Th>
                 <Table.Th ta="right">缓存命中</Table.Th>
-                <Table.Th ta="right">写入缓存</Table.Th>
+                <Table.Th ta="right">缓存写入</Table.Th>
                 <Table.Th ta="right">操作</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -639,7 +639,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
                       />
                       {selected && (
                         <Text size="xs" c="var(--text-muted)">
-                          Input {formatPrice(selected.remote.inputPer1m)} · Output {formatPrice(selected.remote.outputPer1m)} · Cache Read {formatPrice(selected.remote.cacheReadPer1m)} · Cache Create {formatPrice(selected.remote.cacheCreationPer1m)}
+                          输入 {formatPrice(selected.remote.inputPer1m)} · 输出 {formatPrice(selected.remote.outputPer1m)} · 缓存命中 {formatPrice(selected.remote.cacheReadPer1m)} · 缓存写入 {formatPrice(selected.remote.cacheCreationPer1m)}
                         </Text>
                       )}
                     </Stack>
@@ -659,7 +659,7 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
           </Text>
         )}
         </Box>
-      </Card>
+      </section>
 
       <Modal
         opened={editorOpen}
@@ -681,8 +681,8 @@ export function ModelPricingSettingsPage({ searchValue }: Props) {
           />
           <NumberInput label="Input USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.inputPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, inputPer1m: Number(value) || 0 }))} />
           <NumberInput label="Output USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.outputPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, outputPer1m: Number(value) || 0 }))} />
-          <NumberInput label="Cache Read USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.cacheReadPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, cacheReadPer1m: Number(value) || 0 }))} />
-          <NumberInput label="Cache Creation USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.cacheCreationPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, cacheCreationPer1m: Number(value) || 0 }))} />
+          <NumberInput label="缓存命中 USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.cacheReadPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, cacheReadPer1m: Number(value) || 0 }))} />
+          <NumberInput label="缓存写入 USD / 1M" prefix="$" min={0} decimalScale={8} value={draft.cacheCreationPer1m} onChange={(value) => setDraft((prev) => ({ ...prev, cacheCreationPer1m: Number(value) || 0 }))} />
           <Group justify="flex-end">
             <Button variant="subtle" onClick={() => setEditorOpen(false)}>取消</Button>
             <Button leftSection={<CircleCheck size={15} />} onClick={() => void saveDraft()}>保存</Button>

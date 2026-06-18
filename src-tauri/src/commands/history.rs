@@ -2444,7 +2444,7 @@ fn scan_session_inner(
             }
             usage
         };
-        if usage_total_tokens(usage) == 0 && usage.explicit_cost_usd.is_none() {
+        if usage_total_tokens(usage) == 0 {
             continue;
         }
         if let Some(key) = extract_usage_dedup_key(&value) {
@@ -3043,21 +3043,7 @@ fn history_stats_total_tokens(item: &HistoryStatsModelItem) -> u64 {
 fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStatsScan {
     let total_tokens = usage_total_tokens(usage);
     if total_tokens == 0 {
-        return UsageStatsScan {
-            total_cost_usd: usage.explicit_cost_usd.unwrap_or(0.0),
-            ..UsageStatsScan::default()
-        };
-    }
-
-    if let Some(cost) = usage.explicit_cost_usd {
-        return UsageStatsScan {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_creation_tokens: usage.cache_creation_tokens,
-            total_cost_usd: cost,
-            unpriced_tokens: 0,
-        };
+        return UsageStatsScan::default();
     }
 
     let Some(pricing) = model.and_then(find_history_model_pricing) else {
@@ -3091,123 +3077,24 @@ fn calculate_usage_cost(model: Option<&str>, usage: UsageTokenScan) -> UsageStat
 
 #[derive(Clone)]
 struct HistoryModelPricing {
-    model_id: &'static str,
     input_per_million: f64,
     output_per_million: f64,
     cache_read_per_million: f64,
     cache_creation_per_million: f64,
 }
 
-// DEPRECATED: only used as seed/fallback; model_prices is the authoritative source after frontend cache push.
-const HISTORY_MODEL_PRICING: &[HistoryModelPricing] = &[
-    HistoryModelPricing { model_id: "claude-opus-4-1", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
-    HistoryModelPricing { model_id: "claude-opus-4", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
-    HistoryModelPricing { model_id: "claude-sonnet-4-5", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
-    HistoryModelPricing { model_id: "claude-sonnet-4", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
-    HistoryModelPricing { model_id: "claude-haiku-4", input_per_million: 0.8, output_per_million: 4.0, cache_read_per_million: 0.08, cache_creation_per_million: 1.0 },
-    HistoryModelPricing { model_id: "claude-fable-5", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
-    HistoryModelPricing { model_id: "claude-3-7-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
-    HistoryModelPricing { model_id: "claude-3-5-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
-    HistoryModelPricing { model_id: "claude-3-5-haiku", input_per_million: 0.8, output_per_million: 4.0, cache_read_per_million: 0.08, cache_creation_per_million: 1.0 },
-    HistoryModelPricing { model_id: "claude-3-opus", input_per_million: 15.0, output_per_million: 75.0, cache_read_per_million: 1.5, cache_creation_per_million: 18.75 },
-    HistoryModelPricing { model_id: "claude-3-sonnet", input_per_million: 3.0, output_per_million: 15.0, cache_read_per_million: 0.3, cache_creation_per_million: 3.75 },
-    HistoryModelPricing { model_id: "claude-3-haiku", input_per_million: 0.25, output_per_million: 1.25, cache_read_per_million: 0.03, cache_creation_per_million: 0.3 },
-    HistoryModelPricing { model_id: "gpt-5", input_per_million: 1.25, output_per_million: 10.0, cache_read_per_million: 0.125, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-5-mini", input_per_million: 0.25, output_per_million: 2.0, cache_read_per_million: 0.025, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-5-nano", input_per_million: 0.05, output_per_million: 0.4, cache_read_per_million: 0.005, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-4-1", input_per_million: 2.0, output_per_million: 8.0, cache_read_per_million: 0.5, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-4-1-mini", input_per_million: 0.4, output_per_million: 1.6, cache_read_per_million: 0.1, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-4o", input_per_million: 2.5, output_per_million: 10.0, cache_read_per_million: 1.25, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "gpt-4o-mini", input_per_million: 0.15, output_per_million: 0.6, cache_read_per_million: 0.075, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "o3", input_per_million: 2.0, output_per_million: 8.0, cache_read_per_million: 0.5, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "o3-mini", input_per_million: 0.55, output_per_million: 2.2, cache_read_per_million: 0.55, cache_creation_per_million: 0.0 },
-    HistoryModelPricing { model_id: "o4-mini", input_per_million: 1.1, output_per_million: 4.4, cache_read_per_million: 0.275, cache_creation_per_million: 0.0 },
-];
-
 fn find_history_model_pricing(model: &str) -> Option<HistoryModelPricing> {
     match find_cached_model_pricing(model) {
         CachedModelPricingLookup::Found(cached) => {
             return Some(HistoryModelPricing {
-                model_id: "",
                 input_per_million: cached.input_per_million,
                 output_per_million: cached.output_per_million,
                 cache_read_per_million: cached.cache_read_per_million,
                 cache_creation_per_million: cached.cache_creation_per_million,
             });
         }
-        CachedModelPricingLookup::Missing => return None,
-        CachedModelPricingLookup::CacheUnavailable => {}
+        CachedModelPricingLookup::Missing | CachedModelPricingLookup::CacheUnavailable => None,
     }
-
-    let normalized = normalize_pricing_model_id(model)?;
-    HISTORY_MODEL_PRICING
-        .iter()
-        .find(|pricing| normalized == pricing.model_id)
-        .or_else(|| {
-            HISTORY_MODEL_PRICING
-                .iter()
-                .filter(|pricing| {
-                    normalized.starts_with(pricing.model_id)
-                        && normalized
-                            .as_bytes()
-                            .get(pricing.model_id.len())
-                            .is_some_and(|byte| *byte == b'-')
-                })
-                .max_by_key(|pricing| pricing.model_id.len())
-        })
-        .cloned()
-}
-
-fn normalize_pricing_model_id(model: &str) -> Option<String> {
-    let mut value = model.trim().to_lowercase();
-    // 剥离 "[1m]" 之类的上下文窗口变体后缀，否则无法命中定价表。
-    if let Some(idx) = value.find('[') {
-        value.truncate(idx);
-    }
-    if value.is_empty() || value == "unknown" {
-        return None;
-    }
-    if let Some((_, tail)) = value.rsplit_once('/') {
-        value = tail.to_string();
-    }
-    if let Some((head, _)) = value.split_once(':') {
-        value = head.to_string();
-    }
-    value = value.replace('@', "-").replace('.', "-");
-    while let Some(stripped) = value.strip_prefix("global-anthropic-") {
-        value = stripped.to_string();
-    }
-    while let Some(stripped) = value.strip_prefix("anthropic-") {
-        value = stripped.to_string();
-    }
-    if let Some(stripped) = value.strip_prefix("claude-gpt-") {
-        value = format!("gpt-{stripped}");
-    }
-    value = strip_model_date_suffix(&value).unwrap_or(value);
-    if let Some(stripped) = value.strip_suffix("-v1") {
-        value = stripped.to_string();
-    }
-    Some(value)
-}
-
-fn strip_model_date_suffix(model: &str) -> Option<String> {
-    let bytes = model.as_bytes();
-    if bytes.len() < 11 {
-        return None;
-    }
-    let date_start = bytes.len() - 10;
-    if bytes.get(date_start - 1) != Some(&b'-') {
-        return None;
-    }
-    let date = &bytes[date_start..];
-    let is_date = date
-        .iter()
-        .enumerate()
-        .all(|(idx, byte)| matches!(idx, 4 | 7) && *byte == b'-' || !matches!(idx, 4 | 7) && byte.is_ascii_digit());
-    if !is_date {
-        return None;
-    }
-    Some(model[..date_start - 1].to_string())
 }
 
 fn extract_positive_u64(value: &Value) -> Option<u64> {
@@ -3874,7 +3761,7 @@ mod tests {
         assert_eq!(stats.output_tokens, 130);
         assert_eq!(stats.cache_read_tokens, 30);
         assert_eq!(stats.cache_creation_tokens, 5);
-        assert_eq!(stats.unpriced_tokens, 0);
+        assert_eq!(stats.unpriced_tokens, 465);
         assert_eq!(stats.dominant_model.as_deref(), Some("claude-sonnet-4-5"));
         assert_eq!(stats.token_trend.len(), 2);
         assert_eq!(stats.token_trend[0].total_tokens, 165);
@@ -3902,10 +3789,10 @@ mod tests {
         assert_eq!(stats.input_tokens, 1400);
         assert_eq!(stats.cache_read_tokens, 1600);
         assert_eq!(stats.output_tokens, 300);
-        // token_count 事件不带 model，应回退归因到 turn_context 的 gpt-5.5 并完成定价
-        assert_eq!(stats.unpriced_tokens, 0);
+        // token_count 事件不带 model，应回退归因到 turn_context 的 gpt-5.5；未加载模型价格缓存时只记未定价。
+        assert_eq!(stats.unpriced_tokens, 3300);
         assert!(stats.model_usage.contains_key("gpt-5.5"));
-        assert!(stats.total_cost_usd > 0.0);
+        assert_eq!(stats.total_cost_usd, 0.0);
         assert_eq!(stats.token_trend.len(), 2);
         assert_eq!(stats.token_trend[0].input_tokens, 600);
         assert_eq!(stats.token_trend[0].cache_read_tokens, 400);
@@ -3954,14 +3841,6 @@ mod tests {
         assert_eq!(stats.last_context_tokens, Some(96020));
         // Claude 行不带 model_context_window
         assert_eq!(stats.context_window, None);
-    }
-
-    #[test]
-    fn pricing_matches_model_with_context_window_suffix() {
-        assert!(find_history_model_pricing("claude-sonnet-4-5[1m]").is_some());
-        assert!(find_history_model_pricing("claude-sonnet-4-5-20250929[1m]").is_some());
-        assert!(find_history_model_pricing("claude-fable-5[1m]").is_some());
-        assert!(find_history_model_pricing("claude-haiku-4-5-20251001").is_some());
     }
 
     #[test]

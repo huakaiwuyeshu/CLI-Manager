@@ -944,8 +944,8 @@ function TokenCompositionStrip({ summary }: { summary: CcusageSummary }) {
   const parts = [
     { key: "input", label: "输入", value: summary.inputTokens, color: "#2F8F62" },
     { key: "output", label: "输出", value: summary.outputTokens, color: "#C46A2D" },
-    { key: "cacheCreation", label: "Cache Creation", value: summary.cacheCreationTokens, color: "#6B5DD3" },
-    { key: "cacheRead", label: "Cache Read", value: summary.cacheReadTokens, color: "#2878B5" },
+    { key: "cacheCreation", label: "缓存写入", value: summary.cacheCreationTokens, color: "#6B5DD3" },
+    { key: "cacheRead", label: "缓存命中", value: summary.cacheReadTokens, color: "#2878B5" },
   ];
   const total = Math.max(1, parts.reduce((sum, item) => sum + item.value, 0));
 

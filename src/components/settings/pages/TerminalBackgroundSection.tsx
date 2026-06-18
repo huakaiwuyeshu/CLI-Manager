@@ -172,7 +172,7 @@ export function TerminalBackgroundSection() {
   const detailsDisabled = !enabled;
 
   return (
-    <Card className="ui-surface-card" p="md">
+    <section className="ui-surface-card rounded-2xl border border-border p-4">
       <Stack gap="md">
         <Group justify="space-between" align="flex-start" gap="md" wrap="nowrap">
           <Box>
@@ -370,7 +370,7 @@ export function TerminalBackgroundSection() {
           </Card>
         </Stack>
       </Stack>
-    </Card>
+    </section>
   );
 }
 

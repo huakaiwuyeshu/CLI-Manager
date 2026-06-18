@@ -336,7 +336,7 @@ export function SyncSettingsPage() {
         </Card>
       )}
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="sm">
           <Text size="sm" fw={600} c="var(--on-surface)">
             同步方式
@@ -373,11 +373,11 @@ export function SyncSettingsPage() {
           })}
           </SimpleGrid>
         </Stack>
-      </Card>
+      </section>
 
       {syncMode === "cloud" && (
         <>
-          <Card className="ui-surface-card" p="md">
+          <section className="ui-surface-card rounded-2xl border border-border p-4">
             <Stack gap="md">
               <Text size="sm" fw={600} c="var(--on-surface)">
                 WebDAV 配置
@@ -505,9 +505,9 @@ export function SyncSettingsPage() {
                 </Group>
               )}
             </Stack>
-          </Card>
+          </section>
 
-          <Card className="ui-surface-card" p="md">
+          <section className="ui-surface-card rounded-2xl border border-border p-4">
             <Stack gap="md">
               <Text size="sm" fw={600} c="var(--on-surface)">
                 云端同步操作
@@ -579,7 +579,7 @@ export function SyncSettingsPage() {
               <Text size="sm">上次同步：{formatLastSync()}</Text>
             </Group>
             </Stack>
-          </Card>
+          </section>
 
           <Card className="border border-border bg-surface-container-high" p="md" radius="lg">
             <Text fw={600} c="var(--on-surface)">使用说明</Text>
@@ -595,7 +595,7 @@ export function SyncSettingsPage() {
 
       {syncMode === "local" && (
         <>
-          <Card className="ui-surface-card" p="md">
+          <section className="ui-surface-card rounded-2xl border border-border p-4">
             <Stack gap="md">
               <Text size="sm" fw={600} c="var(--on-surface)">
                 本地同步目录
@@ -629,9 +629,9 @@ export function SyncSettingsPage() {
                 </Group>
               )}
             </Stack>
-          </Card>
+          </section>
 
-          <Card className="ui-surface-card" p="md">
+          <section className="ui-surface-card rounded-2xl border border-border p-4">
             <Stack gap="md">
               <Text size="sm" fw={600} c="var(--on-surface)">
                 本地同步操作
@@ -672,7 +672,7 @@ export function SyncSettingsPage() {
               <Text size="sm">上次同步：{formatLastSync()}</Text>
             </Group>
             </Stack>
-          </Card>
+          </section>
 
           <Card className="border border-border bg-surface-container-high" p="md" radius="lg">
             <Text fw={600} c="var(--on-surface)">使用说明</Text>

@@ -7,7 +7,6 @@ import {
   ActionIcon,
   Box,
   Button,
-  Card,
   Divider,
   Group,
   Loader,
@@ -717,7 +716,7 @@ function EmptyStateGuideCard() {
   ];
 
   return (
-    <Card className="ui-surface-card" p="lg">
+    <section className="ui-surface-card rounded-2xl border border-border p-6">
       <Stack gap="lg">
         <Group gap="md" align="center" wrap="nowrap">
           <IconTile icon={Database} tone="primary" variant="solid" size={44} />
@@ -762,7 +761,7 @@ function EmptyStateGuideCard() {
           访问 cc-switch 官网
         </Button>
       </Stack>
-    </Card>
+    </section>
   );
 }
 
@@ -880,7 +879,7 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
   return (
     <Stack gap="md" className="flex-1">
       <style>{providerPageStyles}</style>
-      <Card className="ui-surface-card" p="sm">
+      <section className="ui-surface-card rounded-2xl border border-border p-3">
         <Stack gap="xs">
           <Group justify="space-between" align="center" gap="md" wrap="nowrap">
             <Group gap="sm" align="center" wrap="nowrap" className="min-w-0 flex-1">
@@ -936,12 +935,11 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
             </Text>
           </Box>
         </Stack>
-      </Card>
+      </section>
 
       {error && (
-        <Card
-          className="ui-surface-card"
-          p="sm"
+        <section
+          className="ui-surface-card rounded-2xl border border-border p-3"
           style={{ outline: "1px solid color-mix(in srgb, var(--danger) 38%, transparent)" }}
         >
           <Group gap="xs" align="start">
@@ -950,7 +948,7 @@ export function ProviderSettingsPage({ searchValue }: { searchValue: string }) {
               {error}
             </Text>
           </Group>
-        </Card>
+        </section>
       )}
 
       {!data && !loading && !error && <EmptyStateGuideCard />}

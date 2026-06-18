@@ -125,7 +125,7 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
 
   return (
     <Stack gap="md">
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="sm">
           <Box>
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -156,9 +156,9 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
             })}
           </Group>
         </Stack>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="sm">
           <Box>
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -194,9 +194,9 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
             </Text>
           )}
         </Stack>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="sm">
           <Group justify="space-between" align="center" gap="md">
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -292,7 +292,7 @@ export function ShortcutSettingsPage({ searchValue }: ShortcutSettingsPageProps)
           )}
           </Stack>
         </Stack>
-      </Card>
+      </section>
     </Stack>
   );
 }

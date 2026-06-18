@@ -210,7 +210,7 @@ export function TemplateSettingsPage({ searchValue }: TemplateSettingsPageProps)
 
   return (
     <div className="grid grid-cols-[280px_minmax(0,1fr)] gap-4">
-      <Card className="ui-surface-card min-w-0" p="sm">
+      <section className="ui-surface-card min-w-0 rounded-2xl border border-border p-3">
         <Stack gap="sm">
           <Group justify="space-between" align="center" gap="sm">
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -255,9 +255,9 @@ export function TemplateSettingsPage({ searchValue }: TemplateSettingsPageProps)
           )}
           </Stack>
         </Stack>
-      </Card>
+      </section>
 
-      <Card className="ui-surface-card min-w-0" p={0}>
+      <section className="ui-surface-card min-w-0 rounded-2xl border border-border p-0">
         <Box className="sticky top-0 z-10 border-b border-border bg-surface-container px-4 py-3">
           <Group justify="space-between" align="flex-start" gap="md">
             <Box>
@@ -403,7 +403,7 @@ export function TemplateSettingsPage({ searchValue }: TemplateSettingsPageProps)
           )}
 
         </Stack>
-      </Card>
+      </section>
     </div>
   );
 }

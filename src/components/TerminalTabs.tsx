@@ -230,7 +230,7 @@ function SortableTab({
   const skipNextBlurSubmitRef = useRef(false);
   const statusLabel = TAB_NOTIFICATION_LABELS[notification];
   const statusTitle = `状态：${statusLabel}\n会话：${title}\n更新时间：${formatTabStatusUpdatedAt(statusUpdatedAt)}`;
-  const tabMinWidthClass = notification === "none" ? "min-w-[92px]" : "min-w-[118px]";
+  const tabMinWidthClass = "min-w-[92px]";
 
   const submitEdit = useCallback(() => {
     const trimmed = editValue.trim();
@@ -332,11 +332,6 @@ function SortableTab({
           ) : (
             <span className="min-w-0 flex-1 truncate tracking-[0.01em]" title={statusTitle}>{title}</span>
           )}
-          {notification !== "none" && (
-            <span className="shrink-0 text-[10px] leading-none text-on-surface-variant" title={statusTitle}>
-              {statusLabel}
-            </span>
-          )}
           <button
             onClick={(e) => { e.stopPropagation(); onClose(); }}
             onPointerDown={(e) => e.stopPropagation()}
@@ -367,7 +362,7 @@ function DragOverlayTab({
 }) {
   const statusLabel = TAB_NOTIFICATION_LABELS[notification];
   const statusTitle = `状态：${statusLabel}\n会话：${title}\n更新时间：${formatTabStatusUpdatedAt(statusUpdatedAt)}`;
-  const tabMinWidthClass = notification === "none" ? "min-w-[92px]" : "min-w-[118px]";
+  const tabMinWidthClass = "min-w-[92px]";
 
   return (
     <div
@@ -387,7 +382,6 @@ function DragOverlayTab({
         </span>
       )}
       <span className="min-w-0 flex-1 truncate tracking-[0.01em]">{title}</span>
-      {notification !== "none" && <span className="shrink-0 text-[10px] leading-none text-on-surface-variant">{statusLabel}</span>}
     </div>
   );
 }
@@ -771,7 +765,6 @@ function PaneTabBar({
                         aria-hidden="true"
                       />
                       <span className="min-w-0 flex-1 truncate">{session.title}</span>
-                      {notification !== "none" && <span className="shrink-0 text-[10px] text-text-muted">{statusLabel}</span>}
                     </button>
                   );
                 })}

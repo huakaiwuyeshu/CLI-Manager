@@ -171,7 +171,7 @@ export function ThemeSettingsPage() {
   // 其优先级高于 Tailwind v4 @layer utilities 中的 `sticky`，导致直接写在 Card 上失效。
   const terminalPreview = (
     <div className="self-start xl:sticky xl:top-5 xl:z-10 xl:col-start-2 xl:row-span-3 xl:row-start-1">
-      <Card className="ui-surface-card" p="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
         <Stack gap="sm">
           <Box>
             <Text size="sm" fw={600} c="var(--on-surface)">
@@ -224,14 +224,14 @@ export function ThemeSettingsPage() {
             </Box>
           </Box>
         </Stack>
-      </Card>
+      </section>
     </div>
   );
 
   return (
     <Stack gap="md">
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <Card className="ui-surface-card xl:col-start-1 xl:row-start-1" p="md">
+        <section className="ui-surface-card rounded-2xl border border-border p-4 xl:col-start-1 xl:row-start-1">
           <Stack gap="md">
             <Text size="sm" fw={600} c="var(--on-surface)">
               终端行为
@@ -406,11 +406,11 @@ export function ThemeSettingsPage() {
               </Group>
             </Card>
           </Stack>
-        </Card>
+        </section>
 
         {terminalPreview}
 
-        <Card className="ui-surface-card xl:col-start-1 xl:row-start-2" p="md">
+        <section className="ui-surface-card rounded-2xl border border-border p-4 xl:col-start-1 xl:row-start-2">
           <Stack gap="md">
             <Stack gap={6}>
               <Text size="sm" fw={600} c="var(--on-surface)">
@@ -564,7 +564,7 @@ export function ThemeSettingsPage() {
             </Card>
           )}
           </Stack>
-        </Card>
+        </section>
 
         <div className="min-w-0 xl:col-start-1 xl:row-start-3">
           <TerminalBackgroundSection />

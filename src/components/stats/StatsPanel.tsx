@@ -350,7 +350,7 @@ function KpiStrip({ stats }: { stats: HistoryStatsPayload }) {
     {
       label: "总 Token",
       value: formatCompactCount(totalTokens),
-      hint: `完整值 ${formatCount(totalTokens)} · 输入/输出/cache 合计`,
+      hint: `完整值 ${formatCount(totalTokens)} · 输入/输出/缓存命中/写入合计`,
     },
     {
       label: "估算费用",
@@ -390,8 +390,8 @@ function TokenCompositionStrip({ stats }: { stats: HistoryStatsPayload }) {
   const parts = [
     { key: "input", label: "输入", value: stats.total_input_tokens, color: "#2F8F62" },
     { key: "output", label: "输出", value: stats.total_output_tokens, color: "#C46A2D" },
-    { key: "cacheCreation", label: "Cache Creation", value: stats.total_cache_creation_tokens, color: "#6B5DD3" },
-    { key: "cacheRead", label: "Cache Read", value: stats.total_cache_read_tokens, color: "#2878B5" },
+    { key: "cacheCreation", label: "缓存写入", value: stats.total_cache_creation_tokens, color: "#6B5DD3" },
+    { key: "cacheRead", label: "缓存命中", value: stats.total_cache_read_tokens, color: "#2878B5" },
   ];
   const total = Math.max(1, parts.reduce((sum, item) => sum + item.value, 0));
 
@@ -500,7 +500,7 @@ function DailyUsageTrendChart({
               return `<div style="display:flex;align-items:center;justify-content:space-between;gap:18px;line-height:22px;"><span>${marker}${name}</span><strong>${display}</strong></div>`;
             })
             .join("");
-          return `<div style="min-width:210px;"><strong>${bucketLabel}</strong>${lineRows}<div style="margin-top:6px;color:#CBD5E1;">Cache：${formatCount(day.cache_creation_tokens + day.cache_read_tokens)} · 未定价：${formatCount(day.unpriced_tokens)}</div></div>`;
+          return `<div style="min-width:210px;"><strong>${bucketLabel}</strong>${lineRows}<div style="margin-top:6px;color:#CBD5E1;">缓存命中/写入：${formatCount(day.cache_creation_tokens + day.cache_read_tokens)} · 未定价：${formatCount(day.unpriced_tokens)}</div></div>`;
         },
       },
       legend: {
@@ -617,7 +617,7 @@ function ModelRankingChart({ items }: { items: HistoryStatsModelItem[] }) {
           const row = tooltipRows(params)[0];
           const model = models[tooltipIndex(row)];
           if (!model) return "";
-          return `<div style="min-width:220px;"><strong>${model.model}</strong><div style="margin-top:6px;">Token：${formatCount(totalTokensOf(model))}</div><div>费用：${formatCost(model.total_cost_usd)}</div><div>Cache：${formatCount(model.cache_creation_tokens + model.cache_read_tokens)}</div></div>`;
+          return `<div style="min-width:220px;"><strong>${model.model}</strong><div style="margin-top:6px;">Token：${formatCount(totalTokensOf(model))}</div><div>费用：${formatCost(model.total_cost_usd)}</div><div>缓存命中/写入：${formatCount(model.cache_creation_tokens + model.cache_read_tokens)}</div></div>`;
         },
       },
       grid: { left: 112, right: 54, top: 14, bottom: 24 },
@@ -747,7 +747,7 @@ function SourceBreakdown({ items }: { items: HistoryStatsSourceItem[] }) {
                   <div className="h-full rounded-full bg-[#2878B5]" style={{ width: `${Math.max(4, (totalTokens / maxTokens) * 100)}%` }} />
                 </div>
                 <div className="mt-1 text-[10px] text-text-muted">
-                  输入 {formatCompactCount(item.input_tokens)} · 输出 {formatCompactCount(item.output_tokens)} · Cache {formatCompactCount(item.cache_creation_tokens + item.cache_read_tokens)}
+                  输入 {formatCompactCount(item.input_tokens)} · 输出 {formatCompactCount(item.output_tokens)} · 缓存命中/写入 {formatCompactCount(item.cache_creation_tokens + item.cache_read_tokens)}
                 </div>
               </div>
             );
@@ -929,7 +929,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
                 </span>
                 历史用量分析
               </div>
-              <div className="ui-dev-label mt-1 text-[11px] text-text-muted">本地历史日志 · Token / Cache / Cost 估算</div>
+              <div className="ui-dev-label mt-1 text-[11px] text-text-muted">本地历史日志 · Token / 缓存命中/写入 / Cost 估算</div>
             </div>
             <Button onClick={onClose} aria-label="关闭分析看板" size="icon" variant="ghost" title="关闭">
               <X size={14} />

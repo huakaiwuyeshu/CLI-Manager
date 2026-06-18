@@ -491,9 +491,8 @@ export function GeneralSettingsPage() {
 
   return (
     <Stack gap="md">
-      <section>
-        <Card className="ui-surface-card" p="md">
-          <Stack gap="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
+        <Stack gap="md">
             <Text size="sm" fw={600} c="var(--on-surface)">
               外观
             </Text>
@@ -673,13 +672,11 @@ export function GeneralSettingsPage() {
                 {uiTextColorHint}
               </Text>
             </Stack>
-          </Stack>
-        </Card>
+        </Stack>
       </section>
 
-      <section>
-        <Card className="ui-surface-card" p="md">
-          <Stack gap="md">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
+        <Stack gap="md">
             <Text size="sm" fw={600} c="var(--on-surface)">
               侧栏与行为
             </Text>
@@ -816,14 +813,12 @@ export function GeneralSettingsPage() {
                 aria-label={debugMode ? "关闭调试模式" : "开启调试模式"}
               />
             </Group>
-          </Stack>
-        </Card>
+        </Stack>
       </section>
 
 
-      <section>
-        <Card className="ui-surface-card" p="md">
-          <Stack gap="sm">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
+        <Stack gap="sm">
             <Text size="sm" fw={600} c="var(--on-surface)">
               工具栏
             </Text>
@@ -888,13 +883,11 @@ export function GeneralSettingsPage() {
                 />
               </Group>
             </Card>
-          </Stack>
-        </Card>
+        </Stack>
       </section>
 
-      <section>
-        <Card className="ui-surface-card" p="md">
-          <Stack gap="sm">
+      <section className="ui-surface-card rounded-2xl border border-border p-4">
+        <Stack gap="sm">
             <Text size="sm" fw={600} c="var(--on-surface)">
               用量分析
             </Text>
@@ -917,8 +910,7 @@ export function GeneralSettingsPage() {
                 />
               </Group>
             </Card>
-          </Stack>
-        </Card>
+        </Stack>
       </section>
 
       <AboutSection />

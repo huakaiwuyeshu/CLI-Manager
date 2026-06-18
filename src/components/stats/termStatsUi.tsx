@@ -364,8 +364,8 @@ function SparkTooltip({
     ? [
         { label: "输入", value: detail.input ?? 0, color: TERM.green },
         { label: "输出", value: detail.output ?? 0, color: TERM.yellow },
-        { label: "缓存读", value: detail.cacheRead ?? 0, color: TERM.blue },
-        { label: "缓存写", value: detail.cacheCreation ?? 0, color: TERM.magenta },
+        { label: "缓存命中", value: detail.cacheRead ?? 0, color: TERM.blue },
+        { label: "缓存写入", value: detail.cacheCreation ?? 0, color: TERM.magenta },
       ]
     : [];
 
