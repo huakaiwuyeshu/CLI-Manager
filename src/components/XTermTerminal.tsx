@@ -112,14 +112,19 @@ const copyTextToClipboard = async (text: string) => {
   }
 };
 
+interface TerminalContextMenuPoint {
+  x: number;
+  y: number;
+}
+
 interface TerminalContextMenuActions {
   onNewTab?: () => void;
   onCloseSession?: () => void;
   onCloseOthers?: () => void;
   onCloseToLeft?: () => void;
   onCloseToRight?: () => void;
-  onSplitRight?: () => void;
-  onSplitDown?: () => void;
+  onSplitRight?: (point?: TerminalContextMenuPoint) => void;
+  onSplitDown?: (point?: TerminalContextMenuPoint) => void;
 }
 
 interface Props extends TerminalContextMenuActions {
@@ -1269,6 +1274,12 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     action?.();
   };
 
+  const runSplitMenuAction = (action?: (point?: TerminalContextMenuPoint) => void) => {
+    const point = menuState ? { x: menuState.x, y: menuState.y } : undefined;
+    closeContextMenu();
+    action?.(point);
+  };
+
   const hasManageActions = Boolean(
     onNewTab || onCloseSession || onCloseOthers || onCloseToLeft || onCloseToRight || onSplitRight || onSplitDown
   );
@@ -1501,7 +1512,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     type="button"
                     role="menuitem"
                     className="terminal-context-menu-item"
-                    onClick={() => runMenuAction(onSplitRight)}
+                    onClick={() => runSplitMenuAction(onSplitRight)}
                   >
                     <span>向右分屏</span>
                   </button>
@@ -1511,7 +1522,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
                     type="button"
                     role="menuitem"
                     className="terminal-context-menu-item"
-                    onClick={() => runMenuAction(onSplitDown)}
+                    onClick={() => runSplitMenuAction(onSplitDown)}
                   >
                     <span>向下分屏</span>
                   </button>

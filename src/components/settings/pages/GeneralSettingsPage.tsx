@@ -185,7 +185,7 @@ const TERMINAL_TOOLBAR_OPTIONS: { key: TerminalToolbarOptionKey; label: string }
   { key: "gitChanges", label: "Git 变更" },
 ];
 
-type TerminalToolbarOptionKey = Exclude<keyof TerminalToolbarVisibilitySettings, "showText">;
+type TerminalToolbarOptionKey = keyof TerminalToolbarVisibilitySettings;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -843,25 +843,6 @@ export function GeneralSettingsPage() {
                 </Card>
               ))}
             </SimpleGrid>
-            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
-              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
-                <Box>
-                  <Text size="xs" c="var(--on-surface-variant)">
-                    显示工具栏文字
-                  </Text>
-                  <Text mt={4} size="xs" c="var(--text-muted)">
-                    关闭后除"新建"外只显示图标。
-                  </Text>
-                </Box>
-                <Switch
-                  color="cliPrimary"
-                  checked={terminalToolbarVisibility.showText}
-                  onChange={(event) => updateToolbarVisibility("showText", event.currentTarget.checked)}
-                  aria-label={terminalToolbarVisibility.showText ? "隐藏工具栏文字" : "显示工具栏文字"}
-                />
-              </Group>
-            </Card>
-
             <Text size="xs" fw={600} c="var(--on-surface-variant)" mt="md">
               侧边栏工具栏
             </Text>

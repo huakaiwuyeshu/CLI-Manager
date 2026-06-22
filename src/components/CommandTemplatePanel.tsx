@@ -22,12 +22,11 @@ function resolveCommand(command: string, project?: Project): string {
 }
 
 interface CommandTemplatePanelProps {
-  showText?: boolean;
   popoverSide?: "top" | "right" | "bottom" | "left";
   toneClassName?: string;
 }
 
-export function CommandTemplatePanel({ showText = true, popoverSide = "bottom", toneClassName = "" }: CommandTemplatePanelProps) {
+export function CommandTemplatePanel({ popoverSide = "bottom", toneClassName = "" }: CommandTemplatePanelProps) {
   const {
     fetchTemplates,
     getForContext,
@@ -154,12 +153,11 @@ export function CommandTemplatePanel({ showText = true, popoverSide = "bottom", 
     >
       <PopoverTrigger asChild>
         <button
-          className={`${showText ? "ui-flat-action ui-toolbar-button" : "ui-focus-ring ui-icon-action"} ${toneClassName}`.trim()}
+          className={`ui-focus-ring ui-icon-action ${toneClassName}`.trim()}
           title="Command templates"
           aria-label="打开命令模板面板"
         >
           <TerminalSquare size={14} strokeWidth={1.5} />
-          {showText && <span>Templates</span>}
         </button>
       </PopoverTrigger>
       <PopoverContent id="command-template-panel" align="start" side={popoverSide} className="w-72">

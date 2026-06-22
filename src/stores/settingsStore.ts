@@ -66,7 +66,6 @@ export interface TerminalToolbarVisibilitySettings {
   sessionHistory: boolean;
   stats: boolean;
   gitChanges: boolean;
-  showText: boolean;
 }
 
 export interface SidebarToolbarVisibilitySettings {
@@ -214,7 +213,6 @@ const DEFAULTS: Settings = {
     sessionHistory: true,
     stats: true,
     gitChanges: true,
-    showText: false,
   },
   sidebarToolbarVisibility: {
     stats: true,
@@ -316,7 +314,6 @@ export function migrateTerminalToolbarVisibility(value: unknown): TerminalToolba
     sessionHistory: typeof raw.sessionHistory === "boolean" ? raw.sessionHistory : defaults.sessionHistory,
     stats: typeof raw.stats === "boolean" ? raw.stats : defaults.stats,
     gitChanges: typeof raw.gitChanges === "boolean" ? raw.gitChanges : defaults.gitChanges,
-    showText: typeof raw.showText === "boolean" ? raw.showText : defaults.showText,
   };
 }
 

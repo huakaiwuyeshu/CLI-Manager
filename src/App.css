@@ -1638,6 +1638,44 @@ samp,
   background-color: color-mix(in srgb, var(--menu-fg) 18%, transparent);
 }
 
+.ui-split-project-picker {
+  border-color: var(--menu-border);
+  background-color: color-mix(in srgb, var(--menu-bg) 92%, transparent);
+  color: var(--menu-fg);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--menu-bg) 58%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.ui-split-project-picker-title {
+  color: color-mix(in srgb, var(--menu-fg) 88%, transparent);
+}
+
+.ui-split-project-picker .ui-split-project-picker-item {
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--menu-fg) 5%, transparent);
+  color: color-mix(in srgb, var(--menu-fg) 82%, transparent);
+}
+
+.ui-split-project-picker .ui-split-project-picker-item:hover,
+.ui-split-project-picker .ui-split-project-picker-item:focus-visible {
+  border-color: color-mix(in srgb, var(--menu-fg) 18%, transparent);
+  background-color: var(--menu-hover);
+  color: var(--menu-fg);
+}
+
+.ui-split-project-picker .ui-tree-leading-icon {
+  background-color: color-mix(in srgb, var(--menu-fg) 10%, transparent);
+  color: color-mix(in srgb, var(--menu-fg) 86%, transparent);
+}
+
+.ui-split-project-picker .ui-split-project-picker-chip {
+  --cli-chip-color: var(--menu-fg);
+  background-color: color-mix(in srgb, var(--menu-fg) 8%, transparent);
+  color: color-mix(in srgb, var(--menu-fg) 68%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--menu-fg) 18%, transparent);
+}
+
 .ui-btn {
   display: inline-flex;
   align-items: center;
@@ -2818,6 +2856,8 @@ samp,
 }
 
 .ui-terminal-action-sidebar {
+  position: relative;
+  z-index: 1;
   width: 44px;
   padding: 8px 6px;
   border-left: 1px solid color-mix(in srgb, var(--terminal-tab-accent-muted) 24%, transparent);

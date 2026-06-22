@@ -22,10 +22,10 @@
 
 ## Acceptance Criteria
 
-* [ ] 通用设置 > 工具栏 不再出现“显示工具栏文字”。
-* [ ] 全代码库 `src/` 内不再有 `terminalToolbarVisibility.showText` / `showToolbarText` / `显示工具栏文字` 的有效使用。
-* [ ] 终端右侧工具栏按钮保持图标模式与原图标样式。
-* [ ] `npx tsc --noEmit` 通过。
+* [x] 通用设置 > 工具栏 不再出现“显示工具栏文字”。
+* [x] 全代码库 `src/` 内不再有 `terminalToolbarVisibility.showText` / `showToolbarText` / `显示工具栏文字` 的有效使用。
+* [x] 终端右侧工具栏按钮保持图标模式与原图标样式。
+* [x] `npx tsc --noEmit` 通过。
 
 ## Definition of Done
 

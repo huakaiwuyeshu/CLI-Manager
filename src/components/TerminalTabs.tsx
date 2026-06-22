@@ -32,11 +32,11 @@ import { TerminalStatsPanel } from "./terminal/TerminalStatsPanel";
 import { TerminalSidePanel, type TerminalSidePanelTab } from "./terminal/TerminalSidePanel";
 import { SubagentTranscriptView } from "./terminal/SubagentTranscriptView";
 import { openWindowsTerminal } from "../lib/externalTerminal";
-import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch, Sparkles } from "./icons";
+import { Terminal, Plus, ListClockIcon, X, Maximize2, Minimize2, ChevronDown, ChevronRight, BarChart3, GitBranch, Folder } from "./icons";
 import { VendorIcon, inferVendor, type VendorKey } from "./VendorIcon";
 import { EmptyState } from "./ui/EmptyState";
 import { useHistoryStore } from "../stores/historyStore";
-import type { HistorySourceFilter, Project, TerminalSession } from "../lib/types";
+import type { HistorySourceFilter, Project, TerminalSession, TreeNode } from "../lib/types";
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -95,21 +95,16 @@ const PANE_EDGE_DROP_PREFIX = "pane-edge:";
 const PANE_DROP_EDGES: TerminalPaneDropEdge[] = ["left", "right", "top", "bottom"];
 const SPLIT_PICKER_OUTSIDE_GUARD_MS = 250;
 
+type SplitPickerAnchor = DOMRect | { x: number; y: number };
+type SplitPickerAlign = "start" | "end";
+
 type SplitPickerState = {
   sessionId: string;
   direction: TerminalPaneSplitDirection;
   x: number;
   y: number;
+  align: SplitPickerAlign;
 } | null;
-
-type AgentSplitKind = "claude" | "codex";
-
-type AgentSplitOption = {
-  kind: AgentSplitKind;
-  label: string;
-  command: string;
-  options: SplitTerminalOptions;
-};
 
 type PaneDropTarget =
   | { type: "center"; paneId: string }
@@ -165,38 +160,6 @@ function inferSessionVendor(session: TerminalSession): VendorKey | null {
   return inferVendor(`${session.startupCmd ?? ""} ${session.title}`);
 }
 
-function inferAgentSplitKind(raw: string | null | undefined): AgentSplitKind | null {
-  const normalized = raw?.trim().toLowerCase();
-  if (!normalized) return null;
-  if (normalized.includes("claude")) return "claude";
-  if (normalized.includes("codex") || normalized === "code") return "codex";
-  return null;
-}
-
-function createAgentSplitOption(session: TerminalSession, project?: Project): AgentSplitOption | null {
-  const kind =
-    inferAgentSplitKind(session.startupCmd) ??
-    inferAgentSplitKind(project?.startup_cmd) ??
-    inferAgentSplitKind(project?.cli_tool) ??
-    inferAgentSplitKind(session.title);
-  if (!kind) return null;
-
-  const label = kind === "claude" ? "Claude" : "Codex";
-  return {
-    kind,
-    label,
-    command: kind,
-    options: {
-      projectId: session.projectId ?? project?.id,
-      cwd: session.cwd ?? project?.path,
-      title: `${label} 子 Agent`,
-      startupCmd: kind,
-      envVars: session.envVars ? { ...session.envVars } : parseProjectEnvVars(project),
-      shell: session.shell ?? (project?.shell && project.shell !== "powershell" ? project.shell : undefined),
-    },
-  };
-}
-
 function formatTabStatusUpdatedAt(value: string | null | undefined): string {
   if (!value) return "无";
   const date = new Date(value);
@@ -246,7 +209,7 @@ interface SortableTabProps {
   onStartEdit: () => void;
   onSubmitEdit: (title: string) => void;
   onCancelEdit: () => void;
-  menuContent: (getAnchor: () => DOMRect | undefined) => ReactNode;
+  menuContent: (getAnchor: () => SplitPickerAnchor | undefined) => ReactNode;
   menuClassName?: string;
   menuStyle?: CSSProperties;
 }
@@ -271,6 +234,7 @@ function SortableTab({
 }: SortableTabProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, data: { paneId } });
   const tabElementRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuPointRef = useRef<SplitPickerAnchor | null>(null);
   const [editValue, setEditValue] = useState(title);
   const editInputRef = useRef<HTMLInputElement | null>(null);
   const skipNextBlurSubmitRef = useRef(false);
@@ -311,7 +275,7 @@ function SortableTab({
     setNodeRef(node);
   }, [setNodeRef]);
 
-  const getTabAnchor = useCallback(() => tabElementRef.current?.getBoundingClientRect(), []);
+  const getTabAnchor = useCallback(() => contextMenuPointRef.current ?? tabElementRef.current?.getBoundingClientRect(), []);
 
   return (
     <ContextMenu>
@@ -324,6 +288,9 @@ function SortableTab({
           data-selected={isActive ? "true" : "false"}
           onClick={onActivate}
           onDoubleClick={onStartEdit}
+          onContextMenu={(event) => {
+            contextMenuPointRef.current = { x: event.clientX, y: event.clientY };
+          }}
           aria-selected={isActive}
           {...attributes}
           {...listeners}
@@ -454,7 +421,7 @@ interface PaneTabBarProps {
   onCancelEdit: () => void;
   onNewTab: () => void;
   onDuplicateSession: (session: TerminalSession) => void;
-  onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => void;
+  onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => void;
   onUnsplit: (sessionId: string) => void;
   onMoveToPane: (sessionId: string, paneId: string) => void;
   onHideBackground: (sessionId: string) => void;
@@ -866,7 +833,7 @@ interface PaneLeafViewProps {
   onCancelEdit: () => void;
   onNewTab: () => void;
   onDuplicateSession: (session: TerminalSession) => void;
-  onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => void;
+  onOpenSplitPicker: (sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => void;
   onUnsplit: (sessionId: string) => void;
   onMoveToPane: (sessionId: string, paneId: string) => void;
   onHideBackground: (sessionId: string) => void;
@@ -985,8 +952,8 @@ function PaneLeafView({
                     ? () => pane.sessionIds.slice(pane.sessionIds.indexOf(session.id) + 1).forEach(onCloseSession)
                     : undefined
                 }
-                onSplitRight={() => onOpenSplitPicker(session.id, "horizontal")}
-                onSplitDown={() => onOpenSplitPicker(session.id, "vertical")}
+                onSplitRight={(point) => onOpenSplitPicker(session.id, "horizontal", point)}
+                onSplitDown={(point) => onOpenSplitPicker(session.id, "vertical", point)}
               />
             )}
           </div>
@@ -1019,16 +986,86 @@ function PaneContentDropZones({ paneId, activeDropPreview }: { paneId: string; a
 
 interface SplitProjectPickerProps {
   picker: SplitPickerState;
-  projects: Project[];
-  agentOption: AgentSplitOption | null;
+  tree: TreeNode[];
+  menuStyle: CSSProperties;
   onSelectEmpty: () => void;
-  onSelectAgent: () => void;
   onSelectProject: (project: Project) => void;
   onClose: () => void;
   shouldIgnoreOutsideInteraction: () => boolean;
 }
 
-function SplitProjectPicker({ picker, projects, agentOption, onSelectEmpty, onSelectAgent, onSelectProject, onClose, shouldIgnoreOutsideInteraction }: SplitProjectPickerProps) {
+function SplitProjectPicker({ picker, tree, menuStyle, onSelectEmpty, onSelectProject, onClose, shouldIgnoreOutsideInteraction }: SplitProjectPickerProps) {
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(new Set());
+
+  const toggleGroup = useCallback((groupId: string) => {
+    setCollapsedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
+  }, []);
+
+  const renderTreeNode = useCallback((node: TreeNode, depth: number): ReactNode => {
+    if (node.type === "project") {
+      const project = node.project;
+      const cliVendor = project.cli_tool ? inferVendor(project.cli_tool) : null;
+      return (
+        <button
+          key={`p:${project.id}`}
+          type="button"
+          onClick={() => onSelectProject(project)}
+          className="ui-tree-node ui-tree-project ui-split-project-picker-item ui-focus-ring flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-[13px]"
+          style={{ paddingLeft: 10 + depth * 16 }}
+          title={project.path}
+        >
+          <span className="ui-tree-leading-icon">
+            {cliVendor ? (
+              <VendorIcon vendor={cliVendor} size={14} />
+            ) : (
+              <Terminal size={14} strokeWidth={1.5} />
+            )}
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="block min-w-0 truncate font-medium">{project.name}</span>
+            {project.cli_tool && (
+              <span className="ui-tree-meta-chip ui-split-project-picker-chip inline-flex max-w-24 shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight">
+                <span className="min-w-0 truncate">{project.cli_tool}</span>
+              </span>
+            )}
+          </span>
+        </button>
+      );
+    }
+
+    const group = node.group;
+    const isOpen = !collapsedGroupIds.has(group.id);
+    return (
+      <div key={`g:${group.id}`}>
+        <button
+          type="button"
+          onClick={() => toggleGroup(group.id)}
+          className="ui-tree-node ui-tree-group ui-split-project-picker-item ui-focus-ring flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-[13px] font-semibold"
+          style={{ paddingLeft: 10 + depth * 16 }}
+        >
+          <span className="ui-tree-chevron inline-flex items-center justify-center">
+            <ChevronRight size={12} strokeWidth={2} style={{ transition: "transform 150ms", transform: isOpen ? "rotate(90deg)" : "rotate(0)" }} />
+          </span>
+          <span className="ui-tree-leading-icon"><Folder size={16} strokeWidth={1.5} /></span>
+          <span className="flex-1 truncate">{group.name}</span>
+        </button>
+        {isOpen && node.children.length > 0 && (
+          <div className="space-y-0.5">
+            {node.children.map((child) => renderTreeNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  }, [collapsedGroupIds, onSelectProject, toggleGroup]);
+
   const anchorStyle: CSSProperties = picker
     ? { position: "fixed", left: picker.x, top: picker.y, width: 1, height: 1 }
     : { position: "fixed", left: 0, top: 0, width: 1, height: 1 };
@@ -1039,48 +1076,26 @@ function SplitProjectPicker({ picker, projects, agentOption, onSelectEmpty, onSe
         <span className="pointer-events-none" style={anchorStyle} aria-hidden="true" />
       </PopoverAnchor>
       <PopoverContent
-        align="end"
-        className="w-80 p-2"
+        align={picker?.align ?? "start"}
+        className="ui-split-project-picker w-80 p-2"
+        style={menuStyle}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
         onInteractOutside={(event) => {
           if (shouldIgnoreOutsideInteraction()) event.preventDefault();
         }}
       >
-        <div className="px-2 py-1 text-xs font-semibold text-on-surface">选择分屏终端</div>
+        <div className="ui-split-project-picker-title px-2 py-1 text-xs font-semibold">选择分屏终端</div>
         <button
           type="button"
           onClick={onSelectEmpty}
-          className="ui-interactive mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-on-surface"
+          className="ui-tree-node ui-tree-project ui-split-project-picker-item ui-focus-ring mt-1 flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-[13px]"
         >
-          <Terminal size={13} strokeWidth={1.8} />
-          <span>空终端</span>
+          <span className="ui-tree-leading-icon"><Terminal size={14} strokeWidth={1.5} /></span>
+          <span className="min-w-0 flex-1 truncate font-medium">空终端</span>
         </button>
-        {agentOption && (
-          <button
-            type="button"
-            onClick={onSelectAgent}
-            className="ui-interactive mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-on-surface"
-            title={`启动 ${agentOption.label} 子 Agent：${agentOption.command}`}
-          >
-            <Sparkles size={13} strokeWidth={1.8} />
-            <span className="min-w-0 flex-1 truncate">启动 {agentOption.label} 子 Agent</span>
-            <span className="shrink-0 text-[10px] text-text-muted">{agentOption.command}</span>
-          </button>
-        )}
-        <div className="mt-1 max-h-72 overflow-y-auto">
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              onClick={() => onSelectProject(project)}
-              className="ui-interactive flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-on-surface-variant"
-              title={project.path}
-            >
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              {project.cli_tool && <span className="shrink-0 text-[10px] text-text-muted">{project.cli_tool}</span>}
-            </button>
-          ))}
+        <div className="mt-1 max-h-72 space-y-0.5 overflow-y-auto">
+          {tree.map((node) => renderTreeNode(node, 0))}
         </div>
       </PopoverContent>
     </Popover>
@@ -1138,7 +1153,12 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   const hiddenBackgroundSessionIds = useTerminalStore((s) => s.hiddenBackgroundSessionIds);
   const hideBackgroundForSession = useTerminalStore((s) => s.hideBackgroundForSession);
   const showBackgroundForSession = useTerminalStore((s) => s.showBackgroundForSession);
-  const projects = useProjectStore((s) => s.projects);
+  const { projects, tree: projectTree } = useProjectStore(
+    useShallow((s) => ({
+      projects: s.projects,
+      tree: s.tree,
+    }))
+  );
   const useExternalTerminal = useSettingsStore((s) => s.useExternalTerminal);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
@@ -1194,18 +1214,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     () => activeDragSessionId ? sessions.find((session) => session.id === activeDragSessionId) ?? null : null,
     [activeDragSessionId, sessions]
   );
-  const splitPickerSession = useMemo(
-    () => splitPicker ? sessions.find((session) => session.id === splitPicker.sessionId) ?? null : null,
-    [sessions, splitPicker]
-  );
-  const splitPickerProject = useMemo(
-    () => splitPickerSession?.projectId ? projects.find((project) => project.id === splitPickerSession.projectId) : undefined,
-    [projects, splitPickerSession]
-  );
-  const splitPickerAgentOption = useMemo(
-    () => splitPickerSession ? createAgentSplitOption(splitPickerSession, splitPickerProject) : null,
-    [splitPickerProject, splitPickerSession]
-  );
   const effectiveTerminalThemeName = terminalThemeMode === "follow-app" ? "auto" : terminalThemeName;
   const terminalTheme = useMemo(
     () => getTerminalTheme(effectiveTerminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette),
@@ -1216,6 +1224,14 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   const terminalThemeAccent = terminalTheme.blue ?? terminalTheme.cursor ?? terminalThemeForeground;
   const terminalThemeMuted = terminalTheme.brightBlack ?? terminalTheme.white ?? terminalThemeForeground;
   const terminalThemeSelection = terminalTheme.selectionBackground ?? terminalThemeAccent;
+  const splitPickerMenuForeground = normalizeTabMenuHex(terminalTheme.foreground, resolvedTheme === "dark" ? "#d8dee9" : "#1e293b");
+  const splitPickerMenuBackground = normalizeTabMenuHex(terminalTheme.background, terminalThemeBackground);
+  const splitPickerMenuStyle = {
+    "--menu-fg": splitPickerMenuForeground,
+    "--menu-bg": splitPickerMenuBackground,
+    "--menu-border": tabMenuHexToRgba(splitPickerMenuForeground, 0.18, "rgba(255, 255, 255, 0.18)"),
+    "--menu-hover": tabMenuHexToRgba(splitPickerMenuForeground, 0.12, "rgba(255, 255, 255, 0.12)"),
+  } as CSSProperties;
   const terminalWellStyle = {
     "--terminal-bridge-color": terminalThemeBackground,
     "--terminal-theme-background": terminalThemeBackground,
@@ -1225,7 +1241,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     "--terminal-theme-selection": terminalThemeSelection,
   } as CSSProperties;
   const historyActive = historyOpen && activeWorkspaceTab === "history";
-  const showToolbarText = terminalToolbarVisibility.showText;
   const statsPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "stats" : statsOpen;
   const gitPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "git" : gitOpen;
 
@@ -1380,16 +1395,19 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     });
   }, [activeSession, closeHistory, historyOpen, openHistory, projects]);
 
-  const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: DOMRect) => {
+  const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => {
     clearSplitPickerOpenSchedule();
-    const x = anchor ? Math.min(Math.max(anchor.right, 16), window.innerWidth - 16) : window.innerWidth - 24;
-    const y = anchor ? Math.min(Math.max(anchor.bottom, 44), window.innerHeight - 16) : 56;
+    const rawX = anchor ? ("right" in anchor ? anchor.right : anchor.x) : window.innerWidth - 24;
+    const rawY = anchor ? ("bottom" in anchor ? anchor.bottom : anchor.y) : 56;
+    const x = Math.min(Math.max(rawX, 16), window.innerWidth - 16);
+    const y = Math.min(Math.max(rawY, 44), window.innerHeight - 16);
+    const align: SplitPickerAlign = anchor && "right" in anchor ? "end" : "start";
     splitPickerOpenFrameRef.current = window.requestAnimationFrame(() => {
       splitPickerOpenFrameRef.current = null;
       splitPickerOpenTimerRef.current = window.setTimeout(() => {
         splitPickerOpenTimerRef.current = null;
         splitPickerOutsideGuardUntilRef.current = Date.now() + SPLIT_PICKER_OUTSIDE_GUARD_MS;
-        setSplitPicker({ sessionId, direction, x, y });
+        setSplitPicker({ sessionId, direction, x, y, align });
       }, 0);
     });
   }, [clearSplitPickerOpenSchedule]);
@@ -1400,13 +1418,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     handleCloseSplitPicker();
     setActiveWorkspaceTab("terminal");
   }, [handleCloseSplitPicker, splitPicker, splitTerminal]);
-
-  const handleSplitAgent = useCallback(() => {
-    if (!splitPicker || !splitPickerAgentOption) return;
-    void splitTerminal(splitPicker.sessionId, splitPicker.direction, splitPickerAgentOption.options);
-    handleCloseSplitPicker();
-    setActiveWorkspaceTab("terminal");
-  }, [handleCloseSplitPicker, splitPicker, splitPickerAgentOption, splitTerminal]);
 
   const handleSplitProject = useCallback((project: Project) => {
     if (!splitPicker) return;
@@ -1518,37 +1529,31 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       new: (
         <button
           onClick={handleNewTab}
-          className={showToolbarText ? "ui-flat-action ui-toolbar-button ui-primary-action ui-action-new" : "ui-focus-ring ui-icon-action ui-primary-action ui-action-new"}
+          className="ui-focus-ring ui-icon-action ui-primary-action ui-action-new"
           title="新建终端"
           aria-label="新建终端"
         >
-          {showToolbarText ? <Terminal size={14} strokeWidth={1.5} /> : <Plus size={15} strokeWidth={2} />}
-          {showToolbarText && <span>新建</span>}
+          <Plus size={15} strokeWidth={2} />
         </button>
       ),
-      templates: <CommandTemplatePanel showText={showToolbarText} popoverSide="left" toneClassName="ui-action-template" />,
-      commandHistory: <CommandHistoryPanel compact showText={showToolbarText} popoverSide="left" toneClassName="ui-action-command-history" />,
+      templates: <CommandTemplatePanel popoverSide="left" toneClassName="ui-action-template" />,
+      commandHistory: <CommandHistoryPanel compact popoverSide="left" toneClassName="ui-action-command-history" />,
       fullscreen: onToggleFullscreen ? (
         <button
           onClick={onToggleFullscreen}
-          className={showToolbarText ? "ui-flat-action ui-toolbar-button ui-action-fullscreen" : "ui-focus-ring ui-icon-action ui-action-fullscreen"}
+          className="ui-focus-ring ui-icon-action ui-action-fullscreen"
           data-active={fullscreen ? "true" : "false"}
           title={fullscreen ? "退出沉浸式全屏" : "沉浸式全屏"}
           aria-label={fullscreen ? "退出沉浸式全屏" : "进入沉浸式全屏"}
           aria-pressed={fullscreen}
         >
           {fullscreen ? <Minimize2 size={14} strokeWidth={1.8} /> : <Maximize2 size={14} strokeWidth={1.8} />}
-          {showToolbarText && <span>{fullscreen ? "退出全屏" : "全屏"}</span>}
         </button>
       ) : null,
       sessionHistory: (
         <button
           onClick={handleOpenHistoryTab}
-          className={
-            showToolbarText
-              ? `ui-flat-action ui-toolbar-button ui-action-session-history ${historyOpen ? "ui-primary-action" : "ui-history-primary"}`
-              : "ui-focus-ring ui-icon-action ui-action-session-history"
-          }
+          className="ui-focus-ring ui-icon-action ui-action-session-history"
           data-active={historyOpen ? "true" : "false"}
           title={`会话历史（${sessionHistoryShortcutHint}）`}
           aria-label={historyOpen ? "关闭会话历史" : "打开会话历史"}
@@ -1556,41 +1561,30 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
           aria-expanded={historyOpen}
         >
           <ListClockIcon size={20} />
-          {showToolbarText && <span>会话历史</span>}
         </button>
       ),
       gitChanges: (
         <button
           onClick={handleToggleGitChangesPanel}
-          className={
-            showToolbarText
-              ? `ui-flat-action ui-toolbar-button ui-action-git ${gitPanelActive ? "ui-primary-action" : ""}`
-              : "ui-focus-ring ui-icon-action ui-action-git"
-          }
+          className="ui-focus-ring ui-icon-action ui-action-git"
           data-active={gitPanelActive ? "true" : "false"}
           title={gitPanelActive ? "关闭 Git 变更" : "打开 Git 变更"}
           aria-label={gitPanelActive ? "关闭 Git 变更面板" : "打开 Git 变更面板"}
           aria-pressed={gitPanelActive}
         >
           <GitBranch size={13} strokeWidth={1.8} />
-          {showToolbarText && <span>Git 变更</span>}
         </button>
       ),
       stats: (
         <button
           onClick={handleToggleStatsPanel}
-          className={
-            showToolbarText
-              ? `ui-flat-action ui-toolbar-button ui-action-stats ${statsPanelActive ? "ui-primary-action" : ""}`
-              : "ui-focus-ring ui-icon-action ui-action-stats"
-          }
+          className="ui-focus-ring ui-icon-action ui-action-stats"
           data-active={statsPanelActive ? "true" : "false"}
           title={statsPanelActive ? "关闭统计面板" : "打开统计面板"}
           aria-label={statsPanelActive ? "关闭统计面板" : "打开统计面板"}
           aria-pressed={statsPanelActive}
         >
           <BarChart3 size={13} strokeWidth={1.8} />
-          {showToolbarText && <span>统计</span>}
         </button>
       ),
     };
@@ -1614,7 +1608,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       >
         <nav
           className="ui-terminal-actions ui-terminal-action-sidebar flex shrink-0 flex-col items-center gap-2"
-          data-show-text={showToolbarText ? "true" : "false"}
           aria-label="终端操作侧边栏"
         >
           <SortableContext items={visibleButtons.map((b) => b.id)} strategy={verticalListSortingStrategy}>
@@ -1648,7 +1641,6 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     historyOpen,
     onToggleFullscreen,
     sessionHistoryShortcutHint,
-    showToolbarText,
     statsPanelActive,
     terminalToolbarOrder,
     terminalToolbarVisibility,
@@ -1731,10 +1723,9 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
     >
       <SplitProjectPicker
         picker={splitPicker}
-        projects={projects}
-        agentOption={splitPickerAgentOption}
+        tree={projectTree}
+        menuStyle={splitPickerMenuStyle}
         onSelectEmpty={handleSplitEmpty}
-        onSelectAgent={handleSplitAgent}
         onSelectProject={handleSplitProject}
         onClose={handleCloseSplitPicker}
         shouldIgnoreOutsideInteraction={shouldIgnoreSplitPickerOutsideInteraction}

@@ -494,6 +494,16 @@ pub async fn history_list_sessions(
             .filter(|q| !q.is_empty());
         let max_sessions = limit.unwrap_or(usize::MAX);
         let start_offset = offset.unwrap_or(0);
+        debug!(
+            "history_list_sessions request: source={:?}, claude_root={}, codex_root={}, project_path={:?}, query={:?}, limit={}, offset={}",
+            source_filter,
+            resolve_claude_history_root(&roots).to_string_lossy(),
+            resolve_codex_history_root(&roots).to_string_lossy(),
+            target_project_path,
+            query_lower,
+            max_sessions,
+            start_offset
+        );
         let mut sessions = Vec::new();
         if max_sessions == 0 {
             return Ok(sessions);
@@ -502,20 +512,28 @@ pub async fn history_list_sessions(
         if query_lower.is_none() {
             // 先按 project_path 过滤再算 fingerprint：避免对全部历史文件 fs::metadata。
             // claude 仅看 project_key（零 IO），codex 走 project_cache 缓存；命中面板轮询热路径。
-            let mut files: Vec<(SessionFileRef, SessionFileFingerprint)> =
-                collect_session_files(source_filter.as_deref(), &roots)
-                    .into_iter()
-                    .filter(|file_ref| {
-                        target_project_path
-                            .as_ref()
-                            .map(|project_path| session_matches_project_path(file_ref, project_path))
-                            .unwrap_or(true)
-                    })
-                    .map(|file_ref| {
-                        let fingerprint = session_file_fingerprint(&file_ref.path);
-                        (file_ref, fingerprint)
-                    })
-                    .collect();
+            let all_files = collect_session_files(source_filter.as_deref(), &roots);
+            let total_files = all_files.len();
+            let mut files: Vec<(SessionFileRef, SessionFileFingerprint)> = all_files
+                .into_iter()
+                .filter(|file_ref| {
+                    target_project_path
+                        .as_ref()
+                        .map(|project_path| session_matches_project_path(file_ref, project_path))
+                        .unwrap_or(true)
+                })
+                .map(|file_ref| {
+                    let fingerprint = session_file_fingerprint(&file_ref.path);
+                    (file_ref, fingerprint)
+                })
+                .collect();
+            debug!(
+                "history_list_sessions project candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}",
+                source_filter,
+                target_project_path,
+                total_files,
+                files.len()
+            );
             files.sort_by(|a, b| {
                 b.1.updated_at
                     .cmp(&a.1.updated_at)
@@ -533,12 +551,30 @@ pub async fn history_list_sessions(
                 }
                 matched += 1;
                 let computed = get_or_scan_session_computation(&file_ref);
+                debug!(
+                    "history_list_sessions matched file: source={}, project_key={}, session_id={}, path={}",
+                    file_ref.source,
+                    file_ref.project_key,
+                    computed.session_id,
+                    file_ref.path.to_string_lossy()
+                );
                 sessions.push(summary_from_computation(&file_ref, &computed));
+            }
+            if sessions.is_empty() {
+                debug!(
+                    "history_list_sessions no project match: source={:?}, project_path={:?}, total_files={}, matched_files={}",
+                    source_filter,
+                    target_project_path,
+                    total_files,
+                    matched
+                );
             }
             return Ok(sessions);
         }
 
+        let mut scanned_entries = 0usize;
         for entry in refresh_history_index(&roots) {
+            scanned_entries += 1;
             if let Some(filter) = &source_filter {
                 if &entry.file_ref.source != filter {
                     continue;
@@ -572,9 +608,25 @@ pub async fn history_list_sessions(
                 }
             }
 
+            debug!(
+                "history_list_sessions indexed match: source={}, project_key={}, session_id={}, path={}",
+                entry.file_ref.source,
+                entry.file_ref.project_key,
+                summary.session_id,
+                entry.file_ref.path.to_string_lossy()
+            );
             sessions.push(summary);
         }
 
+        if sessions.is_empty() {
+            debug!(
+                "history_list_sessions no indexed match: source={:?}, project_path={:?}, query={:?}, scanned_entries={}",
+                source_filter,
+                target_project_path,
+                query_lower,
+                scanned_entries
+            );
+        }
         Ok(sessions.into_iter().skip(start_offset).take(max_sessions).collect())
     })
     .await
@@ -591,7 +643,21 @@ pub async fn history_get_session(
 ) -> Result<HistorySessionDetail, String> {
     tokio::task::spawn_blocking(move || {
         let roots = history_roots(claude_config_dir, codex_config_dir);
+        debug!(
+            "history_get_session request: source={}, project_key={}, file_path={}, claude_root={}, codex_root={}",
+            source,
+            project_key,
+            file_path,
+            resolve_claude_history_root(&roots).to_string_lossy(),
+            resolve_codex_history_root(&roots).to_string_lossy()
+        );
         let file_ref = validate_session_file_ref(&file_path, &source, &project_key, &roots)?;
+        debug!(
+            "history_get_session reading file: source={}, project_key={}, path={}",
+            file_ref.source,
+            file_ref.project_key,
+            file_ref.path.to_string_lossy()
+        );
         build_session_detail(&file_ref)
     })
     .await
