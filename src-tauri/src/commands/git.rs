@@ -1201,17 +1201,26 @@ fn run_git_cli(project_path: &str, args: &[&str]) -> Result<String, String> {
     if !path.exists() {
         return Err("path_not_found".to_string());
     }
-    let output = std::process::Command::new("git")
-        .current_dir(path)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "git_not_found".to_string()
-            } else {
-                format!("spawn_failed: {e}")
-            }
-        })?;
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(path).args(args);
+
+    // Windows 上隐藏控制台窗口，避免推送/拉取时弹出 CMD 窗口
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "git_not_found".to_string()
+        } else {
+            format!("spawn_failed: {e}")
+        }
+    })?;
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if output.status.success() {
