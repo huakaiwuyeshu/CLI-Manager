@@ -13,3 +13,4 @@ pub mod git;
 pub mod subagent_transcript;
 pub mod model_pricing;
 pub mod system_notification;
+pub mod fonts;

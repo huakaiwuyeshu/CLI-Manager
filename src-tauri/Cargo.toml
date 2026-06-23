@@ -47,6 +47,7 @@ git2 = "0.19"
 # 文件系统监听 + 去抖：fs-watcher 替代 Git 变更面板的定时轮询
 notify = "6"
 notify-debouncer-mini = "0.4"
+fontdb = "0.23"
 
 [dev-dependencies]
 tempfile = "3"

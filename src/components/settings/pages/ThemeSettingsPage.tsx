@@ -35,10 +35,17 @@ import {
   type UnsplitBehavior,
 } from "../../../stores/settingsStore";
 import { TerminalBackgroundSection } from "./TerminalBackgroundSection";
+import {
+  listSystemFonts,
+  mergeFontFamilyOptions,
+  type SystemFontFamily,
+} from "../../../lib/systemFonts";
+import { FontFamilySelect } from "../FontFamilySelect";
 
 const SWATCH_KEYS = ["background", "foreground", "red", "green", "blue", "cyan"] as const;
 const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 24;
+const TERMINAL_FONT_FALLBACK = "monospace";
 
 const FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
   { value: "Cascadia Code, Consolas, monospace", label: "Cascadia Code（推荐）" },
@@ -82,6 +89,31 @@ export function ThemeSettingsPage() {
   const [fontSizeDraft, setFontSizeDraft] = useState(fontSize);
   const [terminalScrollbackRowsDraft, setTerminalScrollbackRowsDraft] = useState(terminalScrollbackRows);
   const [osPlatform, setOsPlatform] = useState<OsPlatform>("windows");
+  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
+  const [systemFontsLoading, setSystemFontsLoading] = useState(false);
+  const [systemFontsError, setSystemFontsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSystemFontsLoading(true);
+    setSystemFontsError(null);
+
+    void listSystemFonts()
+      .then((fonts) => {
+        if (!cancelled) setSystemFonts(fonts);
+      })
+      .catch((err) => {
+        console.warn("Failed to list system fonts:", err);
+        if (!cancelled) setSystemFontsError("系统字体读取失败，已使用内置字体选项。");
+      })
+      .finally(() => {
+        if (!cancelled) setSystemFontsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     void getOsPlatform().then(setOsPlatform);
@@ -130,16 +162,9 @@ export function ThemeSettingsPage() {
     };
   }, [autoThemeId, darkThemePalette, effectiveThemeName, lightThemePalette, resolvedTheme, terminalThemeMode]);
 
-  const isCustomFontFamily = useMemo(
-    () => !FONT_FAMILY_OPTIONS.some((opt) => opt.value === fontFamily),
-    [fontFamily]
-  );
   const fontFamilyOptions = useMemo(
-    () => [
-      ...(isCustomFontFamily ? [{ value: fontFamily, label: "当前自定义（保留）" }] : []),
-      ...FONT_FAMILY_OPTIONS,
-    ],
-    [fontFamily, isCustomFontFamily]
+    () => mergeFontFamilyOptions(fontFamily, FONT_FAMILY_OPTIONS, systemFonts, TERMINAL_FONT_FALLBACK),
+    [fontFamily, systemFonts]
   );
   const normalizedDefaultShell = normalizeShellKey(defaultShell);
   const shellSelectValue = normalizedDefaultShell ?? defaultShell;
@@ -331,16 +356,21 @@ export function ThemeSettingsPage() {
               </Text>
             </Stack>
 
-            <Select<string>
+            <FontFamilySelect
               label="终端字体族"
               value={fontFamily}
               onChange={(value) => {
                 if (value) void update("fontFamily", value);
               }}
               data={fontFamilyOptions}
-              allowDeselect={false}
+              maxDropdownHeight={320}
+              nothingFoundMessage={systemFontsLoading ? "正在读取系统字体..." : "未找到匹配字体"}
               size="xs"
               aria-label="终端字体族"
+              description={
+                systemFontsError ??
+                `影响内置终端字体；已读取 ${systemFonts.length} 个系统字体。建议选择等宽字体。`
+              }
             />
 
             <Select<string>

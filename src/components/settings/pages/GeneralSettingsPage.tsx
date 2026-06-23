@@ -34,6 +34,12 @@ import {
   MIN_READABLE_CONTRAST_RATIO,
 } from "../../../lib/contrast";
 import { AboutSection } from "../AboutSection";
+import {
+  listSystemFonts,
+  mergeFontFamilyOptions,
+  type SystemFontFamily,
+} from "../../../lib/systemFonts";
+import { FontFamilySelect } from "../FontFamilySelect";
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: "light", label: "浅色" },
@@ -261,6 +267,8 @@ function getDefaultUiBgColor(
   return resolvedTheme === "dark" ? DARK_BG_COLORS[darkPalette] : LIGHT_BG_COLORS[lightPalette];
 }
 
+const UI_FONT_FALLBACK = "\"PingFang SC\", \"Microsoft YaHei\", sans-serif";
+
 const UI_FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
   {
     value:
@@ -427,6 +435,31 @@ export function GeneralSettingsPage() {
   const update = useSettingsStore((s) => s.update);
   const [uiFontSizeDraft, setUiFontSizeDraft] = useState(uiFontSize);
   const [uiTextColorDraft, setUiTextColorDraft] = useState(uiTextColor);
+  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
+  const [systemFontsLoading, setSystemFontsLoading] = useState(false);
+  const [systemFontsError, setSystemFontsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSystemFontsLoading(true);
+    setSystemFontsError(null);
+
+    void listSystemFonts()
+      .then((fonts) => {
+        if (!cancelled) setSystemFonts(fonts);
+      })
+      .catch((err) => {
+        console.warn("Failed to list system fonts:", err);
+        if (!cancelled) setSystemFontsError("系统字体读取失败，已使用内置字体选项。");
+      })
+      .finally(() => {
+        if (!cancelled) setSystemFontsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setUiFontSizeDraft(uiFontSize);
@@ -454,10 +487,6 @@ export function GeneralSettingsPage() {
       void update("uiFontSize", next);
     }
   };
-  const isCustomUiFontFamily = useMemo(
-    () => !UI_FONT_FAMILY_OPTIONS.some((opt) => opt.value === uiFontFamily),
-    [uiFontFamily]
-  );
   // 对已提交的自定义颜色按当前配色的 --bg-primary（纯映射）计算对比度，
   // 给出可见反馈（消除“静默未应用”）；计算量极小，无需 memo。
   const uiBackgroundColor = getDefaultUiBgColor(resolvedTheme, lightThemePalette, darkThemePalette);
@@ -475,11 +504,8 @@ export function GeneralSettingsPage() {
     uiTextColorHintColor = "var(--warning)";
   }
   const uiFontFamilyOptions = useMemo(
-    () => [
-      ...(isCustomUiFontFamily ? [{ value: uiFontFamily, label: "当前自定义（保留）" }] : []),
-      ...UI_FONT_FAMILY_OPTIONS,
-    ],
-    [isCustomUiFontFamily, uiFontFamily]
+    () => mergeFontFamilyOptions(uiFontFamily, UI_FONT_FAMILY_OPTIONS, systemFonts, UI_FONT_FALLBACK),
+    [systemFonts, uiFontFamily]
   );
   const updateToolbarVisibility = (key: keyof TerminalToolbarVisibilitySettings, checked: boolean) => {
     void update("terminalToolbarVisibility", { ...terminalToolbarVisibility, [key]: checked });
@@ -547,17 +573,21 @@ export function GeneralSettingsPage() {
               </SimpleGrid>
             </Stack>
 
-            <Select<string>
+            <FontFamilySelect
               label="应用字体"
               value={uiFontFamily}
               onChange={(value) => {
                 if (value) void update("uiFontFamily", value);
               }}
               data={uiFontFamilyOptions}
-              allowDeselect={false}
+              maxDropdownHeight={320}
+              nothingFoundMessage={systemFontsLoading ? "正在读取系统字体..." : "未找到匹配字体"}
               size="xs"
               aria-label="应用字体"
-              description="影响除终端外的应用整体界面字体；终端字体在「终端设置」中单独配置。"
+              description={
+                systemFontsError ??
+                `影响除终端外的应用整体界面字体；已读取 ${systemFonts.length} 个系统字体。终端字体在「终端设置」中单独配置。`
+              }
             />
 
             <Stack gap={6}>

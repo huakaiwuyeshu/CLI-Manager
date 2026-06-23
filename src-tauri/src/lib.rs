@@ -331,6 +331,7 @@ pub fn run() {
             commands::sync::sync_local_import,
             commands::version::get_app_version,
             commands::version::get_os_platform,
+            commands::fonts::list_system_fonts,
             commands::background::save_background_image,
             commands::background::cleanup_unused_backgrounds,
             commands::background::background_image_exists,
