@@ -1277,13 +1277,16 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   }, []);
 
   const handleNewTab = useCallback(async () => {
+    const newTerminalContext = activeSession?.kind === "subagent-transcript"
+      ? { cwd: undefined, title: "Terminal" }
+      : { cwd: activeSession?.cwd, title: activeSession?.title ?? "Terminal" };
     if (useExternalTerminal) {
-      await openWindowsTerminal([{ title: "Terminal" }]);
+      await openWindowsTerminal([{ title: newTerminalContext.title, cwd: newTerminalContext.cwd ?? undefined }]);
       return;
     }
-    await createSession(undefined, undefined, "Terminal");
+    await createSession(undefined, newTerminalContext.cwd ?? undefined, newTerminalContext.title);
     setActiveWorkspaceTab("terminal");
-  }, [useExternalTerminal, createSession]);
+  }, [activeSession, useExternalTerminal, createSession]);
 
   const handleDuplicateSession = useCallback((session: TerminalSession) => {
     void createSession(

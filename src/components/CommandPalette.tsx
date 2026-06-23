@@ -68,8 +68,10 @@ export function CommandPalette() {
   const commandPaletteShortcutHint = commandPaletteShortcut.trim() || "未设置快捷键";
   const sessionHistoryShortcutHint = sessionHistoryShortcut.trim() || "未设置快捷键";
 
-  const activeProjectId =
-    sessions.find((item) => item.id === activeSessionId)?.projectId ?? null;
+  const activeSession = activeSessionId ? sessions.find((item) => item.id === activeSessionId) ?? null : null;
+  const activeProjectId = activeSession?.projectId ?? null;
+  const newTerminalCwd = activeSession?.kind === "subagent-transcript" ? undefined : activeSession?.cwd;
+  const newTerminalTitle = activeSession?.kind === "subagent-transcript" ? "Terminal" : activeSession?.title ?? "Terminal";
   const templates = getTemplatesForContext(activeProjectId, activeSessionId);
 
   useEffect(() => {
@@ -89,7 +91,7 @@ export function CommandPalette() {
         label: "新建终端",
         description: "打开新的终端标签",
         category: "操作",
-        action: () => createSession(undefined, undefined, "Terminal"),
+        action: () => createSession(undefined, newTerminalCwd ?? undefined, newTerminalTitle),
       });
     }
 
@@ -198,7 +200,7 @@ export function CommandPalette() {
     }
 
     return result;
-  }, [projects, templates, activeSessionId, resolvedTheme, createSession, splitTerminal, unsplitTerminal, setTheme, viewMode, sessionHistoryShortcut]);
+  }, [projects, templates, activeSessionId, newTerminalCwd, newTerminalTitle, resolvedTheme, createSession, splitTerminal, unsplitTerminal, setTheme, viewMode, sessionHistoryShortcut]);
 
   const queryLower = useMemo(() => query.trim().toLowerCase(), [query]);
 

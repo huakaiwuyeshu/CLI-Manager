@@ -91,6 +91,9 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
 
       const terminalState = useTerminalStore.getState();
       const { sessions, activeSessionId, setActive, closeSession, createSession } = terminalState;
+      const activeSession = activeSessionId ? sessions.find((session) => session.id === activeSessionId) : null;
+      const newTerminalCwd = activeSession?.kind === "subagent-transcript" ? undefined : activeSession?.cwd;
+      const newTerminalTitle = activeSession?.kind === "subagent-transcript" ? "Terminal" : activeSession?.title ?? "Terminal";
 
       if (isShortcutMatch(combo, shortcuts.nextTab) || isShortcutMatch(combo, shortcuts.prevTab)) {
         if (viewMode === "compact" || (isEditingTarget && !isXtermTarget)) return;
@@ -110,7 +113,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
       if (isShortcutMatch(combo, shortcuts.newTerminal)) {
         if (viewMode === "compact") return;
         e.preventDefault();
-        createSession(undefined, undefined, "Terminal");
+        createSession(undefined, newTerminalCwd ?? undefined, newTerminalTitle);
         return;
       }
 
