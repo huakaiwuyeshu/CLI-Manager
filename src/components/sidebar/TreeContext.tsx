@@ -13,6 +13,8 @@ export interface TreeActions {
   onSelectProjectByKeyboard: (p: Project) => void;
   onOpenProject: (p: Project) => void;
   onStartGroup: (groupId: string) => void;
+  onRequestDeleteProject: (p: Project) => void;
+  onRequestDeleteGroup: (groupId: string, groupName: string) => void;
   onRenameConfirm: (id: string, newName: string) => void;
   onCancelRename: () => void;
   onContextMenuProject: (e: ReactMouseEvent, p: Project) => void;

@@ -42,6 +42,7 @@ interface VisibleTreeNode {
   kind: "group" | "project";
   parentGroupKey: string | null;
   groupId?: string;
+  groupName?: string;
   projectId?: string;
   isOpen?: boolean;
   hasChildren?: boolean;
@@ -117,6 +118,7 @@ function flattenVisibleTree(
         kind: "group",
         parentGroupKey,
         groupId: node.group.id,
+        groupName: node.group.name,
         isOpen,
         hasChildren: node.children.length > 0,
         firstChildKey,
@@ -269,6 +271,22 @@ export function ProjectTree({
         if (projectNode?.type === "project") {
           actions.onOpenProject(projectNode.project);
         }
+      }
+      return;
+    }
+
+    if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (current.kind === "project" && current.projectId) {
+        const projectNode = projectById.get(current.projectId);
+        if (projectNode?.type === "project") {
+          actions.onRequestDeleteProject(projectNode.project);
+        }
+        return;
+      }
+      if (current.kind === "group" && current.groupId) {
+        actions.onRequestDeleteGroup(current.groupId, current.groupName ?? "");
       }
       return;
     }
