@@ -1,4 +1,4 @@
-import { Coins, Cpu, Database, Layers3, TrendingUp } from "lucide-react";
+import { Coins, Cpu, Database, Layers3, TrendingUp, Wrench } from "lucide-react";
 import {
   Area,
   CartesianGrid,
@@ -17,6 +17,7 @@ import {
   Donut,
   formatCompactCount,
   formatCost,
+  formatDuration,
   ProgressBar,
   SegmentedBar,
   TERM,
@@ -71,6 +72,7 @@ export function SessionContextView({ session }: SessionContextViewProps) {
   const mcpCallCount = sumToolCounts(usage?.mcp_calls);
   const skillCallCount = sumToolCounts(usage?.skill_calls);
   const builtinCallCount = sumToolCounts(usage?.builtin_calls);
+  const sessionDuration = session ? formatDuration(session.updated_at - session.created_at) : "—";
   const contextLimit = session?.usage?.context_window ?? getContextLimit(stats.dominantModel);
   const lastContextTokens = session?.usage?.last_context_tokens ?? null;
   const usageRatio = contextLimit && lastContextTokens !== null ? lastContextTokens / contextLimit : null;
@@ -168,6 +170,17 @@ export function SessionContextView({ session }: SessionContextViewProps) {
         <div className="ui-session-process-metrics">
           <ContextMetric label={t("termStats.estimatedCost")} value={formatCost(stats.estimatedCost)} />
           <ContextMetric label={t("termStats.messageCount")} value={String(session.messages.length)} />
+          <ContextMetric label={t("termStats.duration")} value={sessionDuration} />
+          <ContextMetric label={`${t("termStats.total")} Token`} value={formatCompactCount(stats.totalTokens)} />
+        </div>
+      </section>
+
+      <section className="ui-session-process-card">
+        <div className="ui-session-process-card-title">
+          <Wrench size={14} />
+          {t("history.context.toolCalls")}
+        </div>
+        <div className="ui-session-process-metrics">
           <ContextMetric label={t("termStats.tools")} value={formatCompactCount(totalToolCalls)} />
           <ContextMetric label="MCP" value={formatCompactCount(mcpCallCount)} />
           <ContextMetric label={t("history.tools.skillCommand")} value={formatCompactCount(skillCallCount)} />
