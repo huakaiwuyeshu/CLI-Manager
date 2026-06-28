@@ -12,9 +12,9 @@ mod wsl;
 
 use log::LevelFilter;
 use tauri::{
+    AppHandle, Emitter, Manager, Runtime,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, Runtime,
 };
 use tauri_plugin_log::{Builder as LogBuilder, Target, TargetKind, TimezoneStrategy};
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
@@ -416,13 +416,17 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let RunEvent::Reopen {
+            if let tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..
-            } = event {
+            } = event
+            {
                 if !has_visible_windows {
                     show_main_window(app);
                 }
             }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         });
 }
