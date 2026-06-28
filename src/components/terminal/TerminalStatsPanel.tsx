@@ -503,9 +503,6 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   // 未绑定 hook 会话时，4 张会话级卡片照常渲染但数据置空（保留图形骨架）
   const boundSession = tokensBound ? latestSession : null;
   const boundStats = tokensBound ? stats : EMPTY_TOKEN_STATS;
-  const modelContextStats = tokensBound || !latestSession
-    ? boundStats
-    : { ...EMPTY_TOKEN_STATS, dominantModel: stats.dominantModel };
   const latestChangesSummary = useMemo(() => buildLatestChangesSummary(boundSession), [boundSession]);
   const hasVisibleCard = terminalStatsCardOrder.some((key) => terminalStatsCardVisibility[key]);
 
@@ -542,10 +539,10 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
         return (
           <ModelContextCard
             key={cardKey}
-            stats={modelContextStats}
+            stats={boundStats}
             session={boundSession}
-            displayModel={stats.dominantModel}
-            exactContextLimit={session.usage?.context_window ?? null}
+            displayModel={boundStats.dominantModel}
+            exactContextLimit={boundSession?.usage?.context_window ?? null}
             reasoningEffort={terminalSession?.cliReasoningEffort ?? null}
           />
         );
