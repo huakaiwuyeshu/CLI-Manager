@@ -13,7 +13,16 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useShallow } from "zustand/shallow";
-import { applyTransparency, getTerminalTheme, getTerminalBackground } from "../lib/terminalThemes";
+import {
+  applyTransparency,
+  getTerminalBackground,
+  getTerminalBackgroundOverlayColor,
+  getTerminalFontWeight,
+  getTerminalFontWeightBold,
+  getTerminalMinimumContrastRatio,
+  getTerminalTheme,
+  isLightTerminalTheme,
+} from "../lib/terminalThemes";
 import { backgroundAssetUrl } from "../lib/assetUrl";
 import { TERMINAL_FILE_PATH_MIME } from "../lib/aiPathFormatter";
 import { endTerminalFileDrag, getTerminalFileDragText } from "../lib/terminalFileDrag";
@@ -266,6 +275,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const webglAddonRef = useRef<WebglAddon | null>(null);
   const inputBuffer = useRef("");
   const fitRafRef = useRef<number | null>(null);
   const isComposingRef = useRef(false);
@@ -355,6 +365,29 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const isTransparent = background.enabled && background.imagePath !== null && !hiddenForThisSession;
   const isTransparentRef = useRef(isTransparent);
   isTransparentRef.current = isTransparent;
+
+  const syncWebglRenderer = (terminal: Terminal, theme: ReturnType<typeof getTerminalTheme>, transparent: boolean) => {
+    const shouldUseWebgl = !transparent || !isLightTerminalTheme(theme);
+    if (!shouldUseWebgl) {
+      webglAddonRef.current?.dispose();
+      webglAddonRef.current = null;
+      return;
+    }
+    if (webglAddonRef.current) return;
+    try {
+      const addon = new WebglAddon();
+      addon.onContextLoss(() => {
+        addon.dispose();
+        if (webglAddonRef.current === addon) {
+          webglAddonRef.current = null;
+        }
+      });
+      terminal.loadAddon(addon);
+      webglAddonRef.current = addon;
+    } catch {
+      // WebGL not supported, fall back to xterm's default renderer.
+    }
+  };
 
   const fitWhenStable = (force = false) => {
     const container = containerRef.current;
@@ -704,9 +737,21 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const terminal = terminalRef.current;
     if (!terminal) return;
     const baseTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+    const minimumContrastRatio = getTerminalMinimumContrastRatio(baseTheme);
+    const terminalFontWeight = getTerminalFontWeight(baseTheme);
+    const terminalFontWeightBold = getTerminalFontWeightBold(baseTheme);
     terminal.options.theme = isTransparent ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme;
+    if (terminal.options.minimumContrastRatio !== minimumContrastRatio) {
+      terminal.options.minimumContrastRatio = minimumContrastRatio;
+    }
+    const weightChanged = terminal.options.fontWeight !== terminalFontWeight || terminal.options.fontWeightBold !== terminalFontWeightBold;
+    if (weightChanged) {
+      terminal.options.fontWeight = terminalFontWeight;
+      terminal.options.fontWeightBold = terminalFontWeightBold;
+    }
+    syncWebglRenderer(terminal, baseTheme, isTransparent);
     const sizeChanged = terminal.options.fontSize !== fontSize || terminal.options.fontFamily !== fontFamily;
-    if (sizeChanged) {
+    if (sizeChanged || weightChanged) {
       terminal.options.fontSize = fontSize;
       terminal.options.fontFamily = fontFamily;
       scheduleFit(true);
@@ -766,10 +811,13 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       cursorWidth: 1,
       fontSize,
       fontFamily,
+      fontWeight: getTerminalFontWeight(baseTheme),
+      fontWeightBold: getTerminalFontWeightBold(baseTheme),
       scrollback: terminalScrollbackRows,
       scrollOnEraseInDisplay: true,
       allowProposedApi: true,
       windowsPty: { backend: "conpty" },
+      minimumContrastRatio: getTerminalMinimumContrastRatio(baseTheme),
       // Always true — research confirms WebglAddon stays compatible and the
       // perf cost is acceptable. xterm cannot toggle this after construction,
       // so we pay it unconditionally to avoid having to recreate the terminal
@@ -811,17 +859,20 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     });
 
     let webglAddon: WebglAddon | null = null;
-    try {
-      webglAddon = new WebglAddon();
+    if (!isTransparentRef.current || !isLightTerminalTheme(baseTheme)) {
+      try {
+        webglAddon = new WebglAddon();
       // GPU 上下文丢失（驱动崩溃 / GPU 进程重启 / 长会话）后 WebGL 渲染会僵死。
       // 注册 contextLoss 回调，丢失时 dispose 让 xterm 自动回落到 Canvas 渲染器。
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose();
-        webglAddon = null;
-      });
-      terminal.loadAddon(webglAddon);
-    } catch {
-      // WebGL not supported, fall back to canvas
+        webglAddon.onContextLoss(() => {
+          webglAddon?.dispose();
+          webglAddon = null;
+        });
+        terminal.loadAddon(webglAddon);
+        webglAddonRef.current = webglAddon;
+      } catch {
+        // WebGL not supported, fall back to canvas
+      }
     }
 
     terminalRef.current = terminal;
@@ -1542,7 +1593,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       unlisten?.();
       searchResultDisposable.dispose();
       cursorStyleDisposable.dispose();
-      webglAddon?.dispose();
+      webglAddonRef.current?.dispose();
+      webglAddonRef.current = null;
+      webglAddon = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -1552,6 +1605,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
   const terminalTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
   const backgroundColor = getTerminalBackground(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
+  const backgroundOverlayColor = getTerminalBackgroundOverlayColor(terminalTheme);
   const showBackgroundImage = isTransparent && assetUrl !== null;
   terminalBackgroundIsLightRef.current = isLightHexColor(backgroundColor);
   terminalColorRepliesRef.current = {
@@ -1721,6 +1775,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         "--terminal-bg-opacity": (background.opacity / 100).toString(),
         "--terminal-bg-blur": `${background.blur}px`,
         "--terminal-bg-darken": (background.overlayDarken / 100).toString(),
+        "--terminal-bg-overlay-color": backgroundOverlayColor,
       } as CSSProperties)
     : { backgroundColor };
 

@@ -588,6 +588,8 @@ terminal.options.theme = isTransparent ? applyTransparency(theme) : theme;
 
 **Reference**: `src/components/XTermTerminal.tsx` — sets `allowTransparency: true` unconditionally; the hot-update `useEffect` only swaps `terminal.options.theme` via `applyTransparency` helper in `src/lib/terminalThemes.ts`.
 
+**Contrast contract**: Transparent terminal background compositing must be theme-brightness aware. Dark terminal themes may use black alpha for the xterm cell background and image overlay, but light terminal themes must use white alpha so muted ANSI text stays readable. Light terminal themes also use a slightly heavier normal font weight, and light transparent-background terminals should avoid WebGL because its alpha compositing can make glyph edges look soft on bright surfaces. Keep the decision centralized in `src/lib/terminalThemes.ts` helpers such as `isLightTerminalTheme`, `applyTransparency`, `getTerminalBackgroundOverlayColor`, `getTerminalMinimumContrastRatio`, and terminal font-weight helpers; do not hardcode `rgba(0,0,0,...)` in `XTermTerminal` or terminal background CSS.
+
 **Prevention checklist when wiring a new xterm appearance feature**:
 
 - [ ] Does the feature need a non-opaque background, an alternate cursor blink, or any other "must-set-at-construction" xterm option?

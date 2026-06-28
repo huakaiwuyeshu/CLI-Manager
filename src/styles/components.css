@@ -3759,7 +3759,8 @@
 /*  Activated by `data-bg-enabled="true"` on the `.ui-terminal-bg-layer`
     wrapper inside `XTermTerminal.tsx`. Dynamic values are passed via the
     CSS custom properties --terminal-bg-image / --terminal-bg-opacity /
-    --terminal-bg-blur / --terminal-bg-darken set inline.                  */
+    --terminal-bg-blur / --terminal-bg-darken / --terminal-bg-overlay-color
+    set inline.                                                            */
 
 .ui-terminal-bg-layer[data-bg-enabled="true"] {
   position: relative;
@@ -3825,7 +3826,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background-color: rgba(0, 0, 0, var(--terminal-bg-darken, 0));
+  background-color: rgba(var(--terminal-bg-overlay-color, 0, 0, 0), var(--terminal-bg-darken, 0));
   pointer-events: none;
   z-index: 1;
   transition: background-color 300ms ease;

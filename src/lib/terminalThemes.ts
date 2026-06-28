@@ -26,6 +26,56 @@ export const TERMINAL_THEME_GROUPS: TerminalThemeGroup[] = [
   { id: "light-office", name: "Light Office", description: "White background and paper tones for bright environments" },
 ];
 
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function normalizeHexColor(value: string | undefined): string | null {
+  if (!value || !HEX_COLOR_PATTERN.test(value)) return null;
+  if (value.length === 4) {
+    const [, r, g, b] = value;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return value.toLowerCase();
+}
+
+function hexToRgb(value: string | undefined): [number, number, number] | null {
+  const normalized = normalizeHexColor(value);
+  if (!normalized) return null;
+  return [
+    Number.parseInt(normalized.slice(1, 3), 16),
+    Number.parseInt(normalized.slice(3, 5), 16),
+    Number.parseInt(normalized.slice(5, 7), 16),
+  ];
+}
+
+function getRelativeLuminance([r, g, b]: [number, number, number]): number {
+  const [srgbR, srgbG, srgbB] = [r, g, b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * srgbR + 0.7152 * srgbG + 0.0722 * srgbB;
+}
+
+export function isLightTerminalTheme(theme: ITheme): boolean {
+  const rgb = hexToRgb(theme.background);
+  return rgb !== null && getRelativeLuminance(rgb) > 0.55;
+}
+
+export function getTerminalBackgroundOverlayColor(theme: ITheme): string {
+  return isLightTerminalTheme(theme) ? "255, 255, 255" : "0, 0, 0";
+}
+
+export function getTerminalMinimumContrastRatio(theme: ITheme): number {
+  return isLightTerminalTheme(theme) ? 6 : 1;
+}
+
+export function getTerminalFontWeight(theme: ITheme): number {
+  return isLightTerminalTheme(theme) ? 500 : 400;
+}
+
+export function getTerminalFontWeightBold(_theme: ITheme): number {
+  return 700;
+}
+
 export type LightTerminalPalette =
   | "warm-paper"
   | "cream-green"
@@ -1432,9 +1482,9 @@ export function getTerminalBackground(
 }
 
 /**
- * Return a shallow clone of `theme` with a (possibly translucent) dark
- * background and a translucent selection color suitable for rendering over a
- * DOM background image. Other colors are untouched.
+ * Return a shallow clone of `theme` with a brightness-aware translucent
+ * background and selection color suitable for rendering over a DOM background
+ * image. Other colors are untouched.
  *
  * Required when `allowTransparency: true` is set on the xterm `Terminal`
  * instance — see `research/xterm-transparent-background.md`.
@@ -1455,12 +1505,14 @@ export function getTerminalBackground(
 export function applyTransparency(theme: ITheme, darkenPct: number = 0): ITheme {
   const clamped = Math.max(0, Math.min(100, darkenPct));
   const floor = (clamped / 100) * 0.6;
-  const next: ITheme = { ...theme, background: `rgba(0,0,0,${floor.toFixed(3)})` };
+  const isLight = isLightTerminalTheme(theme);
+  const cellBackground = isLight ? "255,255,255" : "0,0,0";
+  const next: ITheme = { ...theme, background: `rgba(${cellBackground},${floor.toFixed(3)})` };
   const selection = theme.selectionBackground;
   // Only override opaque selection backgrounds (HEX or rgb without alpha).
   // Already-translucent rgba selections are kept as-is.
   if (typeof selection === "string" && !/^rgba\s*\(/i.test(selection)) {
-    next.selectionBackground = "rgba(255,255,255,0.18)";
+    next.selectionBackground = isLight ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.18)";
   }
   return next;
 }
