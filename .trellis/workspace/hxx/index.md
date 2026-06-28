@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
+- **Total Sessions**: 21
 - **Last Active**: 2026-06-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~680 | Active |
+| `journal-1.md` | ~713 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-06-28 | 修复浅色终端背景与 TUI 输入区显示 | `c02b4da` | `master` |
 | 20 | 2026-06-28 | 系统通知点击跳转终端 | `79e15d8` | `master` |
 | 19 | 2026-06-28 | 修复终端侧边面板切换异常 | `0f9e885`, `d00f99f` | `master` |
 | 18 | 2026-06-26 | Fix Codex Subagent Transcript Binding | `4698022`, `7d77604` | `master` |
