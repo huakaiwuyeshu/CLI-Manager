@@ -3,10 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useProjectStore } from "../stores/projectStore";
 import type { Project, Group } from "../lib/types";
-import { getOsPlatform } from "../lib/shell";
+import { getShellOptions } from "../lib/types";
+import { getOsPlatform, defaultShellForOs, normalizeShellKey } from "../lib/shell";
 import type { OsPlatform } from "../lib/shell";
-import { syncPtyEnvVarsTextForShell } from "../lib/ptyEnv";
-import { buildShellSelectOptions } from "../lib/shellSelectOptions";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Check, ChevronDown } from "./icons";
 import { Input } from "./ui/input";
@@ -60,6 +59,10 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
       const platform = await getOsPlatform();
       setOsPlatform(platform);
 
+      // 如果是新建且没有预设 shell，使用平台默认值
+      if (!isEdit && !isClone && !shell) {
+        setShell(defaultShellForOs(platform));
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // 只在 mount 时执行一次
@@ -84,12 +87,6 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
       return false;
     }
   }, []);
-
-  const handleShellChange = useCallback((nextShell: string) => {
-    setShell(nextShell);
-    if (isEdit || isClone) return;
-    setEnvVarsText((current) => syncPtyEnvVarsTextForShell(current, nextShell, osPlatform));
-  }, [isClone, isEdit, osPlatform]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -165,10 +162,12 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
     : "不分组";
 
   // Shell 选项：如果当前 shell 在平台选项中不存在，保留为"当前自定义（保留）"
-  const shellOptions = buildShellSelectOptions({
-    shell,
-    osPlatform,
-  });
+  const normalizedShell = normalizeShellKey(shell);
+  const isCustomShell = shell && !normalizedShell;
+  const shellOptions = [
+    ...(isCustomShell ? [{ value: shell, label: `${shell}（当前自定义）` }] : []),
+    ...getShellOptions(osPlatform),
+  ];
 
   return (
     <>
@@ -234,7 +233,7 @@ export function ConfigModal({ project, cloneFrom, defaultGroupId, onClose }: Pro
                 <label className="mb-1 block text-xs text-text-muted">Shell</label>
                 <Select
                   value={shell}
-                  onChange={(e) => handleShellChange(e.target.value)}
+                  onChange={(e) => setShell(e.target.value)}
                   className="text-sm"
                 >
                   {shellOptions.map((opt) => (

@@ -24,7 +24,6 @@ import {
 import { backgroundAssetUrl } from "../lib/assetUrl";
 import { TERMINAL_FILE_PATH_MIME } from "../lib/aiPathFormatter";
 import { endTerminalFileDrag, getTerminalFileDragText } from "../lib/terminalFileDrag";
-import { createTerminalResizeSync } from "../lib/terminalResizeSync";
 import {
   defaultShellForOs,
   getOsPlatform,
@@ -55,7 +54,7 @@ const IMAGE_ADDON_STORAGE_LIMIT_MB = 32;
 const TUI_BORDER_CHAR_PATTERN = /^[│┃║▏▎▍▌▋▊▉█┆┊╎╏]$/u;
 const TUI_BORDER_PREFIX_PATTERN = /^[\s│┃║▏▎▍▌▋▊▉█┆┊╎╏]+/u;
 import { toast } from "sonner";
-import { logError, logInfo } from "../lib/logger";
+import { logError } from "../lib/logger";
 
 // Shell integration OSC 序列在原始 PTY 流上解析（而非 xterm parser hook）：
 // 后台 Tab 的输出会进入 inactive ring buffer 且可能被截断丢弃，状态事件必须
@@ -910,18 +909,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
-    const resizeSync = createTerminalResizeSync({
-      sessionId,
-      now: () => performance.now(),
-      setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
-      clearTimeout: (timerId) => window.clearTimeout(timerId),
-      emitResize: ({ cols, rows }) => {
-        invoke("pty_resize", { sessionId, cols, rows }).catch((err) => {
-          logError("PTY resize failed in XTermTerminal", { sessionId, cols, rows, err });
-        });
-      },
-      log: (event) => logInfo("[terminal.resize_sync]", event),
-    });
     scheduleFit(true);
     if (isActive) {
       terminal.focus();
@@ -938,7 +925,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const pasteIntoTerminal = (text: string) => {
       if (!text) return;
       markAttentionInputHandled();
-      resizeSync.noteInput("paste");
       terminal.paste(text);
     };
 
@@ -1086,8 +1072,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     terminal.onData((data) => {
       markAttentionInputHandled();
-      const isBracketedPaste = data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~");
-      resizeSync.noteInput(isBracketedPaste ? "paste" : "input");
       invoke("pty_write", { sessionId, data }).catch((err) => reportPtyWriteError("onData", err));
 
       if (data === "\r") {
@@ -1114,7 +1098,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     // Sync resize to PTY
     terminal.onResize(({ cols, rows }) => {
       if (cols < MIN_TERMINAL_COLS || rows < MIN_TERMINAL_ROWS) return;
-      resizeSync.requestResize({ cols, rows });
+      invoke("pty_resize", { sessionId, cols, rows }).catch((err) => {
+        logError("PTY resize failed in XTermTerminal", { sessionId, cols, rows, err });
+      });
     });
 
     // Per-session TextDecoder with stream mode：
@@ -1600,7 +1586,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       renderDisposable.dispose();
       wheelTarget.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       resizeObserver.disconnect();
-      resizeSync.dispose();
       if (fitRafRef.current !== null) {
         cancelAnimationFrame(fitRafRef.current);
         fitRafRef.current = null;

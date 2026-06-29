@@ -1,6 +1,6 @@
 use crate::claude_hook::ClaudeHookBridge;
 use crate::commands::ccswitch::{apply_codex_provider_launch_env, CodexProviderLaunchConfig};
-use crate::pty::manager::{format_pty_log_payload, PtyManager, PtyProcessStatus};
+use crate::pty::manager::{PtyManager, PtyProcessStatus};
 use log::{debug, error, info};
 use std::collections::HashMap;
 use tauri::AppHandle;
@@ -54,12 +54,6 @@ pub async fn pty_write(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    info!(
-        "pty_write requested: session_id={}, bytes={}, data={}",
-        session_id,
-        data.len(),
-        format_pty_log_payload(data.as_bytes())
-    );
     pty_manager.write(&session_id, &data).map_err(|err| {
         error!("pty_write failed: session_id={}, error={}", session_id, err);
         err
@@ -73,7 +67,7 @@ pub async fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    info!(
+    debug!(
         "pty_resize requested: session_id={}, cols={}, rows={}",
         session_id, cols, rows
     );

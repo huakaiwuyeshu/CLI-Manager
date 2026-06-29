@@ -19,19 +19,6 @@ const READER_BUF_SIZE: usize = 16 * 1024;
 const MIN_PTY_COLS: u16 = 40;
 const MIN_PTY_ROWS: u16 = 8;
 const GIT_BASH_INITIAL_OUTPUT_DELAY_MS: u64 = 250;
-const PTY_LOG_PREVIEW_CHARS: usize = 4096;
-const DEFAULT_PTY_TERM: &str = "xterm-256color";
-const DEFAULT_PTY_COLORTERM: &str = "truecolor";
-
-pub(crate) fn format_pty_log_payload(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut chars = text.escape_debug();
-    let mut preview: String = chars.by_ref().take(PTY_LOG_PREVIEW_CHARS).collect();
-    if chars.next().is_some() {
-        preview.push_str("...<truncated>");
-    }
-    preview
-}
 
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
@@ -186,37 +173,6 @@ impl PtyManager {
         }
 
         env_vars.insert("WSLENV".to_string(), entries.join(":"));
-    }
-
-    fn apply_terminal_capability_env(env_vars: &mut HashMap<String, String>) {
-        let should_set_term = env_vars
-            .get("TERM")
-            .map(|value| {
-                let value = value.trim();
-                value.is_empty() || value.eq_ignore_ascii_case("dumb")
-            })
-            .unwrap_or(true);
-        if should_set_term {
-            env_vars.insert("TERM".to_string(), DEFAULT_PTY_TERM.to_string());
-        }
-
-        let should_set_colorterm = env_vars
-            .get("COLORTERM")
-            .map(|value| value.trim().is_empty())
-            .unwrap_or(true);
-        if should_set_colorterm {
-            env_vars.insert("COLORTERM".to_string(), DEFAULT_PTY_COLORTERM.to_string());
-        }
-    }
-
-    fn apply_terminal_capability_env_for_os(
-        env_vars: &mut HashMap<String, String>,
-        target_os: &str,
-    ) {
-        if target_os != "macos" {
-            return;
-        }
-        Self::apply_terminal_capability_env(env_vars);
     }
 
     fn powershell_runtime_monitor_args() -> Vec<String> {
@@ -403,10 +359,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         let default_shell_key = Self::default_shell_key();
         let shell_key = shell.unwrap_or(default_shell_key);
         let mut env_vars = env_vars;
-        Self::apply_terminal_capability_env_for_os(
-            env_vars.get_or_insert_with(HashMap::new),
-            std::env::consts::OS,
-        );
         if cfg!(target_os = "windows")
             && shell_key == "cmd"
             && Self::shell_runtime_monitoring_enabled(env_vars.as_ref())
@@ -441,20 +393,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
-        let term_for_log = env_vars
-            .as_ref()
-            .and_then(|vars| vars.get("TERM"))
-            .map(String::as_str)
-            .unwrap_or("<unset>");
-        let colorterm_for_log = env_vars
-            .as_ref()
-            .and_then(|vars| vars.get("COLORTERM"))
-            .map(String::as_str)
-            .unwrap_or("<unset>");
-        info!(
-            "pty terminal env: id={}, shell={}, TERM={}, COLORTERM={}",
-            session_id, shell_key, term_for_log, colorterm_for_log
-        );
         if let Some(vars) = env_vars {
             for (k, v) in vars {
                 cmd.env(k, v);
@@ -526,11 +464,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
                             // 残尾保留到下一轮拼接，避免前端 xterm 把残字节解读为 SGR 参数。
                             let safe = safe_emit_boundary(&pending);
                             if safe > 0 {
-                                let output_preview = format_pty_log_payload(&pending[..safe]);
-                                info!(
-                                    "pty output: session_id={}, bytes={}, data={}",
-                                    session_id_owned, safe, output_preview
-                                );
                                 let encoded = STANDARD.encode(&pending[..safe]);
                                 let _ = app_handle.emit(&output_event, encoded);
                                 pending.drain(..safe);
@@ -540,13 +473,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
                                 debug!(
                                     "pty pending buffer overflowed boundary protection: id={}, len={}",
                                     session_id_owned, pending.len()
-                                );
-                                let output_preview = format_pty_log_payload(&pending);
-                                info!(
-                                    "pty output: session_id={}, bytes={}, data={}",
-                                    session_id_owned,
-                                    pending.len(),
-                                    output_preview
                                 );
                                 let encoded = STANDARD.encode(&pending);
                                 let _ = app_handle.emit(&output_event, encoded);
@@ -562,13 +488,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             }
             // 进程退出，把剩余数据全部发出去（不再保护边界，最后一帧）
             if !pending.is_empty() {
-                let output_preview = format_pty_log_payload(&pending);
-                info!(
-                    "pty output: session_id={}, bytes={}, data={}",
-                    session_id_owned,
-                    pending.len(),
-                    output_preview
-                );
                 let encoded = STANDARD.encode(&pending);
                 let _ = app_handle.emit(&output_event, encoded);
                 pending.clear();
@@ -660,12 +579,6 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             msg
         })?;
         let mut session = session_arc.lock().unwrap();
-        info!(
-            "pty input: session_id={}, bytes={}, data={}",
-            session_id,
-            data.len(),
-            format_pty_log_payload(data.as_bytes())
-        );
         session.writer.write_all(data.as_bytes()).map_err(|e| {
             error!("pty write failed: session_id={}, error={}", session_id, e);
             e.to_string()
@@ -688,13 +601,11 @@ PS0='\e]133;C\a${PS0:0:$((__cli_manager_ran=1,0))}'
             msg
         })?;
         let session = session_arc.lock().unwrap();
-        let requested_cols = cols;
-        let requested_rows = rows;
         let cols = cols.max(MIN_PTY_COLS);
         let rows = rows.max(MIN_PTY_ROWS);
-        info!(
-            "pty resize: session_id={}, requested_cols={}, requested_rows={}, cols={}, rows={}",
-            session_id, requested_cols, requested_rows, cols, rows
+        debug!(
+            "pty resize: session_id={}, cols={}, rows={}",
+            session_id, cols, rows
         );
         if let Ok(mut diagnostics) = session.diagnostics.lock() {
             diagnostics.last_resize_cols = Some(cols);
@@ -803,69 +714,5 @@ mod tests {
         vars.insert("WSLENV".to_string(), "CLI_MANAGER_TAB_ID".to_string());
         PtyManager::apply_wsl_env_forwarding(&mut vars);
         assert_eq!(vars.get("WSLENV").unwrap(), "CLI_MANAGER_TAB_ID");
-    }
-
-    #[test]
-    fn terminal_capability_env_sets_term_when_missing() {
-        let mut vars = HashMap::new();
-
-        PtyManager::apply_terminal_capability_env(&mut vars);
-
-        assert_eq!(vars.get("TERM").unwrap(), "xterm-256color");
-    }
-
-    #[test]
-    fn terminal_capability_env_replaces_dumb_term() {
-        let mut vars = HashMap::new();
-        vars.insert("TERM".to_string(), "dumb".to_string());
-
-        PtyManager::apply_terminal_capability_env(&mut vars);
-
-        assert_eq!(vars.get("TERM").unwrap(), "xterm-256color");
-    }
-
-    #[test]
-    fn terminal_capability_env_preserves_custom_term() {
-        let mut vars = HashMap::new();
-        vars.insert("TERM".to_string(), "screen-256color".to_string());
-
-        PtyManager::apply_terminal_capability_env(&mut vars);
-
-        assert_eq!(vars.get("TERM").unwrap(), "screen-256color");
-    }
-
-    #[test]
-    fn terminal_capability_env_sets_colorterm_when_missing() {
-        let mut vars = HashMap::new();
-
-        PtyManager::apply_terminal_capability_env(&mut vars);
-
-        assert_eq!(vars.get("COLORTERM").unwrap(), "truecolor");
-    }
-
-    #[test]
-    fn terminal_capability_env_skips_non_macos() {
-        let mut vars = HashMap::new();
-
-        PtyManager::apply_terminal_capability_env_for_os(&mut vars, "linux");
-
-        assert!(vars.is_empty());
-    }
-
-    #[test]
-    fn pty_log_payload_escapes_control_characters() {
-        let preview = format_pty_log_payload(b"echo hi\r\n\x1b[31mred\x1b[0m");
-        assert_eq!(preview, "echo hi\\r\\n\\u{1b}[31mred\\u{1b}[0m");
-    }
-
-    #[test]
-    fn pty_log_payload_truncates_large_output() {
-        let payload = vec![b'a'; PTY_LOG_PREVIEW_CHARS + 1];
-        let preview = format_pty_log_payload(&payload);
-        assert_eq!(
-            preview.len(),
-            PTY_LOG_PREVIEW_CHARS + "...<truncated>".len()
-        );
-        assert!(preview.ends_with("...<truncated>"));
     }
 }
