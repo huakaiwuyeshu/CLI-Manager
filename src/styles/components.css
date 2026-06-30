@@ -475,6 +475,12 @@
   cursor: not-allowed;
 }
 
+.ui-terminal-tab-scroll-button[data-visible="false"],
+.ui-terminal-tab-list-button[data-visible="false"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .ui-terminal-tab-scroll-button-left {
   margin-left: 6px;
 }

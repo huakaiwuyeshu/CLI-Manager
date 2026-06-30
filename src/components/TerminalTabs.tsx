@@ -23,7 +23,7 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { useProjectStore } from "../stores/projectStore";
 import { isProjectFileDirty, useFileExplorerStore } from "../stores/fileExplorerStore";
 import { useI18n, type TranslationKey } from "../lib/i18n";
-import { logError } from "../lib/logger";
+import { logError, logInfo } from "../lib/logger";
 import type { TerminalPaneDropEdge, TerminalPaneLeaf, TerminalPaneSplitDirection } from "../stores/terminalPaneTree";
 import { collectPaneLeaves } from "../stores/terminalPaneTree";
 import { SplitTerminalView } from "./SplitTerminalView";
@@ -771,9 +771,30 @@ function PaneTabBar({
   const paneFullscreenLabel = isPaneFullscreen
     ? t("terminal.toolbar.exitImmersiveFullscreen")
     : t("terminal.toolbar.enterImmersiveFullscreen");
+  const overflowControlsVisible = variant === "pane" && tabScrollState.isOverflowing;
   const tabScrollSignature = paneSessions
     .map((session) => `${session.id}:${session.title}:${tabNotifications[session.id] ?? "none"}`)
     .join("|");
+
+  useEffect(() => {
+    logInfo("terminal.tabbar.overflow_state", {
+      paneId: pane.id,
+      activeSessionId: pane.activeSessionId,
+      isOverflowing: tabScrollState.isOverflowing,
+      canScrollLeft: tabScrollState.canScrollLeft,
+      canScrollRight: tabScrollState.canScrollRight,
+      sessionCount: pane.sessionIds.length,
+      overflowControlsVisible,
+    });
+  }, [
+    overflowControlsVisible,
+    pane.activeSessionId,
+    pane.id,
+    pane.sessionIds.length,
+    tabScrollState.canScrollLeft,
+    tabScrollState.canScrollRight,
+    tabScrollState.isOverflowing,
+  ]);
 
   const updateTabScrollState = useCallback(() => {
     const element = tabScrollRef.current;
@@ -849,6 +870,14 @@ function PaneTabBar({
     const clampedScrollLeft = isLastTab
       ? maxScrollLeft
       : Math.min(maxScrollLeft, Math.max(0, nextScrollLeft));
+    logInfo("terminal.tabbar.scroll_active_into_view", {
+      paneId: pane.id,
+      activeSessionId,
+      currentScrollLeft: Math.round(element.scrollLeft),
+      nextScrollLeft: Math.round(clampedScrollLeft),
+      maxScrollLeft: Math.round(maxScrollLeft),
+      isLastTab,
+    });
     if (Math.abs(clampedScrollLeft - element.scrollLeft) > 0.5) {
       element.scrollTo({ left: clampedScrollLeft, behavior: "smooth" });
     }
@@ -859,7 +888,7 @@ function PaneTabBar({
       tabScrollUpdateTimeoutRef.current = null;
       updateTabScrollState();
     }, 220);
-  }, [pane.activeSessionId, pane.sessionIds, updateTabScrollState]);
+  }, [pane.activeSessionId, pane.id, pane.sessionIds, updateTabScrollState]);
 
   const activatePaneSessionAt = useCallback((index: number) => {
     const session = paneSessions[index];
@@ -954,12 +983,15 @@ function PaneTabBar({
       data-drop-target={isOver ? "true" : "false"}
       data-chrome-variant={variant}
     >
-      {variant === "pane" && tabScrollState.isOverflowing && (
+      {variant === "pane" && (
         <button
           type="button"
           className="ui-terminal-tab-scroll-button ui-terminal-tab-scroll-button-left"
           onClick={() => scrollPaneTabs(-1)}
-          disabled={!tabScrollState.canScrollLeft}
+          disabled={!overflowControlsVisible || !tabScrollState.canScrollLeft}
+          data-visible={overflowControlsVisible ? "true" : "false"}
+          aria-hidden={!overflowControlsVisible}
+          tabIndex={overflowControlsVisible ? 0 : -1}
           aria-label={t("terminal.tab.scrollLeft")}
           title={t("terminal.tab.scrollLeft")}
         >
@@ -1033,13 +1065,16 @@ function PaneTabBar({
           ))}
         </SortableContext>
       </div>
-      {variant === "pane" && tabScrollState.isOverflowing && (
+      {variant === "pane" && (
         <>
           <button
             type="button"
             className="ui-terminal-tab-scroll-button ui-terminal-tab-scroll-button-right"
             onClick={() => scrollPaneTabs(1)}
-            disabled={!tabScrollState.canScrollRight}
+            disabled={!overflowControlsVisible || !tabScrollState.canScrollRight}
+            data-visible={overflowControlsVisible ? "true" : "false"}
+            aria-hidden={!overflowControlsVisible}
+            tabIndex={overflowControlsVisible ? 0 : -1}
             aria-label={t("terminal.tab.scrollRight")}
             title={t("terminal.tab.scrollRight")}
           >
@@ -1050,9 +1085,13 @@ function PaneTabBar({
               <button
                 type="button"
                 className="ui-terminal-tab-list-button"
+                data-visible={overflowControlsVisible ? "true" : "false"}
+                aria-hidden={!overflowControlsVisible}
+                tabIndex={overflowControlsVisible ? 0 : -1}
                 aria-label={t("terminal.tab.openList")}
                 aria-expanded={tabListOpen && tabScrollState.isOverflowing}
                 title={t("terminal.tab.list")}
+                disabled={!overflowControlsVisible}
               >
                 <ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" />
               </button>
@@ -1287,7 +1326,126 @@ function PaneLeafView({
   );
 }
 
-const MemoPaneLeafView = memo(PaneLeafView);
+function areSessionIdListsEqual(prevIds: string[], nextIds: string[]): boolean {
+  if (prevIds.length !== nextIds.length) return false;
+  for (let index = 0; index < prevIds.length; index += 1) {
+    if (prevIds[index] !== nextIds[index]) return false;
+  }
+  return true;
+}
+
+function findSessionById(sessions: TerminalSession[], sessionId: string): TerminalSession | undefined {
+  return sessions.find((session) => session.id === sessionId);
+}
+
+function findProjectById(projects: Project[], projectId: string | null | undefined): Project | undefined {
+  if (!projectId) return undefined;
+  return projects.find((project) => project.id === projectId);
+}
+
+function paneContainsSessionId(pane: TerminalPaneLeaf, sessionId: string | null): boolean {
+  return sessionId ? pane.sessionIds.includes(sessionId) : false;
+}
+
+function didPaneSessionsChange(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  for (const sessionId of nextProps.pane.sessionIds) {
+    if (findSessionById(prevProps.sessions, sessionId) !== findSessionById(nextProps.sessions, sessionId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneProjectsChange(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  for (const sessionId of nextProps.pane.sessionIds) {
+    const nextSession = findSessionById(nextProps.sessions, sessionId);
+    const projectId = nextSession?.projectId;
+    if (findProjectById(prevProps.projects, projectId) !== findProjectById(nextProps.projects, projectId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneNotificationsChange(
+  prevNotifications: Record<string, TabNotificationState>,
+  nextNotifications: Record<string, TabNotificationState>,
+  sessionIds: string[]
+): boolean {
+  for (const sessionId of sessionIds) {
+    if ((prevNotifications[sessionId] ?? "none") !== (nextNotifications[sessionId] ?? "none")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneHiddenBackgroundChange(prevHidden: Set<string>, nextHidden: Set<string>, sessionIds: string[]): boolean {
+  for (const sessionId of sessionIds) {
+    if (prevHidden.has(sessionId) !== nextHidden.has(sessionId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getPaneSiblingsSignature(panes: TerminalPaneLeaf[]): string {
+  return panes.map((pane) => `${pane.id}:${pane.sessionIds.length}`).join("|");
+}
+
+function arePaneLeafViewPropsEqual(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  if (prevProps.pane.id !== nextProps.pane.id) return false;
+  if (!areSessionIdListsEqual(prevProps.pane.sessionIds, nextProps.pane.sessionIds)) return false;
+  if (prevProps.pane.activeSessionId !== nextProps.pane.activeSessionId) return false;
+  if (prevProps.historyActive !== nextProps.historyActive) return false;
+  if (prevProps.isPaneFullscreen !== nextProps.isPaneFullscreen) return false;
+  if (prevProps.isLayoutVisible !== nextProps.isLayoutVisible) return false;
+  if (prevProps.fontSize !== nextProps.fontSize || prevProps.fontFamily !== nextProps.fontFamily) return false;
+  if (prevProps.resolvedTheme !== nextProps.resolvedTheme) return false;
+  if (prevProps.terminalThemeName !== nextProps.terminalThemeName) return false;
+  if (prevProps.terminalThemeBackground !== nextProps.terminalThemeBackground) return false;
+  if (prevProps.lightThemePalette !== nextProps.lightThemePalette) return false;
+  if (prevProps.darkThemePalette !== nextProps.darkThemePalette) return false;
+  if (prevProps.terminalBackgroundEnabled !== nextProps.terminalBackgroundEnabled) return false;
+  if (prevProps.terminalBackgroundImagePath !== nextProps.terminalBackgroundImagePath) return false;
+  if (prevProps.hideTabBar !== nextProps.hideTabBar) return false;
+  if (getPaneSiblingsSignature(prevProps.allPanes) !== getPaneSiblingsSignature(nextProps.allPanes)) return false;
+  if ((prevProps.activeDropPreview?.paneId ?? null) !== (nextProps.activeDropPreview?.paneId ?? null)) return false;
+  if ((prevProps.activeDropPreview?.edge ?? null) !== (nextProps.activeDropPreview?.edge ?? null)) return false;
+
+  const wasEditingThisPane = paneContainsSessionId(prevProps.pane, prevProps.editingSessionId);
+  const isEditingThisPane = paneContainsSessionId(nextProps.pane, nextProps.editingSessionId);
+  if (wasEditingThisPane !== isEditingThisPane) return false;
+  if (wasEditingThisPane && prevProps.editingSessionId !== nextProps.editingSessionId) return false;
+
+  const wasActiveInThisPane = paneContainsSessionId(prevProps.pane, prevProps.activeSessionId);
+  const isActiveInThisPane = paneContainsSessionId(nextProps.pane, nextProps.activeSessionId);
+  if (wasActiveInThisPane !== isActiveInThisPane) return false;
+  if (wasActiveInThisPane && prevProps.activeSessionId !== nextProps.activeSessionId) return false;
+
+  if (didPaneSessionsChange(prevProps, nextProps)) return false;
+  if (didPaneProjectsChange(prevProps, nextProps)) return false;
+  if (didPaneNotificationsChange(prevProps.tabNotifications, nextProps.tabNotifications, nextProps.pane.sessionIds)) return false;
+  if (didPaneHiddenBackgroundChange(prevProps.hiddenBackgroundSessionIds, nextProps.hiddenBackgroundSessionIds, nextProps.pane.sessionIds)) return false;
+
+  return (
+    prevProps.onActivateSession === nextProps.onActivateSession &&
+    prevProps.onCloseSessions === nextProps.onCloseSessions &&
+    prevProps.onStartEdit === nextProps.onStartEdit &&
+    prevProps.onSubmitEdit === nextProps.onSubmitEdit &&
+    prevProps.onCancelEdit === nextProps.onCancelEdit &&
+    prevProps.onNewTab === nextProps.onNewTab &&
+    prevProps.onDuplicateSession === nextProps.onDuplicateSession &&
+    prevProps.onOpenSplitPicker === nextProps.onOpenSplitPicker &&
+    prevProps.onUnsplit === nextProps.onUnsplit &&
+    prevProps.onMoveToPane === nextProps.onMoveToPane &&
+    prevProps.onHideBackground === nextProps.onHideBackground &&
+    prevProps.onShowBackground === nextProps.onShowBackground &&
+    prevProps.onTogglePaneFullscreen === nextProps.onTogglePaneFullscreen
+  );
+}
+
+const MemoPaneLeafView = memo(PaneLeafView, arePaneLeafViewPropsEqual);
 
 function PaneContentDropZones({ paneId, activeDropPreview }: { paneId: string; activeDropPreview?: PaneDropPreview }) {
   const centerDrop = useDroppable({ id: `${PANE_CENTER_DROP_PREFIX}${paneId}` });
@@ -1653,6 +1811,16 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   const replayPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "replay" : replayOpen;
   const gitPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "git" : gitOpen;
   const filesPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "files" : filesOpen;
+
+  useEffect(() => {
+    logInfo("terminal.history.visibility", {
+      historyOpen,
+      activeWorkspaceTab,
+      historyActive,
+      sessionCount: sessions.length,
+      paneCount: paneTree ? collectPaneLeaves(paneTree).length : 0,
+    });
+  }, [activeWorkspaceTab, historyActive, historyOpen, paneTree, sessions.length]);
 
   useEffect(() => {
     if (!historyOpen && activeWorkspaceTab === "history") setActiveWorkspaceTab("terminal");
@@ -2022,6 +2190,11 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
   }, [closeFilesPanel, filePanelProject?.id, filesPanelActive, syncFilePanelProject]);
 
   const handleOpenHistoryTab = useCallback(() => {
+    logInfo("terminal.history.toggle", {
+      action: historyOpen ? "close" : "open",
+      from: activeWorkspaceTab,
+      activeSessionId: activeSession?.id ?? null,
+    });
     if (historyOpen) {
       closeHistory();
       return;
@@ -2033,7 +2206,7 @@ export function TerminalTabs({ fullscreen = false, onToggleFullscreen }: Termina
       sourceFilter: resolveHistorySourceFilter(project?.cli_tool),
       projectPath: project?.path ?? null,
     });
-  }, [activeSession, closeHistory, historyOpen, openHistory, projects]);
+  }, [activeSession, activeWorkspaceTab, closeHistory, historyOpen, openHistory, projects]);
 
   const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => {
     clearSplitPickerOpenSchedule();
