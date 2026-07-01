@@ -495,6 +495,12 @@
   cursor: not-allowed;
 }
 
+.ui-terminal-tab-scroll-button[data-visible="false"],
+.ui-terminal-tab-list-button[data-visible="false"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .ui-terminal-tab-scroll-button-left {
   margin-left: 6px;
 }
@@ -1324,6 +1330,23 @@
 .ui-segmented-btn[data-active="true"] {
   background-image: linear-gradient(135deg, var(--primary-gradient-start), var(--primary-gradient-end));
   color: #fff;
+}
+
+.ui-terminal-theme-mode-segmented {
+  --sc-color: var(--primary) !important;
+}
+
+.ui-terminal-theme-mode-segmented .mantine-SegmentedControl-indicator {
+  background: var(--primary) !important;
+}
+
+.ui-terminal-theme-mode-segmented .mantine-SegmentedControl-label {
+  color: var(--on-surface) !important;
+  font-weight: 500;
+}
+
+.ui-terminal-theme-mode-segmented .mantine-SegmentedControl-label[data-active="true"] {
+  color: var(--on-primary) !important;
 }
 
 .ui-icon-action {

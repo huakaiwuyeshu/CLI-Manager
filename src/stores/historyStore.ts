@@ -114,8 +114,6 @@ const DEFAULT_SEARCH_LIMIT = 120;
 const STATS_CACHE_TTL_MS = 5 * 60 * 1000;
 const STATS_CACHE_MAX = 16;
 const STATS_PROJECT_OPTIONS_CACHE_MAX = 8;
-const AUTO_OPEN_SESSION_DELAY_MS = 180;
-
 interface StatsCacheEntry {
   payload: HistoryStatsPayload;
   cachedAt: number;
@@ -129,14 +127,6 @@ interface StatsProjectOptionsCacheEntry {
 const statsCache = new Map<string, StatsCacheEntry>();
 const statsProjectOptionsCache = new Map<string, StatsProjectOptionsCacheEntry>();
 let statsRequestSeq = 0;
-let pendingAutoOpenSessionTimer: ReturnType<typeof setTimeout> | null = null;
-
-function clearPendingAutoOpenSession() {
-  if (pendingAutoOpenSessionTimer !== null) {
-    clearTimeout(pendingAutoOpenSessionTimer);
-    pendingAutoOpenSessionTimer = null;
-  }
-}
 
 function statsCacheGet(key: string): StatsCacheEntry | undefined {
   const entry = statsCache.get(key);
@@ -964,7 +954,6 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   },
 
   closeHistory: () => {
-    clearPendingAutoOpenSession();
     set({ isOpen: false });
   },
 
@@ -1028,21 +1017,6 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         activeSession: activeExists ? get().activeSession : null,
         focusedMessageIndex: null,
       });
-      if (nextActiveKey && !activeExists) {
-        clearPendingAutoOpenSession();
-        pendingAutoOpenSessionTimer = setTimeout(() => {
-          pendingAutoOpenSessionTimer = null;
-          const state = get();
-          if (!state.isOpen || state.activeSessionKey !== nextActiveKey) return;
-          if (
-            state.activeSession &&
-            makeSessionKey(state.activeSession.source, state.activeSession.session_id, state.activeSession.file_path) === nextActiveKey
-          ) {
-            return;
-          }
-          void state.openSession(nextActiveKey).catch(() => undefined);
-        }, AUTO_OPEN_SESSION_DELAY_MS);
-      }
     } finally {
       set({ loadingSessions: false });
       stopPerf({
@@ -1101,7 +1075,6 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   },
 
   openSession: async (sessionKey) => {
-    clearPendingAutoOpenSession();
     const stopPerf = createPerfMarker("history.session.detail", { sessionKey });
     const target = get().sessions.find((item) => item.sessionKey === sessionKey);
     if (!target) {

@@ -625,13 +625,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   load: async () => {
     const s = await getStore();
-    const entries: Partial<Settings> = {};
-    for (const key of Object.keys(DEFAULTS) as (keyof Settings)[]) {
-      const val = await s.get<Settings[typeof key]>(key);
-      if (val !== null && val !== undefined) {
-        (entries as Record<string, unknown>)[key] = val;
-      }
-    }
+    const rawEntries = await s.entries();
+    const entries = Object.fromEntries(
+      rawEntries.filter(([, value]) => value !== null && value !== undefined)
+    ) as Partial<Settings>;
+    const pendingStoreWrites: Promise<void>[] = [];
+    const persistSetting = (key: keyof Settings, value: Settings[keyof Settings]) => {
+      pendingStoreWrites.push(s.set(key, value));
+    };
+    const osPlatformPromise = getOsPlatform();
 
     const theme = (entries.theme as ThemeMode) ?? DEFAULTS.theme;
     entries.language = migrateLanguagePreference(entries.language);
@@ -643,21 +645,21 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const storedLightThemePalette = entries.lightThemePalette;
     const lightThemePalette = migrateLightThemePalette(storedLightThemePalette) ?? DEFAULTS.lightThemePalette;
     if (typeof storedLightThemePalette === "string" && lightThemePalette !== storedLightThemePalette) {
-      await s.set("lightThemePalette", lightThemePalette);
+      persistSetting("lightThemePalette", lightThemePalette);
     }
     entries.lightThemePalette = lightThemePalette;
 
     const storedDarkThemePalette = entries.darkThemePalette;
     const darkThemePalette = migrateDarkThemePalette(storedDarkThemePalette) ?? DEFAULTS.darkThemePalette;
     if (typeof storedDarkThemePalette === "string" && darkThemePalette !== storedDarkThemePalette) {
-      await s.set("darkThemePalette", darkThemePalette);
+      persistSetting("darkThemePalette", darkThemePalette);
     }
     entries.darkThemePalette = darkThemePalette;
 
     const storedTerminalThemeName = entries.terminalThemeName;
     let terminalThemeName = migrateTerminalThemeName(storedTerminalThemeName) ?? DEFAULTS.terminalThemeName;
     if (typeof storedTerminalThemeName === "string" && terminalThemeName !== storedTerminalThemeName) {
-      await s.set("terminalThemeName", terminalThemeName);
+      persistSetting("terminalThemeName", terminalThemeName);
     }
 
     const terminalThemeMode =
@@ -666,7 +668,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
     if (terminalThemeMode === "independent" && terminalThemeName === "auto") {
       terminalThemeName = resolveAutoTerminalThemeId(resolvedTheme, lightThemePalette, darkThemePalette);
-      await s.set("terminalThemeName", terminalThemeName);
+      persistSetting("terminalThemeName", terminalThemeName);
     }
 
     entries.terminalThemeName = terminalThemeName;
@@ -678,7 +680,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         (entries.uiTextColor !== "" && !HEX_COLOR_PATTERN.test(entries.uiTextColor)))
     ) {
       entries.uiTextColor = DEFAULTS.uiTextColor;
-      await s.set("uiTextColor", DEFAULTS.uiTextColor);
+      persistSetting("uiTextColor", DEFAULTS.uiTextColor);
     }
     entries.uiFontSize = clampNumber(
       entries.uiFontSize,
@@ -712,22 +714,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     entries.terminalStatsCardOrder = migrateTerminalStatsCardOrder(entries.terminalStatsCardOrder);
     entries.terminalBackground = migrateTerminalBackground(entries.terminalBackground);
 
-    // 默认 Shell：非 Windows 上迁移旧 Windows-only 默认值，避免 macOS/Linux 继续显示或启动 powershell.exe。
-    try {
-      const os = await getOsPlatform();
-      const platformDefaultShell = defaultShellForOs(os);
-      const currentDefaultShell = typeof entries.defaultShell === "string" ? entries.defaultShell.trim() : "";
-      if (!currentDefaultShell || (os !== "windows" && isWindowsOnlyShellKey(currentDefaultShell))) {
-        entries.defaultShell = platformDefaultShell;
-        await s.set("defaultShell", platformDefaultShell);
-      } else {
-        entries.defaultShell = currentDefaultShell;
-      }
-    } catch {
-      if (entries.defaultShell === undefined) {
-        entries.defaultShell = DEFAULTS.defaultShell;
-      }
-    }
+    const currentDefaultShell = typeof entries.defaultShell === "string" ? entries.defaultShell.trim() : "";
+    entries.defaultShell = currentDefaultShell || DEFAULTS.defaultShell;
 
     entries.shellRuntimeMonitoringEnabled =
       typeof entries.shellRuntimeMonitoringEnabled === "boolean"
@@ -807,21 +795,45 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         ? entries.projectScopedTerminalViewEnabled
         : DEFAULTS.projectScopedTerminalViewEnabled;
 
-    // 检测背景图是否仍存在；若不存在，仅在内存中清空 imagePath，保留 settings.json
-    // 中的原配置，便于后续提示用户「之前选的图丢了」。
-    let terminalBackgroundMissing = false;
-    let runtimeTerminalBackground = entries.terminalBackground;
-    if (entries.terminalBackground.enabled && entries.terminalBackground.imagePath) {
-      const exists = await backgroundImageExists(entries.terminalBackground.imagePath);
-      if (!exists) {
-        terminalBackgroundMissing = true;
-        runtimeTerminalBackground = { ...entries.terminalBackground, imagePath: null };
-      }
+    if (pendingStoreWrites.length > 0) {
+      await Promise.all(pendingStoreWrites);
     }
-    entries.terminalBackground = runtimeTerminalBackground;
 
-    set({ ...entries, resolvedTheme, loaded: true, terminalBackgroundMissing });
+    set({ ...entries, resolvedTheme, loaded: true, terminalBackgroundMissing: false });
     void applyDebugMode(debugMode);
+
+    const initialDefaultShell = entries.defaultShell;
+    void osPlatformPromise
+      .then(async (os) => {
+        const platformDefaultShell = defaultShellForOs(os);
+        if (!currentDefaultShell || (os !== "windows" && isWindowsOnlyShellKey(currentDefaultShell))) {
+          if (get().defaultShell !== initialDefaultShell) return;
+          await s.set("defaultShell", platformDefaultShell);
+          set({ defaultShell: platformDefaultShell });
+        }
+      })
+      .catch(() => {});
+
+    const configuredBackground = entries.terminalBackground;
+    if (configuredBackground.enabled && configuredBackground.imagePath) {
+      const expectedImagePath = configuredBackground.imagePath;
+      void backgroundImageExists(expectedImagePath)
+        .then((exists) => {
+          if (exists) return;
+          const currentBackground = get().terminalBackground;
+          if (
+            !currentBackground.enabled ||
+            currentBackground.imagePath !== expectedImagePath
+          ) {
+            return;
+          }
+          set({
+            terminalBackground: { ...currentBackground, imagePath: null },
+            terminalBackgroundMissing: true,
+          });
+        })
+        .catch(() => {});
+    }
   },
 
   syncSystemTheme: () => {

@@ -608,15 +608,13 @@ pub async fn history_list_sessions(
         }
 
         if query_lower.is_none() {
-            // 先按 project_path 过滤再算 fingerprint：避免对全部历史文件 fs::metadata。
-            // claude 仅看 project_key（零 IO），codex 走 project_cache 缓存；命中面板轮询热路径。
-            let index_hints = cached_history_index_entries(&roots);
-            let all_files = collect_session_files(source_filter.as_deref(), &roots);
-            let total_files = all_files.len();
+            let indexed_entries = refresh_history_index(&roots);
+            let total_files = indexed_entries.len();
             let mut mismatch_samples = Vec::new();
-            let mut files: Vec<(SessionFileRef, SessionFileFingerprint)> = all_files
+            let mut matched_entries: Vec<HistoryIndexEntry> = indexed_entries
                 .into_iter()
-                .filter_map(|file_ref| {
+                .filter_map(|entry| {
+                    let file_ref = &entry.file_ref;
                     let matched = target_project_path
                         .as_ref()
                         .map(|project_path| session_matches_project_path(&file_ref, project_path))
@@ -634,17 +632,15 @@ pub async fn history_list_sessions(
                         }
                         return None;
                     }
-                    let fingerprint = session_file_fingerprint(&file_ref.path);
-                    Some((file_ref, fingerprint))
+                    Some(entry)
                 })
                 .collect();
             debug!(
-                "history_list_sessions project candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}, index_hints={}",
+                "history_list_sessions project candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}, reused_index=true",
                 source_filter,
                 target_project_path,
                 total_files,
-                files.len(),
-                index_hints.as_ref().map(|entries| entries.len()).unwrap_or(0)
+                matched_entries.len(),
             );
             if targeted_lookup {
                 info!(
@@ -652,18 +648,19 @@ pub async fn history_list_sessions(
                     source_filter,
                     target_project_path,
                     total_files,
-                    files.len(),
+                    matched_entries.len(),
                     mismatch_samples
                 );
             }
-            files.sort_by(|a, b| {
-                b.1.updated_at
-                    .cmp(&a.1.updated_at)
-                    .then_with(|| a.0.path.cmp(&b.0.path))
+            matched_entries.sort_by(|a, b| {
+                b.computed
+                    .updated_at
+                    .cmp(&a.computed.updated_at)
+                    .then_with(|| a.file_ref.path.cmp(&b.file_ref.path))
             });
 
             let mut matched = 0usize;
-            for (file_ref, fingerprint) in files {
+            for entry in matched_entries {
                 if matched < start_offset {
                     matched += 1;
                     continue;
@@ -672,15 +669,8 @@ pub async fn history_list_sessions(
                     break;
                 }
                 matched += 1;
-                let path_key = path_to_key(&file_ref.path);
-                let indexed_entry = index_hints
-                    .as_ref()
-                    .and_then(|entries| entries.get(&path_key));
-                let computed = get_or_scan_session_computation_with_fingerprint(
-                    &file_ref,
-                    fingerprint,
-                    indexed_entry,
-                );
+                let file_ref = entry.file_ref;
+                let computed = entry.computed;
                 debug!(
                     "history_list_sessions matched file: source={}, project_key={}, session_id={}, path={}",
                     file_ref.source,

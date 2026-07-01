@@ -649,6 +649,7 @@ export function ThemeSettingsPage() {
                 {text("终端主题模式", "Terminal Theme Mode")}
               </Text>
               <SegmentedControl<"follow-app" | "independent">
+                className="ui-terminal-theme-mode-segmented"
                 value={terminalThemeMode}
                 onChange={(value) => void setTerminalThemeMode(value)}
                 data={[

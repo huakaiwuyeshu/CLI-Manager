@@ -93,7 +93,12 @@ export function AppMantineThemeProvider({ children }: AppMantineThemeProviderPro
   }, [primaryColor, uiFontFamily, uiFontSize]);
 
   return (
-    <MantineProvider theme={mantineTheme} defaultColorScheme={resolvedTheme} forceColorScheme={resolvedTheme}>
+    <MantineProvider
+      theme={mantineTheme}
+      withCssVariables={false}
+      withGlobalClasses={false}
+      withStaticClasses={false}
+    >
       {children}
     </MantineProvider>
   );

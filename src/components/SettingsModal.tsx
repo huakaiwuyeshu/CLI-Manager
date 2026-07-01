@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import "@mantine/core/styles.css";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { AppMantineThemeProvider } from "./ui/MantineThemeProvider";
@@ -108,6 +108,7 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
 interface Props {
   open: boolean;
   onClose: () => void;
+  onAfterClose?: () => void;
   initialTab?: SettingsTab;
   onActiveTabChange?: (tab: SettingsTab) => void;
 }
@@ -116,31 +117,37 @@ function isLikelyMacOs() {
   return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 }
 
-export function SettingsModal({ open, onClose, initialTab, onActiveTabChange }: Props) {
+export function SettingsModal({ open, onClose, onAfterClose, initialTab, onActiveTabChange }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? "general");
   const [searchValue, setSearchValue] = useState("");
   const [mounted, setMounted] = useState(open);
   const [closing, setClosing] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const wasOpenRef = useRef(open);
   const uiFontFamily = useSettingsStore((s) => s.uiFontFamily);
   const { t } = useI18n();
   useFocusTrap(dialogRef, mounted && !closing);
 
+  const requestClose = useCallback((_reason: "topbar" | "backdrop" | "escape") => {
+    onClose();
+  }, [onClose]);
+
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       if (initialTab) setActiveTab(initialTab);
       setMounted(true);
       setClosing(false);
-      return;
     }
+    wasOpenRef.current = open;
+  }, [open, initialTab]);
+
+  useEffect(() => {
+    if (open) return;
     if (!mounted) return;
-    setClosing(true);
-    const timer = setTimeout(() => {
-      setMounted(false);
-      setClosing(false);
-    }, 180);
-    return () => clearTimeout(timer);
-  }, [open, mounted, initialTab]);
+    setMounted(false);
+    setClosing(false);
+    onAfterClose?.();
+  }, [open, mounted, initialTab, onAfterClose]);
 
   const handleTabChange = (tab: SettingsTab) => {
     if (tab === activeTab) return;
@@ -157,11 +164,11 @@ export function SettingsModal({ open, onClose, initialTab, onActiveTabChange }: 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      onClose();
+      requestClose("escape");
     };
     document.addEventListener("keydown", handleEscape);
     return () => document.removeEventListener("keydown", handleEscape);
-  }, [mounted, closing, onClose]);
+  }, [mounted, closing, requestClose]);
 
   if (!mounted) return null;
 
@@ -188,7 +195,7 @@ export function SettingsModal({ open, onClose, initialTab, onActiveTabChange }: 
           closing ? "animate-fade-out" : "animate-fade-in"
         }`}
         style={{ fontFamily: uiFontFamily }}
-        onClick={onClose}
+        onClick={() => requestClose("backdrop")}
       >
         <div
           ref={dialogRef}
@@ -209,7 +216,7 @@ export function SettingsModal({ open, onClose, initialTab, onActiveTabChange }: 
             searchValue={searchValue}
             searchPlaceholder={activeConfig.searchPlaceholder ? t(activeConfig.searchPlaceholder) : undefined}
             onSearchChange={setSearchValue}
-            onClose={onClose}
+            onClose={() => requestClose("topbar")}
           >
             {activeContent}
           </SettingsLayout>
