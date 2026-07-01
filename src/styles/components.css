@@ -2774,10 +2774,13 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, #000 18%, transparent);
 }
 
-.ui-terminal-well > aside > .border-b:first-child,
-.ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+.ui-terminal-well > aside > .border-b:first-child {
   border-bottom-color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 9%, transparent) !important;
   background: linear-gradient(180deg, color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 5%, transparent), transparent);
+}
+
+.ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+  border-bottom-color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 9%, transparent) !important;
 }
 
 .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .min-h-0.flex-1 {
@@ -3003,10 +3006,13 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--border) 10%, transparent);
 }
 
-[data-theme="light"] .ui-terminal-well > aside > .border-b:first-child,
-[data-theme="light"] .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+[data-theme="light"] .ui-terminal-well > aside > .border-b:first-child {
   border-bottom-color: color-mix(in srgb, var(--border) 18%, transparent) !important;
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-container-high) 24%, transparent), transparent);
+}
+
+[data-theme="light"] .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+  border-bottom-color: color-mix(in srgb, var(--border) 18%, transparent) !important;
 }
 
 .ui-terminal-tabs-shell[data-fullscreen="true"] .ui-terminal-global-chrome {
@@ -4220,6 +4226,20 @@
 
 .ui-file-tree-row[data-selected="true"] {
   color: var(--primary);
+}
+
+.ui-file-explorer-sidebar .ui-icon-action {
+  border-color: color-mix(in srgb, var(--on-surface) 10%, transparent);
+  background-color: color-mix(in srgb, var(--on-surface) 7%, transparent);
+  color: color-mix(in srgb, var(--on-surface) 76%, var(--text-muted) 24%);
+}
+
+.ui-file-explorer-sidebar .ui-icon-action:hover:not(:disabled),
+.ui-file-explorer-sidebar .ui-icon-action:focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--on-surface);
+  box-shadow: none;
 }
 
 .ui-file-editor-pane {
