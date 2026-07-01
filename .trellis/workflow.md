@@ -150,9 +150,12 @@ Phase 3: Finish  → distill lessons + wrap-up
 <!-- Per-turn breadcrumb: shown when there is no active task (before Phase 1) -->
 
 [workflow-state:no_task]
+Before any file-writing work starts, first ask which `CHANGELOG.md` version should receive this task's notes. If the user does not provide a version number, use temporary version `[TEMP]` instead of guessing.
+If you create a task, record that answer in `prd.md` as `Changelog Target`; if the user has no version, record `[TEMP]`.
 No active task. **A Direct answer** — pure Q&A / explanation / lookup / chat; no file writes + one-line answer + repo reads ≤ 2 files → AI judges, no override needed.
-**B Create a task** — any implementation / code change / build / refactor work. Entry sequence: (1) `python ./.trellis/scripts/task.py create "<title>"` to create the task (status=planning, breadcrumb switches to [workflow-state:planning] for brainstorm + jsonl phase guidance) → (2) load `trellis-brainstorm` skill to discuss requirements with the user and iterate on prd.md → (3) once prd is done and jsonl is curated, run `task.py start <task-dir>` to enter [workflow-state:in_progress] for the implementation skeleton. **"It looks small" is NOT grounds for downgrading B to A or C**.
-**C Inline change** (per-turn only, escape hatch for B) — the user's CURRENT message MUST contain one of: "skip trellis" / "no task" / "just do it" / "don't create a task" / "跳过 trellis" / "别走流程" / "小修一下" / "直接改" / "先别建任务" → briefly acknowledge ("ok, skipping trellis flow this turn"), then inline. **Without seeing one of these phrases you must NOT inline on your own**; do not invent an override the user never said.
+**B Inline simple task** — if the work is truly small and bounded, you may handle it inline without creating a task. Required conditions: clear goal, no research, no dependency / schema / migration / architecture change, and the main implementation fits within 1–2 existing files (excluding mandatory follow-up docs such as `CHANGELOG.md` or `docs/功能清单.md`). Before editing, run a quick repo-update check: `git status --short`, `git fetch --prune`, then compare local vs upstream with `git rev-list --left-right --count HEAD...@{upstream}` when an upstream exists. If the remote side is ahead, pull before editing. Before finalizing, still follow the delivery rules from Phase 3.4: update `CHANGELOG.md` for behavior changes, associate the commit with any user-provided issue, and update `docs/功能清单.md` when product functionality changes.
+**C Create a task** — any multi-step / unclear / cross-file / feature / build / refactor work outside B. Entry sequence: (1) `python ./.trellis/scripts/task.py create "<title>"` to create the task (status=planning, breadcrumb switches to [workflow-state:planning] for brainstorm + jsonl phase guidance) → (2) load `trellis-brainstorm` skill to discuss requirements with the user and iterate on prd.md → (3) once prd is done and jsonl is curated, run `task.py start <task-dir>` to enter [workflow-state:in_progress] for the implementation skeleton.
+**D Inline override** (per-turn only, escape hatch for C) — the user's CURRENT message MUST contain one of: "skip trellis" / "no task" / "just do it" / "don't create a task" / "跳过 trellis" / "别走流程" / "小修一下" / "直接改" / "先别建任务" → briefly acknowledge ("ok, skipping trellis flow this turn"), then inline. **Without seeing one of these phrases you must NOT use D on your own**; do not invent an override the user never said.
 [/workflow-state:no_task]
 
 ### Phase 1: Plan
@@ -166,6 +169,7 @@ No active task. **A Direct answer** — pure Q&A / explanation / lookup / chat; 
 <!-- Per-turn breadcrumb: shown throughout Phase 1 (status='planning') -->
 
 [workflow-state:planning]
+Before `task.py start`, you MUST record `Changelog Target` in `prd.md`. Use the user-provided version when available; otherwise set it to `[TEMP]`.
 Load the `trellis-brainstorm` skill and iterate on prd.md with the user.
 Phase 1.3 (required, once): before `task.py start`, you MUST curate `implement.jsonl` and `check.jsonl` — list the spec / research files sub-agents need so they get the right context injected. You may skip only if the jsonl already has agent-curated entries (the seed `_example` row alone doesn't count).
 Then run `task.py start <task-dir>` to flip status to in_progress.
@@ -178,6 +182,7 @@ Then run `task.py start <task-dir>` to flip status to in_progress.
      into a sub-agent. -->
 
 [workflow-state:planning-inline]
+Before `task.py start`, you MUST record `Changelog Target` in `prd.md`. Use the user-provided version when available; otherwise set it to `[TEMP]`.
 Load the `trellis-brainstorm` skill and iterate on prd.md with the user.
 Phase 1.3 jsonl curation is **skipped** in inline dispatch mode — the main session loads `trellis-before-dev` directly in Phase 2 and reads spec context itself, so there is no sub-agent to inject jsonl into.
 Then run `task.py start <task-dir>` to flip status to in_progress.
@@ -195,9 +200,10 @@ Then run `task.py start <task-dir>` to flip status to in_progress.
      commit, including Phase 3.3 spec update and Phase 3.4 commit. -->
 
 [workflow-state:in_progress]
+Before editing or drafting the commit plan, confirm which `CHANGELOG.md` version should receive this task's notes. Use the user-provided version when available; otherwise use `[TEMP]`, and update `CHANGELOG.md` under that target instead of guessing a release.
 **Tools**: `trellis-implement` / `trellis-research` are sub-agent types only (Task/Agent tool, NOT Skill — there is no skill by these names). `trellis-update-spec` is a skill. `trellis-check` exists as both; prefer the Agent form when verifying after code changes.
-**Flow**: trellis-implement → trellis-check → trellis-update-spec → commit (Phase 3.4) → `/trellis:finish-work`.
-**Main-session default (no override)**: dispatch the `trellis-implement` / `trellis-check` sub-agents — the main agent does NOT edit code by default. Phase 3.4 commit (required, once): after trellis-update-spec, or whenever implementation is verifiably complete, the main agent **drives the commit** — state the commit plan in user-facing text, then run `git commit` — BEFORE suggesting `/trellis:finish-work`. `/finish-work` refuses to run on a dirty working tree (paths outside `.trellis/workspace/` and `.trellis/tasks/`).
+**Flow**: remote-update check → trellis-implement → trellis-check → trellis-update-spec → commit (Phase 3.4) → `/trellis:finish-work`.
+**Main-session default (no override)**: before dispatching implementation, run a one-time repo-update check for this task: inspect `git status --short`, refresh tracking refs with `git fetch --prune`, then compare local vs upstream with `git rev-list --left-right --count HEAD...@{upstream}` when an upstream exists. If the remote side is ahead, pull before coding; if the working tree is dirty and remote is ahead, stop and resolve that state before continuing. Then dispatch the `trellis-implement` / `trellis-check` sub-agents — the main agent does NOT edit code by default. Phase 3.4 commit (required, once): after trellis-update-spec, or whenever implementation is verifiably complete, the main agent **drives the commit** — state the commit plan in user-facing text, then run `git commit` — BEFORE suggesting `/trellis:finish-work`. Before drafting the commit plan, update `CHANGELOG.md` for behavior changes, update `docs/功能清单.md` for product functionality changes, and if the user explicitly provided an issue number or issue URL, associate the commit message with that issue. `/finish-work` refuses to run on a dirty working tree (paths outside `.trellis/workspace/` and `.trellis/tasks/`).
 **Sub-agent self-exemption**: if you are already running as `trellis-implement`, implement directly from the loaded task context and do NOT spawn another `trellis-implement`; if you are already running as `trellis-check`, review/fix directly and do NOT spawn another `trellis-check`. The default dispatch rule applies to the main session only.
 **Sub-agent dispatch protocol (all platforms, all sub-agents)**: When you spawn `trellis-implement` / `trellis-check` / `trellis-research`, your dispatch prompt **MUST** start with one line: `Active task: <task path from \`task.py current\`>`. No exceptions. On class-2 platforms (codex / copilot / gemini / qoder) the sub-agent depends on this line because there is no hook to inject task context. On class-1 platforms (claude / cursor / opencode / kiro / codebuddy / droid) the line is normally redundant — the hook injects context directly — but it serves as a critical fallback when the hook fails (Windows + Claude Code PreToolUse silent skip, `--continue` resume, fork distribution, hooks disabled, etc.). For `trellis-research`, the line tells the sub-agent which `{task_dir}/research/` to write into.
 **Inline override** (per-turn only, escape hatch for sub-agent dispatch): the user's CURRENT message MUST explicitly contain one of: "do it inline" / "no sub-agent" / "你直接改" / "别派 sub-agent" / "main session 写就行" / "不用 sub-agent". **Without seeing one of these phrases you must NOT inline on your own**; do not invent an override the user never said.
@@ -209,9 +215,10 @@ Then run `task.py start <task-dir>` to flip status to in_progress.
      instead of dispatching sub-agents. -->
 
 [workflow-state:in_progress-inline]
-**Flow** (inline mode): main session loads `trellis-before-dev` → main session edits code → main session loads `trellis-check` → run lint / type-check / tests → fix → `trellis-update-spec` → commit (Phase 3.4) → `/trellis:finish-work`.
+Before editing or drafting the commit plan, confirm which `CHANGELOG.md` version should receive this task's notes. Use the user-provided version when available; otherwise use `[TEMP]`, and update `CHANGELOG.md` under that target instead of guessing a release.
+**Flow** (inline mode): remote-update check → main session loads `trellis-before-dev` → main session edits code → main session loads `trellis-check` → run lint / type-check / tests → fix → `trellis-update-spec` → commit (Phase 3.4) → `/trellis:finish-work`.
 **Main-session default (inline dispatch_mode)**: the main agent edits code directly. Do NOT dispatch `trellis-implement` / `trellis-check` sub-agents. Load the `trellis-before-dev` skill before writing code; load the `trellis-check` skill before reporting completion.
-Phase 3.4 commit (required, once): after `trellis-update-spec`, or whenever implementation is verifiably complete, the main agent **drives the commit** — state the commit plan in user-facing text, then run `git commit` — BEFORE suggesting `/trellis:finish-work`. `/finish-work` refuses to run on a dirty working tree (paths outside `.trellis/workspace/` and `.trellis/tasks/`).
+Phase 2.1 remote-update check (required, once): before editing, inspect `git status --short`, refresh tracking refs with `git fetch --prune`, then compare local vs upstream with `git rev-list --left-right --count HEAD...@{upstream}` when an upstream exists. If the remote side is ahead, pull before coding; if the working tree is dirty and remote is ahead, stop and resolve that state before continuing. Phase 3.4 commit (required, once): after `trellis-update-spec`, or whenever implementation is verifiably complete, the main agent **drives the commit** — state the commit plan in user-facing text, then run `git commit` — BEFORE suggesting `/trellis:finish-work`. Before drafting the commit plan, update `CHANGELOG.md` for behavior changes, update `docs/功能清单.md` for product functionality changes, and if the user explicitly provided an issue number or issue URL, associate the commit message with that issue. `/finish-work` refuses to run on a dirty working tree (paths outside `.trellis/workspace/` and `.trellis/tasks/`).
 [/workflow-state:in_progress-inline]
 
 ### Phase 3: Finish
@@ -278,7 +285,7 @@ When a user request matches one of these intents, load the corresponding skill (
 
 | What you're thinking | Why it's wrong |
 |---|---|
-| "This is simple, I'll just code it in the main thread" | Dispatching `trellis-implement` is the cheap path; skipping it tempts you to write code in the main thread and lose spec context — sub-agents get `implement.jsonl` injected, you don't |
+| "This is simple, I'll just code it in the main thread" | If the work truly qualified for no-task inline handling, you should have stayed in `[workflow-state:no_task]`. Once you're already on the task path, dispatching `trellis-implement` is the cheap path; skipping it tempts you to lose spec context — sub-agents get `implement.jsonl` injected, you don't |
 | "I already thought it through in plan mode" | Plan-mode output lives in memory — sub-agents can't see it; must be persisted to prd.md |
 | "I already know the spec" | The spec may have been updated since you last read it; the sub-agent gets the fresh copy, you may not |
 | "Code first, check later" | `trellis-check` surfaces issues you won't notice yourself; earlier is cheaper |
@@ -289,7 +296,7 @@ When a user request matches one of these intents, load the corresponding skill (
 
 | What you're thinking | Why it's wrong |
 |---|---|
-| "This is simple, just code it" | Simple tasks often grow complex; `trellis-before-dev` takes under a minute and loads the spec context you'll need |
+| "This is simple, just code it" | If the work truly qualified for no-task inline handling, you should have stayed in `[workflow-state:no_task]`. Once you're already on the task path, still run `trellis-before-dev` before coding |
 | "I already thought it through in plan mode" | Plan-mode output lives in memory — must be persisted to prd.md before code |
 | "I already know the spec" | The spec may have been updated since you last read it; read again |
 | "Code first, check later" | `trellis-check` surfaces issues you won't notice yourself; earlier is cheaper |
@@ -455,6 +462,16 @@ Goal: turn the prd into code that passes quality checks.
 
 #### 2.1 Implement `[required · repeatable]`
 
+Before dispatching an implement agent or editing code directly, do a one-time repo-update check for the current task:
+
+```bash
+git status --short
+git fetch --prune
+git rev-list --left-right --count HEAD...@{upstream}
+```
+
+If the branch has an upstream and the remote side is ahead, pull before editing. If the working tree is dirty and the remote side is ahead, stop and resolve that state before continuing. If there is no upstream configured, surface that fact instead of pretending the check passed.
+
 [Claude Code, Cursor, OpenCode, Gemini, Qoder, CodeBuddy, Copilot, Droid, Pi]
 
 Spawn the implement sub-agent:
@@ -577,6 +594,13 @@ Update the docs under `.trellis/spec/` accordingly. Even if the conclusion is "n
 #### 3.4 Commit changes `[required · once]`
 
 The AI drives a batched commit of this task's code changes so `/finish-work` can run cleanly afterwards. Goal: produce work commits FIRST, then bookkeeping (archive + journal) commits land after — never interleaved.
+
+**Required delivery checks before drafting the commit plan**:
+
+- Before editing or drafting the commit plan, confirm which `CHANGELOG.md` version should receive this task's notes. Use the user-provided version when available; otherwise use `[TEMP]`.
+- If the task changed user-visible behavior or developer-facing workflow behavior, update `CHANGELOG.md` in the same task.
+- If the task changed product/app functionality, update `docs/功能清单.md` in the same task.
+- If the user explicitly provided an issue number or issue URL, associate the commit message with that issue. Prefer a non-closing form such as `Refs #123` unless the user explicitly asked to close the issue.
 
 **Step-by-step**:
 

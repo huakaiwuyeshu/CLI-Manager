@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [Task Delivery Checklist](./task-delivery-checklist.md) | Enforce repo-specific start/finish delivery rules | Before any file-writing task and before final commit |
 | [Tauri User File Security Checklist](./tauri-user-file-security-checklist.md) | Verify boundary defenses on user paths and asset/fs scopes | Adding a Tauri command that accepts a path, or broadening assetProtocol/fs scope |
 | [Version Update Checklist](./version-update-checklist.md) | Keep npm/Tauri/Rust versions aligned and verify updater release signing/artifacts | Before bumping or tagging CLI-Manager release version |
 
@@ -48,6 +49,15 @@ These guides help you **ask the right questions before coding**.
 - [ ] **You're creating a new utility/helper function** ← Search first!
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+
+### When to Think About Task Delivery
+
+- [ ] You're about to edit files after spending time away from the repo
+- [ ] The task changes user-visible behavior or internal workflow behavior
+- [ ] The user cited a GitHub issue and wants the commit to be traceable
+- [ ] The task changes product functionality and may affect the feature inventory
+
+→ Read [Task Delivery Checklist](./task-delivery-checklist.md)
 
 ### When to Think About Tauri File-Boundary Security
 

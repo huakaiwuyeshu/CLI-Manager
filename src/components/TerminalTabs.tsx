@@ -859,7 +859,7 @@ function PaneTabBar({
       tabScrollUpdateTimeoutRef.current = null;
       updateTabScrollState();
     }, 220);
-  }, [pane.activeSessionId, pane.sessionIds, updateTabScrollState]);
+  }, [pane.activeSessionId, pane.id, pane.sessionIds, updateTabScrollState]);
 
   const activatePaneSessionAt = useCallback((index: number) => {
     const session = paneSessions[index];
@@ -1287,7 +1287,126 @@ function PaneLeafView({
   );
 }
 
-const MemoPaneLeafView = memo(PaneLeafView);
+function areSessionIdListsEqual(prevIds: string[], nextIds: string[]): boolean {
+  if (prevIds.length !== nextIds.length) return false;
+  for (let index = 0; index < prevIds.length; index += 1) {
+    if (prevIds[index] !== nextIds[index]) return false;
+  }
+  return true;
+}
+
+function findSessionById(sessions: TerminalSession[], sessionId: string): TerminalSession | undefined {
+  return sessions.find((session) => session.id === sessionId);
+}
+
+function findProjectById(projects: Project[], projectId: string | null | undefined): Project | undefined {
+  if (!projectId) return undefined;
+  return projects.find((project) => project.id === projectId);
+}
+
+function paneContainsSessionId(pane: TerminalPaneLeaf, sessionId: string | null): boolean {
+  return sessionId ? pane.sessionIds.includes(sessionId) : false;
+}
+
+function didPaneSessionsChange(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  for (const sessionId of nextProps.pane.sessionIds) {
+    if (findSessionById(prevProps.sessions, sessionId) !== findSessionById(nextProps.sessions, sessionId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneProjectsChange(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  for (const sessionId of nextProps.pane.sessionIds) {
+    const nextSession = findSessionById(nextProps.sessions, sessionId);
+    const projectId = nextSession?.projectId;
+    if (findProjectById(prevProps.projects, projectId) !== findProjectById(nextProps.projects, projectId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneNotificationsChange(
+  prevNotifications: Record<string, TabNotificationState>,
+  nextNotifications: Record<string, TabNotificationState>,
+  sessionIds: string[]
+): boolean {
+  for (const sessionId of sessionIds) {
+    if ((prevNotifications[sessionId] ?? "none") !== (nextNotifications[sessionId] ?? "none")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function didPaneHiddenBackgroundChange(prevHidden: Set<string>, nextHidden: Set<string>, sessionIds: string[]): boolean {
+  for (const sessionId of sessionIds) {
+    if (prevHidden.has(sessionId) !== nextHidden.has(sessionId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getPaneSiblingsSignature(panes: TerminalPaneLeaf[]): string {
+  return panes.map((pane) => `${pane.id}:${pane.sessionIds.length}`).join("|");
+}
+
+function arePaneLeafViewPropsEqual(prevProps: PaneLeafViewProps, nextProps: PaneLeafViewProps): boolean {
+  if (prevProps.pane.id !== nextProps.pane.id) return false;
+  if (!areSessionIdListsEqual(prevProps.pane.sessionIds, nextProps.pane.sessionIds)) return false;
+  if (prevProps.pane.activeSessionId !== nextProps.pane.activeSessionId) return false;
+  if (prevProps.historyActive !== nextProps.historyActive) return false;
+  if (prevProps.isPaneFullscreen !== nextProps.isPaneFullscreen) return false;
+  if (prevProps.isLayoutVisible !== nextProps.isLayoutVisible) return false;
+  if (prevProps.fontSize !== nextProps.fontSize || prevProps.fontFamily !== nextProps.fontFamily) return false;
+  if (prevProps.resolvedTheme !== nextProps.resolvedTheme) return false;
+  if (prevProps.terminalThemeName !== nextProps.terminalThemeName) return false;
+  if (prevProps.terminalThemeBackground !== nextProps.terminalThemeBackground) return false;
+  if (prevProps.lightThemePalette !== nextProps.lightThemePalette) return false;
+  if (prevProps.darkThemePalette !== nextProps.darkThemePalette) return false;
+  if (prevProps.terminalBackgroundEnabled !== nextProps.terminalBackgroundEnabled) return false;
+  if (prevProps.terminalBackgroundImagePath !== nextProps.terminalBackgroundImagePath) return false;
+  if (prevProps.hideTabBar !== nextProps.hideTabBar) return false;
+  if (getPaneSiblingsSignature(prevProps.allPanes) !== getPaneSiblingsSignature(nextProps.allPanes)) return false;
+  if ((prevProps.activeDropPreview?.paneId ?? null) !== (nextProps.activeDropPreview?.paneId ?? null)) return false;
+  if ((prevProps.activeDropPreview?.edge ?? null) !== (nextProps.activeDropPreview?.edge ?? null)) return false;
+
+  const wasEditingThisPane = paneContainsSessionId(prevProps.pane, prevProps.editingSessionId);
+  const isEditingThisPane = paneContainsSessionId(nextProps.pane, nextProps.editingSessionId);
+  if (wasEditingThisPane !== isEditingThisPane) return false;
+  if (wasEditingThisPane && prevProps.editingSessionId !== nextProps.editingSessionId) return false;
+
+  const wasActiveInThisPane = paneContainsSessionId(prevProps.pane, prevProps.activeSessionId);
+  const isActiveInThisPane = paneContainsSessionId(nextProps.pane, nextProps.activeSessionId);
+  if (wasActiveInThisPane !== isActiveInThisPane) return false;
+  if (wasActiveInThisPane && prevProps.activeSessionId !== nextProps.activeSessionId) return false;
+
+  if (didPaneSessionsChange(prevProps, nextProps)) return false;
+  if (didPaneProjectsChange(prevProps, nextProps)) return false;
+  if (didPaneNotificationsChange(prevProps.tabNotifications, nextProps.tabNotifications, nextProps.pane.sessionIds)) return false;
+  if (didPaneHiddenBackgroundChange(prevProps.hiddenBackgroundSessionIds, nextProps.hiddenBackgroundSessionIds, nextProps.pane.sessionIds)) return false;
+
+  return (
+    prevProps.onActivateSession === nextProps.onActivateSession &&
+    prevProps.onCloseSessions === nextProps.onCloseSessions &&
+    prevProps.onStartEdit === nextProps.onStartEdit &&
+    prevProps.onSubmitEdit === nextProps.onSubmitEdit &&
+    prevProps.onCancelEdit === nextProps.onCancelEdit &&
+    prevProps.onNewTab === nextProps.onNewTab &&
+    prevProps.onDuplicateSession === nextProps.onDuplicateSession &&
+    prevProps.onOpenSplitPicker === nextProps.onOpenSplitPicker &&
+    prevProps.onUnsplit === nextProps.onUnsplit &&
+    prevProps.onMoveToPane === nextProps.onMoveToPane &&
+    prevProps.onHideBackground === nextProps.onHideBackground &&
+    prevProps.onShowBackground === nextProps.onShowBackground &&
+    prevProps.onTogglePaneFullscreen === nextProps.onTogglePaneFullscreen
+  );
+}
+
+const MemoPaneLeafView = memo(PaneLeafView, arePaneLeafViewPropsEqual);
 
 function PaneContentDropZones({ paneId, activeDropPreview }: { paneId: string; activeDropPreview?: PaneDropPreview }) {
   const centerDrop = useDroppable({ id: `${PANE_CENTER_DROP_PREFIX}${paneId}` });
@@ -1433,11 +1552,13 @@ function TerminalCloseConfirmBubble({
   menuStyle,
   onConfirm,
   onClose,
+  shouldIgnoreOutsideInteraction,
 }: {
   confirm: TerminalCloseConfirmState;
   menuStyle: CSSProperties;
   onConfirm: () => void;
   onClose: () => void;
+  shouldIgnoreOutsideInteraction: () => boolean;
 }) {
   const { t } = useI18n();
   const anchorStyle: CSSProperties = confirm
@@ -1455,6 +1576,9 @@ function TerminalCloseConfirmBubble({
         style={menuStyle}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
+        onInteractOutside={(event) => {
+          if (shouldIgnoreOutsideInteraction()) event.preventDefault();
+        }}
       >
         <div className="flex items-center gap-1">
           <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onClose} aria-label={t("terminal.close.cancel")} title={t("terminal.close.cancel")}>
@@ -1583,6 +1707,7 @@ export function TerminalTabs({
   const splitPickerOpenFrameRef = useRef<number | null>(null);
   const splitPickerOpenTimerRef = useRef<number | null>(null);
   const splitPickerOutsideGuardUntilRef = useRef(0);
+  const closeConfirmOutsideGuardUntilRef = useRef(0);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const toolbarSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -1755,6 +1880,14 @@ export function TerminalTabs({
     return Date.now() < splitPickerOutsideGuardUntilRef.current;
   }, []);
 
+  const armCloseConfirmOutsideGuard = useCallback(() => {
+    closeConfirmOutsideGuardUntilRef.current = Date.now() + 180;
+  }, []);
+
+  const shouldIgnoreCloseConfirmOutsideInteraction = useCallback(() => {
+    return Date.now() < closeConfirmOutsideGuardUntilRef.current;
+  }, []);
+
   const handleNewTab = useCallback(async () => {
     const newTerminalContext =
       activeSession?.kind === "subagent-transcript"
@@ -1863,11 +1996,12 @@ export function TerminalTabs({
     }
 
     const position = resolveCloseConfirmAnchor(anchor ?? findCloseConfirmAnchor(uniqueSessionIds));
+    armCloseConfirmOutsideGuard();
     setCloseConfirm({
       sessionIds: uniqueSessionIds,
       ...position,
     });
-  }, [closeSessionIds, findCloseConfirmAnchor, resolveCloseConfirmAnchor, sessions]);
+  }, [armCloseConfirmOutsideGuard, closeSessionIds, findCloseConfirmAnchor, resolveCloseConfirmAnchor, sessions]);
 
   const confirmCloseSessions = useCallback(() => {
     if (!closeConfirm) return;
@@ -2092,7 +2226,7 @@ export function TerminalTabs({
       sourceFilter: resolveHistorySourceFilter(project?.cli_tool),
       projectPath: project?.path ?? null,
     });
-  }, [activeSession, closeHistory, historyOpen, openHistory, projects]);
+  }, [activeSession, activeWorkspaceTab, closeHistory, historyOpen, openHistory, projects]);
 
   const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => {
     clearSplitPickerOpenSchedule();
@@ -2498,6 +2632,7 @@ export function TerminalTabs({
         menuStyle={splitPickerMenuStyle}
         onConfirm={confirmCloseSessions}
         onClose={cancelCloseSessions}
+        shouldIgnoreOutsideInteraction={shouldIgnoreCloseConfirmOutsideInteraction}
       />
 
       <div className="relative flex-1 min-h-0 overflow-hidden">

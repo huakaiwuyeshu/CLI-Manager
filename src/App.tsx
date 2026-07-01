@@ -322,6 +322,10 @@ function runDeferredStartupTasks(openSettings?: (tab?: SettingsTab) => void): vo
 
   window.setTimeout(() => {
     void (async () => {
+      await useProjectStore.getState().refreshProjectDiagnostics().catch((err) => {
+        logWarn("Failed to refresh deferred project diagnostics", err);
+      });
+
       const result = await useSyncStore.getState().runAutoSync("startup");
       if (result === "conflict") {
         toast.warning(translateCurrent("notifications.autoSync.startConflict"), {
@@ -376,6 +380,7 @@ function App() {
   const openHistorySession = useHistoryStore((s) => s.openSession);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsEverOpened, setSettingsEverOpened] = useState(false);
+  const [settingsWindowExpanded, setSettingsWindowExpanded] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>("general");
   const [statsOpen, setStatsOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
@@ -398,6 +403,7 @@ function App() {
     if (tab && tab !== useSettingsStore.getState().lastSettingsTab) {
       void updateSetting("lastSettingsTab", tab);
     }
+    setSettingsWindowExpanded(true);
     setSettingsOpen(true);
     setSettingsEverOpened(true);
   }, [lastSettingsTab, updateSetting]);
@@ -576,7 +582,7 @@ function App() {
       });
 
       // 2. 加载项目列表
-      await useProjectStore.getState().fetchAll();
+      await useProjectStore.getState().fetchAll("startup");
 
       // 3. 启动时不恢复历史终端，避免重建 PTY 并重跑 startupCmd。
       await useSessionStore.getState().clear();
@@ -813,7 +819,7 @@ function App() {
         if (restoreWindowWidthRef.current == null) {
           restoreWindowWidthRef.current = window.innerWidth;
         }
-        if (settingsOpen) {
+        if (settingsWindowExpanded) {
           await appWindow.setMinSize(new LogicalSize(800, WINDOW_MIN_HEIGHT));
           const targetWidth = Math.max(restoreWindowWidthRef.current ?? 800, 800);
           await appWindow.setSize(
@@ -821,15 +827,15 @@ function App() {
           );
           return;
         }
+        // Closing settings in compact mode used to force an immediate native window shrink,
+        // which caused a visible flash on some platforms. Restore the smaller min width but
+        // keep the current width until the user resizes or changes view mode.
         await appWindow.setMinSize(new LogicalSize(COMPACT_WINDOW_WIDTH, WINDOW_MIN_HEIGHT));
-        await appWindow.setSize(
-          new LogicalSize(COMPACT_WINDOW_WIDTH, Math.max(window.innerHeight, WINDOW_MIN_HEIGHT))
-        );
       } catch (err) {
         logWarn("Failed to adjust window size", err);
       }
     })();
-  }, [isMacOs, viewMode, settingsOpen]);
+  }, [isMacOs, viewMode, settingsWindowExpanded]);
 
   useEffect(() => {
     if (firstScreenPerfReported) return;
@@ -907,9 +913,12 @@ function App() {
       <CommandPalette />
       <Suspense fallback={null}>
         {settingsEverOpened && (
-          <SettingsModal
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
+            <SettingsModal
+              open={settingsOpen}
+              onClose={() => setSettingsOpen(false)}
+            onAfterClose={() => {
+              setSettingsWindowExpanded(false);
+            }}
             initialTab={settingsInitialTab}
             onActiveTabChange={handleSettingsTabChange}
           />

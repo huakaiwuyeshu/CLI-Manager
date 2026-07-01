@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb, batchUpdateSortOrder } from "../lib/db";
+import { resolveProjectFetchPolicy, type ProjectFetchReason } from "../lib/projectLoadPolicy";
 import { useSettingsStore } from "./settingsStore";
 import { logWarn } from "../lib/logger";
 import { getCodexProviderOverride, getProviderSwitchAppType } from "../lib/providerSwitching";
@@ -33,14 +34,16 @@ interface ProjectStore {
   projects: Project[];
   groups: Group[];
   tree: TreeNode[];
+  loaded: boolean;
   searchQuery: string;
   projectHealth: Record<string, boolean>;
   /** 仅含存在项目级供应商覆盖的项目，key 为 project.id */
   providerBadges: Record<string, ProviderBadge>;
   setSearchQuery: (q: string) => void;
-  fetchAll: () => Promise<void>;
+  fetchAll: (reason?: ProjectFetchReason) => Promise<void>;
   fetchProjects: () => Promise<void>;
   fetchGroups: () => Promise<void>;
+  refreshProjectDiagnostics: () => Promise<void>;
   refreshProviderBadges: () => Promise<void>;
   cleanupUnusedCodexProfiles: () => Promise<void>;
   createProject: (input: CreateProjectInput) => Promise<Project>;
@@ -137,6 +140,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],
   groups: [],
   tree: [],
+  loaded: false,
   searchQuery: "",
   projectHealth: {},
   providerBadges: {},
@@ -147,10 +151,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     set({ tree: buildTree(groups, projects, q) });
   },
 
-  fetchAll: async () => {
+  fetchAll: async (reason = "interactive") => {
     if (inflightFetchAll) return inflightFetchAll;
     inflightFetchAll = (async () => {
       try {
+        const policy = resolveProjectFetchPolicy(reason);
         const db = await getDb();
         const [groups, projects] = await Promise.all([
           db.select<Group[]>("SELECT * FROM groups ORDER BY sort_order, name"),
@@ -158,7 +163,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         ]);
         // Path health check
         let projectHealth = get().projectHealth;
-        if (projects.length > 0) {
+        if (policy.includePathHealth && projects.length > 0) {
           try {
             const paths = projects.map((p) => p.path);
             const results = await invoke<boolean[]>("check_paths_exist", { paths });
@@ -169,14 +174,35 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         }
 
         const tree = buildTree(groups, projects, get().searchQuery);
-        set({ groups, projects, tree, projectHealth });
-        // 供应商徽标刷新不阻塞项目树加载，失败也静默
-        void get().refreshProviderBadges();
+        set({ groups, projects, tree, projectHealth, loaded: true });
+        if (policy.refreshProviderBadges) {
+          // 供应商徽标刷新不阻塞项目树加载，失败也静默
+          void get().refreshProviderBadges();
+        }
       } finally {
         inflightFetchAll = null;
       }
     })();
     return inflightFetchAll;
+  },
+
+  refreshProjectDiagnostics: async () => {
+    const projects = get().projects;
+    if (projects.length > 0) {
+      try {
+        const paths = projects.map((project) => project.path);
+        const results = await invoke<boolean[]>("check_paths_exist", { paths });
+        const projectHealth: Record<string, boolean> = {};
+        projects.forEach((project, index) => {
+          projectHealth[project.id] = results[index];
+        });
+        set({ projectHealth });
+      } catch {
+        // ignore diagnostics refresh failures
+      }
+    }
+
+    await get().refreshProviderBadges();
   },
 
   refreshProviderBadges: async () => {

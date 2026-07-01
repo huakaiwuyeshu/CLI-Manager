@@ -118,19 +118,8 @@ struct SessionDetailParts {
 }
 
 #[derive(Default)]
-struct SessionStatsCache {
-    entries: HashMap<String, CachedSessionCacheEntry>,
-}
-
-#[derive(Default)]
 struct SessionProjectCache {
     entries: HashMap<String, CachedSessionProjectCacheEntry>,
-}
-
-#[derive(Clone)]
-struct CachedSessionCacheEntry {
-    fingerprint: SessionFileFingerprint,
-    computed: CachedSessionComputation,
 }
 
 #[derive(Clone)]
@@ -226,7 +215,6 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 const MAX_STATS_RANGE_DAYS: usize = 366;
 const HISTORY_STATS_AGGREGATION_CACHE_MAX: usize = 32;
 const HISTORY_STATS_DAILY_INDEX_CACHE_MAX: usize = 16;
-static SESSION_STATS_CACHE: OnceLock<Mutex<SessionStatsCache>> = OnceLock::new();
 static SESSION_PROJECT_CACHE: OnceLock<Mutex<SessionProjectCache>> = OnceLock::new();
 static SESSION_FILES_CACHE: OnceLock<Mutex<SessionFilesCache>> = OnceLock::new();
 static WSL_SESSION_FINGERPRINT_CACHE: OnceLock<Mutex<WslSessionFingerprintCache>> = OnceLock::new();
@@ -608,15 +596,13 @@ pub async fn history_list_sessions(
         }
 
         if query_lower.is_none() {
-            // 先按 project_path 过滤再算 fingerprint：避免对全部历史文件 fs::metadata。
-            // claude 仅看 project_key（零 IO），codex 走 project_cache 缓存；命中面板轮询热路径。
-            let index_hints = cached_history_index_entries(&roots);
-            let all_files = collect_session_files(source_filter.as_deref(), &roots);
-            let total_files = all_files.len();
+            let indexed_entries = refresh_history_index(&roots);
+            let total_files = indexed_entries.len();
             let mut mismatch_samples = Vec::new();
-            let mut files: Vec<(SessionFileRef, SessionFileFingerprint)> = all_files
+            let mut matched_entries: Vec<HistoryIndexEntry> = indexed_entries
                 .into_iter()
-                .filter_map(|file_ref| {
+                .filter_map(|entry| {
+                    let file_ref = &entry.file_ref;
                     let matched = target_project_path
                         .as_ref()
                         .map(|project_path| session_matches_project_path(&file_ref, project_path))
@@ -634,17 +620,15 @@ pub async fn history_list_sessions(
                         }
                         return None;
                     }
-                    let fingerprint = session_file_fingerprint(&file_ref.path);
-                    Some((file_ref, fingerprint))
+                    Some(entry)
                 })
                 .collect();
             debug!(
-                "history_list_sessions project candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}, index_hints={}",
+                "history_list_sessions project candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}, reused_index=true",
                 source_filter,
                 target_project_path,
                 total_files,
-                files.len(),
-                index_hints.as_ref().map(|entries| entries.len()).unwrap_or(0)
+                matched_entries.len(),
             );
             if targeted_lookup {
                 info!(
@@ -652,18 +636,19 @@ pub async fn history_list_sessions(
                     source_filter,
                     target_project_path,
                     total_files,
-                    files.len(),
+                    matched_entries.len(),
                     mismatch_samples
                 );
             }
-            files.sort_by(|a, b| {
-                b.1.updated_at
-                    .cmp(&a.1.updated_at)
-                    .then_with(|| a.0.path.cmp(&b.0.path))
+            matched_entries.sort_by(|a, b| {
+                b.computed
+                    .updated_at
+                    .cmp(&a.computed.updated_at)
+                    .then_with(|| a.file_ref.path.cmp(&b.file_ref.path))
             });
 
             let mut matched = 0usize;
-            for (file_ref, fingerprint) in files {
+            for entry in matched_entries {
                 if matched < start_offset {
                     matched += 1;
                     continue;
@@ -672,15 +657,8 @@ pub async fn history_list_sessions(
                     break;
                 }
                 matched += 1;
-                let path_key = path_to_key(&file_ref.path);
-                let indexed_entry = index_hints
-                    .as_ref()
-                    .and_then(|entries| entries.get(&path_key));
-                let computed = get_or_scan_session_computation_with_fingerprint(
-                    &file_ref,
-                    fingerprint,
-                    indexed_entry,
-                );
+                let file_ref = entry.file_ref;
+                let computed = entry.computed;
                 debug!(
                     "history_list_sessions matched file: source={}, project_key={}, session_id={}, path={}",
                     file_ref.source,
@@ -1932,10 +1910,6 @@ fn stats_daily_index_cache_set(key: String, daily_index: CachedHistoryStatsDaily
     }
 }
 
-fn get_stats_cache() -> &'static Mutex<SessionStatsCache> {
-    SESSION_STATS_CACHE.get_or_init(|| Mutex::new(SessionStatsCache::default()))
-}
-
 fn get_project_cache() -> &'static Mutex<SessionProjectCache> {
     SESSION_PROJECT_CACHE.get_or_init(|| Mutex::new(SessionProjectCache::default()))
 }
@@ -1955,9 +1929,6 @@ fn get_history_index() -> &'static RwLock<HistorySessionIndex> {
 fn invalidate_history_caches() {
     if let Ok(mut cache) = get_files_cache().lock() {
         cache.by_source.clear();
-    }
-    if let Ok(mut cache) = get_stats_cache().lock() {
-        cache.entries.clear();
     }
     if let Ok(mut cache) = get_project_cache().lock() {
         cache.entries.clear();
@@ -2052,36 +2023,6 @@ fn load_persisted_history_index(roots: &HistoryRoots) -> Option<HistorySessionIn
         refreshed_at: 0,
         generation: persisted.generation,
     })
-}
-
-fn history_index_entries_by_path(
-    index: &HistorySessionIndex,
-) -> HashMap<String, HistoryIndexEntry> {
-    index
-        .entries
-        .iter()
-        .cloned()
-        .map(|entry| (path_to_key(&entry.file_ref.path), entry))
-        .collect()
-}
-
-fn cached_history_index_entries(
-    roots: &HistoryRoots,
-) -> Option<HashMap<String, HistoryIndexEntry>> {
-    if let Ok(index) = get_history_index().read() {
-        if index.roots.eq(roots) && !index.entries.is_empty() {
-            return Some(history_index_entries_by_path(&index));
-        }
-    }
-
-    let persisted = load_persisted_history_index(roots)?;
-    let entries = history_index_entries_by_path(&persisted);
-    if let Ok(mut index) = get_history_index().write() {
-        if !index.roots.eq(roots) || index.entries.is_empty() {
-            *index = persisted;
-        }
-    }
-    Some(entries)
 }
 
 fn save_persisted_history_index(index: &HistorySessionIndex) {
@@ -2299,23 +2240,6 @@ fn history_index_entries_match(previous: &[HistoryIndexEntry], next: &[HistoryIn
     })
 }
 
-fn indexed_computation_from_entry(
-    file_ref: &SessionFileRef,
-    fingerprint: SessionFileFingerprint,
-    entry: &HistoryIndexEntry,
-) -> Option<CachedSessionComputation> {
-    if entry.file_ref.source != file_ref.source
-        || entry.file_ref.project_key != file_ref.project_key
-        || !can_reuse_session_scan(entry.fingerprint, fingerprint)
-    {
-        return None;
-    }
-    let mut computed = entry.computed.clone();
-    computed.created_at = fingerprint.created_at;
-    computed.updated_at = fingerprint.updated_at;
-    Some(computed)
-}
-
 fn can_reuse_session_scan(
     previous: SessionFileFingerprint,
     current: SessionFileFingerprint,
@@ -2441,50 +2365,8 @@ fn build_session_computation(
     }
 }
 
-fn get_or_scan_session_computation_with_fingerprint(
-    file_ref: &SessionFileRef,
-    fingerprint: SessionFileFingerprint,
-    indexed_entry: Option<&HistoryIndexEntry>,
-) -> CachedSessionComputation {
-    if let Some(computed) =
-        indexed_entry.and_then(|entry| indexed_computation_from_entry(file_ref, fingerprint, entry))
-    {
-        return computed;
-    }
-
-    let key = path_to_key(&file_ref.path);
-
-    if let Ok(cache) = get_stats_cache().lock() {
-        if let Some(existing) = cache.entries.get(&key) {
-            if can_reuse_session_scan(existing.fingerprint, fingerprint) {
-                let mut computed = existing.computed.clone();
-                computed.created_at = fingerprint.created_at;
-                computed.updated_at = fingerprint.updated_at;
-                return computed;
-            }
-        }
-    }
-
-    let computed = scan_session_computation(
-        &file_ref.path,
-        fingerprint.created_at,
-        fingerprint.updated_at,
-    );
-    if let Ok(mut cache) = get_stats_cache().lock() {
-        cache.entries.insert(
-            key,
-            CachedSessionCacheEntry {
-                fingerprint,
-                computed: computed.clone(),
-            },
-        );
-    }
-    computed
-}
-
 fn scan_session_detail_parts(file_ref: &SessionFileRef) -> SessionDetailParts {
     // detail 必然要读完整消息，单遍同时算出 stats，避免对同一文件二次读取/解析；
-    // 顺带回写 stats 缓存，让后续 list / stats 聚合命中。
     let fingerprint = session_file_fingerprint(&file_ref.path);
     let (computed, messages) = scan_session_computation_with_messages(
         &file_ref.path,
@@ -2493,15 +2375,6 @@ fn scan_session_detail_parts(file_ref: &SessionFileRef) -> SessionDetailParts {
     );
     let tool_events = scan_tool_events(&file_ref.path);
     let file_changes = scan_file_changes(&file_ref.path);
-    if let Ok(mut cache) = get_stats_cache().lock() {
-        cache.entries.insert(
-            path_to_key(&file_ref.path),
-            CachedSessionCacheEntry {
-                fingerprint,
-                computed: computed.clone(),
-            },
-        );
-    }
     SessionDetailParts {
         computed,
         cwd: get_or_scan_session_project(&file_ref.path).cwd,

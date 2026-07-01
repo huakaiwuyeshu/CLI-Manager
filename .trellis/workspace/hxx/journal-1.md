@@ -779,3 +779,36 @@ Add project-level Codex provider switching with generated profiles, cleanup, sid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: 优化 Replay 侧栏 UI 与快照查看
+
+**Date**: 2026-06-30
+**Task**: 优化 Replay 侧栏 UI 与快照查看
+**Branch**: `master`
+
+### Summary
+
+按参考图优化 Replay 右侧栏比例、时间轴与详情区布局，修复代码快照查看按钮可用性，并补充变更文档。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `81c3258` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

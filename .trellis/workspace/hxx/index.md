@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 23
+- **Total Sessions**: 24
 - **Last Active**: 2026-06-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~781 | Active |
+| `journal-1.md` | ~814 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 24 | 2026-06-30 | 优化 Replay 侧栏 UI 与快照查看 | `81c3258` | `master` |
 | 23 | 2026-06-30 | 完成 Issue 70 项目列表搜索与终端聚焦 | `56b696b`, `5fc43a3` | `master` |
 | 22 | 2026-06-28 | 修复实时统计最新变更 Diff 崩溃 | `ccaaf58`, `f8e8f2d` | `master` |
 | 21 | 2026-06-28 | 修复浅色终端背景与 TUI 输入区显示 | `c02b4da` | `master` |

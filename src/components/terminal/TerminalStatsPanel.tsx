@@ -39,7 +39,6 @@ import { useI18n } from "../../lib/i18n";
 import { DiffModal } from "../history/DiffModal";
 import { parseDiffBlocksFromMessages } from "../../lib/diffParser";
 import { TerminalSquare } from "../icons";
-import { logInfo } from "../../lib/logger";
 
 interface TerminalStatsPanelProps {
   activeSessionId: string | null;
@@ -419,16 +418,6 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
     const scopeKey = `${activeSessionId}|${lookupProjectPath}|${sourceFilter ?? ""}|${terminalSession?.cliSessionId ?? ""}`;
     if (lastPathRef.current !== scopeKey) {
       lastPathRef.current = scopeKey;
-      logInfo("term_stats.lookup_scope", {
-        activeSessionId,
-        projectId: terminalSession?.projectId ?? null,
-        sourceFilter: sourceFilter ?? null,
-        cliSessionId: terminalSession?.cliSessionId ?? null,
-        projectRoot: project?.path ?? null,
-        terminalCwd: terminalSession?.cwd ?? null,
-        lookupProjectPath,
-        displayProjectPath,
-      });
       const cached = sessionDetailCache.get(scopeKey) ?? null;
       latestRef.current = cached;
       setLatestSession(cached);

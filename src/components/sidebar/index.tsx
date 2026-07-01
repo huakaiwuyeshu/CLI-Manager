@@ -13,6 +13,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { ProviderSwitchModal } from "../ProviderSwitchModal";
 import { openWindowsTerminal } from "../../lib/externalTerminal";
 import { resolveProjectStartupCommand } from "../../lib/projectStartupCommand";
+import { shouldSidebarBootstrapProjects } from "../../lib/projectLoadPolicy";
 import { getProviderSwitchAppType, parseProjectEnvVars } from "../../lib/providerSwitching";
 import { TreeContext, type TreeActions } from "./TreeContext";
 import { Portal } from "../ui/Portal";
@@ -107,6 +108,7 @@ export function Sidebar({
     tree,
     projects,
     groups,
+    projectStoreLoaded,
     projectHealth,
     providerBadges,
   } = useProjectStore(
@@ -114,6 +116,7 @@ export function Sidebar({
       tree: s.tree,
       projects: s.projects,
       groups: s.groups,
+      projectStoreLoaded: s.loaded,
       projectHealth: s.projectHealth,
       providerBadges: s.providerBadges,
     }))
@@ -469,7 +472,9 @@ export function Sidebar({
   const loadProjects = useCallback(async () => {
     try {
       setLoadError(null);
-      await fetchAll();
+      if (shouldSidebarBootstrapProjects(projectStoreLoaded)) {
+        await fetchAll();
+      }
     } catch (err) {
       const description = String(err);
       setLoadError(description);
@@ -478,7 +483,7 @@ export function Sidebar({
     } finally {
       setInitialLoading(false);
     }
-  }, [fetchAll, t]);
+  }, [fetchAll, projectStoreLoaded, t]);
 
   useEffect(() => {
     void loadProjects();
