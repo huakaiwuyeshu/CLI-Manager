@@ -2567,9 +2567,9 @@
   width: 38px;
   padding: 6px 4px;
   border-left: 0;
-  background-color: var(--surface-container-low);
-  color: var(--on-surface);
-  box-shadow: none;
+  background-color: var(--term-panel-bg, color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 96%, var(--terminal-theme-foreground, #f8fafc) 4%));
+  color: var(--term-panel-fg, var(--terminal-theme-foreground, #f8fafc));
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--term-panel-border, var(--terminal-theme-foreground, #f8fafc)) 52%, transparent);
 }
 
 .ui-terminal-action-sidebar::before {
@@ -2591,8 +2591,7 @@
 }
 
 [data-theme="light"] .ui-terminal-action-sidebar {
-  background-color: color-mix(in srgb, var(--surface-container-low) 88%, white 12%);
-  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--border) 14%, transparent);
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--term-panel-border, var(--terminal-theme-foreground, #1e293b)) 64%, transparent);
 }
 
 .ui-terminal-action-sort-item {
@@ -2641,7 +2640,7 @@
   transform: none;
   border-color: transparent;
   background-color: color-mix(in srgb, var(--terminal-action-color, currentColor) 9%, transparent);
-  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 88%, var(--on-surface) 12%);
+  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 88%, var(--term-panel-fg, var(--terminal-theme-foreground, #f8fafc)) 12%);
   box-shadow: none;
 }
 
@@ -2665,7 +2664,7 @@
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-toolbar-button:hover:not(:disabled),
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--terminal-action-color, currentColor) 18%, transparent);
-  background-color: color-mix(in srgb, var(--terminal-action-color, currentColor) 12%, white 88%);
+  background-color: color-mix(in srgb, var(--terminal-action-color, currentColor) 12%, var(--term-panel-card, var(--term-panel-bg, white)) 88%);
 }
 
 [data-theme="light"] .ui-terminal-pane-chrome .ui-terminal-action-sidebar .ui-primary-action,
@@ -2674,7 +2673,7 @@
 [data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action[data-active="true"],
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-primary-action,
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action[data-active="true"] {
-  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 92%, var(--on-surface) 8%);
+  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 92%, var(--term-panel-fg, var(--terminal-theme-foreground, #1e293b)) 8%);
 }
 
 [data-theme="light"] .ui-terminal-pane-chrome .ui-terminal-action-sidebar .ui-toolbar-button,
@@ -2683,7 +2682,7 @@
 [data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action,
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-toolbar-button,
 [data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action {
-  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 92%, var(--on-surface) 8%);
+  color: color-mix(in srgb, var(--terminal-action-color, currentColor) 92%, var(--term-panel-fg, var(--terminal-theme-foreground, #1e293b)) 8%);
 }
 
 .ui-terminal-action-sidebar .ui-action-new.ui-primary-action,
@@ -2775,10 +2774,13 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, #000 18%, transparent);
 }
 
-.ui-terminal-well > aside > .border-b:first-child,
-.ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+.ui-terminal-well > aside > .border-b:first-child {
   border-bottom-color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 9%, transparent) !important;
   background: linear-gradient(180deg, color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 5%, transparent), transparent);
+}
+
+.ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+  border-bottom-color: color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 9%, transparent) !important;
 }
 
 .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .min-h-0.flex-1 {
@@ -3004,10 +3006,13 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--border) 10%, transparent);
 }
 
-[data-theme="light"] .ui-terminal-well > aside > .border-b:first-child,
-[data-theme="light"] .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+[data-theme="light"] .ui-terminal-well > aside > .border-b:first-child {
   border-bottom-color: color-mix(in srgb, var(--border) 18%, transparent) !important;
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-container-high) 24%, transparent), transparent);
+}
+
+[data-theme="light"] .ui-terminal-well > aside > .min-h-0 > [class*="overflow-hidden"][class*="font-mono"] > .border-b:first-child {
+  border-bottom-color: color-mix(in srgb, var(--border) 18%, transparent) !important;
 }
 
 .ui-terminal-tabs-shell[data-fullscreen="true"] .ui-terminal-global-chrome {
@@ -4214,13 +4219,27 @@
   color: var(--on-surface);
 }
 
-.ui-file-tree-row:hover,
-.ui-file-tree-row[data-selected="true"] {
-  background: var(--interactive-hover-bg);
+.ui-file-tree-row:hover {
+  background-color: color-mix(in srgb, var(--term-panel-cyan, #5AC8E0) 13%, transparent);
 }
 
 .ui-file-tree-row[data-selected="true"] {
+  background-color: var(--interactive-selected-bg);
   color: var(--primary);
+}
+
+.ui-file-explorer-sidebar .ui-icon-action {
+  border-color: color-mix(in srgb, var(--on-surface) 10%, transparent);
+  background-color: color-mix(in srgb, var(--on-surface) 7%, transparent);
+  color: color-mix(in srgb, var(--on-surface) 76%, var(--text-muted) 24%);
+}
+
+.ui-file-explorer-sidebar .ui-icon-action:hover:not(:disabled),
+.ui-file-explorer-sidebar .ui-icon-action:focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--on-surface);
+  box-shadow: none;
 }
 
 .ui-file-editor-pane {

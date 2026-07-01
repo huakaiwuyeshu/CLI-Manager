@@ -667,11 +667,12 @@ function CollapsedProjectButton({ node, sizeClass }: { node: TNode; sizeClass: s
   if (node.type !== "project") return null;
   const p = node.project;
   const status = actions.getProjectStatus(p.id);
+  const terminalCount = actions.getProjectTerminalCount(p.id);
   const selected = actions.selectedId === p.id || actions.selectedProjectIds.has(p.id);
   const cliVendor = p.cli_tool ? inferVendor(p.cli_tool) : null;
   return (
     <button
-      className={`ui-tree-collapsed-item my-0.5 flex ${sizeClass} items-center justify-center rounded-xl transition-colors`}
+      className={`ui-tree-collapsed-item relative my-0.5 flex ${sizeClass} items-center justify-center rounded-xl transition-colors`}
       data-selected={selected ? "true" : "false"}
       title={p.name}
       aria-label={t("sidebar.tree.openProject", { name: p.name })}
@@ -685,6 +686,7 @@ function CollapsedProjectButton({ node, sizeClass }: { node: TNode; sizeClass: s
       ) : (
         <Terminal size={15} strokeWidth={1.5} />
       )}
+      {terminalCount > 0 && <span className="ui-tree-collapsed-badge">{terminalCount > 99 ? "99+" : terminalCount}</span>}
     </button>
   );
 }
@@ -800,6 +802,7 @@ function renderFlyoutNodes(nodes: TNode[], depth: number, actions: TreeActions, 
     }
     const p = child.project;
     const status = actions.getProjectStatus(p.id);
+    const terminalCount = actions.getProjectTerminalCount(p.id);
     const cliVendor = p.cli_tool ? inferVendor(p.cli_tool) : null;
     return (
       <button
@@ -823,6 +826,11 @@ function renderFlyoutNodes(nodes: TNode[], depth: number, actions: TreeActions, 
           )}
         </span>
         <span className="flex-1 truncate">{p.name}</span>
+        {terminalCount > 0 && (
+          <span className="ui-tree-meta-chip shrink-0 rounded-full px-1.5 py-0.5 text-[10px] leading-none">
+            {terminalCount}
+          </span>
+        )}
       </button>
     );
   });

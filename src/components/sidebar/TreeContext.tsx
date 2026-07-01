@@ -25,6 +25,7 @@ export interface TreeActions {
   onCancelNewGroup: () => void;
   toggleCollapsed: (id: string) => void;
   getProjectStatus: (projectId: string) => SessionStatus | null;
+  getProjectTerminalCount: (projectId: string) => number;
   isPathInvalid: (projectId: string) => boolean;
   onDragEnd: (event: DragEndEvent) => void;
 }

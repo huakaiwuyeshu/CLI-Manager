@@ -74,6 +74,7 @@ function TreeNodeItemImpl({
     const isSelected = actions.selectedId === p.id;
     const isMultiSelected = actions.selectedProjectIds.has(p.id);
     const status = actions.getProjectStatus(p.id);
+    const terminalCount = actions.getProjectTerminalCount(p.id);
     const pathInvalid = actions.isPathInvalid(p.id);
     const providerBadge = actions.providerBadges[p.id];
     const providerName = providerBadge?.providerName?.trim() || t("sidebar.tree.customProvider");
@@ -124,6 +125,15 @@ function TreeNodeItemImpl({
               >
                 {providerVendor && <VendorIcon vendor={providerVendor} size={10} />}
                 <span className="truncate">{providerName}</span>
+              </span>
+            )}
+            {terminalCount > 0 && (
+              <span
+                className="ui-tree-meta-chip inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] leading-none"
+                title={t("sidebar.tree.terminalCount", { count: terminalCount })}
+                aria-label={t("sidebar.tree.terminalCount", { count: terminalCount })}
+              >
+                {terminalCount}
               </span>
             )}
             {pathInvalid && (

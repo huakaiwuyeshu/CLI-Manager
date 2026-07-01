@@ -128,7 +128,6 @@ export function ThemeSettingsPage() {
   const shellRuntimeMonitoringEnabled = useSettingsStore((s) => s.shellRuntimeMonitoringEnabled);
   const batchLaunchGroupInPane = useSettingsStore((s) => s.batchLaunchGroupInPane);
   const batchLaunchPaneDirection = useSettingsStore((s) => s.batchLaunchPaneDirection);
-  const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
   const setTerminalThemeMode = useSettingsStore((s) => s.setTerminalThemeMode);
   const update = useSettingsStore((s) => s.update);
   const [query, setQuery] = useState("");
@@ -614,28 +613,6 @@ export function ThemeSettingsPage() {
                   />
                 </Group>
               )}
-            </Card>
-            <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
-              <Group justify="space-between" align="center" gap="md" wrap="nowrap">
-                <Box>
-                  <Text size="xs" c="var(--on-surface-variant)">
-                    {t("settings.general.projectScopedTerminalView")}
-                  </Text>
-                  <Text mt={4} size="xs" c="var(--text-muted)">
-                    {t("settings.general.projectScopedTerminalViewDescription")}
-                  </Text>
-                </Box>
-                <Switch
-                  color="cliPrimary"
-                  checked={projectScopedTerminalViewEnabled}
-                  onChange={(event) => void update("projectScopedTerminalViewEnabled", event.currentTarget.checked)}
-                  aria-label={
-                    projectScopedTerminalViewEnabled
-                      ? t("settings.general.disableProjectScopedTerminalView")
-                      : t("settings.general.enableProjectScopedTerminalView")
-                  }
-                />
-              </Group>
             </Card>
           </Stack>
         </section>

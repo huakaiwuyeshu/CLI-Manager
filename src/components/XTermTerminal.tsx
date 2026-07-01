@@ -225,9 +225,14 @@ const copyTextToClipboard = async (text: string) => {
   }
 };
 
-const wrapTerminalPasteTextForCtrlShiftV = (text: string) => (
-  /[\r\n]/u.test(text) ? `'${text}'` : text
+const trimTerminalPasteBoundaryLineBreaks = (text: string) => (
+  text.replace(/^(?:\r\n?|\n)+|(?:\r\n?|\n)+$/gu, "")
 );
+
+const wrapTerminalPasteTextForCtrlShiftV = (text: string) => {
+  const trimmed = trimTerminalPasteBoundaryLineBreaks(text);
+  return /[\r\n]/u.test(trimmed) ? `'${trimmed}'` : trimmed;
+};
 
 const normalizeShellForKnownOs = (shell: string | null | undefined, os: OsPlatform): ShellKey | undefined => (
   os === "unknown" ? normalizeShellKey(shell) : normalizeShellForOs(shell, os)
@@ -1007,9 +1012,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const markAttentionInputHandled = () => useTerminalStore.getState().markAttentionInputHandled(sessionId);
 
     const pasteIntoTerminal = (text: string) => {
-      if (!text) return;
+      const normalizedText = trimTerminalPasteBoundaryLineBreaks(text);
+      if (!normalizedText) return;
       markAttentionInputHandled();
-      terminal.paste(text);
+      terminal.paste(normalizedText);
     };
 
     const pasteTarget = containerRef.current;
@@ -1878,9 +1884,10 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     closeContextMenu();
     if (!terminal) return;
     navigator.clipboard.readText().then((text) => {
-      if (!text) return;
+      const normalizedText = trimTerminalPasteBoundaryLineBreaks(text);
+      if (!normalizedText) return;
       useTerminalStore.getState().markAttentionInputHandled(sessionId);
-      terminal.paste(text);
+      terminal.paste(normalizedText);
       terminal.focus();
     }).catch((err) => {
       logError("Failed to read clipboard text", { sessionId, err });

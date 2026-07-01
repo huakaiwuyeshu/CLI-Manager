@@ -99,7 +99,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenStats,
   compactMode = false,
-  projectScopedTerminalViewEnabled = false,
+  projectScopedTerminalViewEnabled = true,
   terminalScopeProjectId = null,
   onTerminalScopeChange,
 }: SidebarProps) {
@@ -572,6 +572,20 @@ export function Sidebar({
     [projectStatusMap]
   );
 
+  const projectTerminalCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const session of sessions) {
+      if (!session.projectId || (session.kind && session.kind !== "pty")) continue;
+      map.set(session.projectId, (map.get(session.projectId) ?? 0) + 1);
+    }
+    return map;
+  }, [sessions]);
+
+  const getProjectTerminalCount = useCallback(
+    (projectId: string): number => projectTerminalCountMap.get(projectId) ?? 0,
+    [projectTerminalCountMap]
+  );
+
   const isPathInvalid = useCallback(
     (projectId: string): boolean => projectHealth[projectId] === false,
     [projectHealth]
@@ -895,6 +909,7 @@ export function Sidebar({
       onCancelNewGroup: handleCancelNewGroup,
       toggleCollapsed,
       getProjectStatus,
+      getProjectTerminalCount,
       isPathInvalid,
       onDragEnd: handleDragEnd,
     }),
@@ -918,6 +933,7 @@ export function Sidebar({
       handleCancelNewGroup,
       toggleCollapsed,
       getProjectStatus,
+      getProjectTerminalCount,
       isPathInvalid,
       handleDragEnd,
     ]

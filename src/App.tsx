@@ -373,7 +373,6 @@ function App() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const closeBehavior = useSettingsStore((s) => s.closeBehavior);
   const ccusageAnalyticsEnabled = useSettingsStore((s) => s.ccusageAnalyticsEnabled);
-  const projectScopedTerminalViewEnabled = useSettingsStore((s) => s.projectScopedTerminalViewEnabled);
   const lastSettingsTab = useSettingsStore((s) => s.lastSettingsTab);
   const updateSetting = useSettingsStore((s) => s.update);
   const openHistory = useHistoryStore((s) => s.openHistory);
@@ -390,12 +389,6 @@ function App() {
   const terminalFullscreenMaximizedRef = useRef(false);
   const restoreWindowWidthRef = useRef<number | null>(null);
   const closeBehaviorRef = useRef(closeBehavior);
-
-  useEffect(() => {
-    if (!projectScopedTerminalViewEnabled) {
-      setTerminalScopeProjectId(null);
-    }
-  }, [projectScopedTerminalViewEnabled]);
 
   const handleOpenSettings = useCallback((tab?: SettingsTab) => {
     const nextTab = tab ?? lastSettingsTab;
@@ -884,7 +877,7 @@ function App() {
             onOpenSettings={handleOpenSettings}
             onOpenStats={handleOpenStats}
             compactMode
-            projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+            projectScopedTerminalViewEnabled
             terminalScopeProjectId={terminalScopeProjectId}
             onTerminalScopeChange={setTerminalScopeProjectId}
           />
@@ -895,7 +888,7 @@ function App() {
             <Sidebar
               onOpenSettings={handleOpenSettings}
               onOpenStats={handleOpenStats}
-              projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+              projectScopedTerminalViewEnabled
               terminalScopeProjectId={terminalScopeProjectId}
               onTerminalScopeChange={setTerminalScopeProjectId}
             />
@@ -904,7 +897,7 @@ function App() {
             <TerminalTabs
               fullscreen={terminalFullscreen}
               onToggleFullscreen={handleToggleTerminalFullscreen}
-              projectScopedTerminalViewEnabled={projectScopedTerminalViewEnabled}
+              projectScopedTerminalViewEnabled
               projectScopeProjectId={terminalScopeProjectId}
             />
           </main>

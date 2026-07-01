@@ -75,6 +75,7 @@ import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./ui/pop
 import { Button } from "./ui/button";
 import { Portal } from "./ui/Portal";
 import { getTerminalTheme } from "../lib/terminalThemes";
+import { getTerminalSidePanelSkinStyle } from "./stats/termStatsUi";
 
 const HistoryWorkspace = lazy(() =>
   import("./HistoryWorkspace").then((module) => ({ default: module.HistoryWorkspace }))
@@ -1678,6 +1679,7 @@ export function TerminalTabs({
   const terminalToolbarVisibility = useSettingsStore((s) => s.terminalToolbarVisibility);
   const terminalToolbarOrder = useSettingsStore((s) => s.terminalToolbarOrder);
   const sidePanelMerged = useSettingsStore((s) => s.terminalSidePanelMerged);
+  const terminalSidePanelSkin = useSettingsStore((s) => s.terminalSidePanelSkin);
   const updateSettings = useSettingsStore((s) => s.update);
   const openFileProject = useFileExplorerStore((s) => s.openProject);
   const fileProject = useFileExplorerStore((s) => s.project);
@@ -1824,6 +1826,10 @@ export function TerminalTabs({
     "--term-panel-blue": terminalTheme.blue ?? "#5B8DEF",
     "--term-panel-track": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 94%, var(--terminal-theme-foreground, #f8fafc) 6%)",
   } as CSSProperties;
+  const terminalActionSidebarStyle = useMemo(
+    () => getTerminalSidePanelSkinStyle(terminalSidePanelSkin),
+    [terminalSidePanelSkin]
+  );
   const historyActive = historyOpen && activeWorkspaceTab === "history";
   const statsPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "stats" : statsOpen;
   const replayPanelActive = sidePanelMerged ? sidePanelOpen && sidePanelTab === "replay" : replayOpen;
@@ -2491,6 +2497,7 @@ export function TerminalTabs({
         <nav
           className="ui-terminal-actions ui-terminal-action-sidebar flex shrink-0 flex-col items-center gap-2"
           aria-label={t("terminal.toolbar.actions")}
+          style={terminalActionSidebarStyle}
         >
           <SortableContext items={visibleButtons.map((b) => b.id)} strategy={verticalListSortingStrategy}>
             {visibleButtons.map((btn) => (
@@ -2502,7 +2509,7 @@ export function TerminalTabs({
         </nav>
         <DragOverlay dropAnimation={null}>
           {activeToolbarDragId && buttonMap[activeToolbarDragId] ? (
-            <div className="ui-terminal-action-drag-overlay cursor-grabbing" style={{ opacity: 1 }}>
+            <div className="ui-terminal-action-drag-overlay cursor-grabbing" style={{ ...terminalActionSidebarStyle, opacity: 1 }}>
               {buttonMap[activeToolbarDragId]}
             </div>
           ) : null}
@@ -2534,6 +2541,7 @@ export function TerminalTabs({
     t,
     terminalToolbarOrder,
     terminalToolbarVisibility,
+    terminalActionSidebarStyle,
     toolbarSensors,
   ]);
 
