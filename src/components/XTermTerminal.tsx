@@ -23,8 +23,8 @@ import {
 } from "../lib/terminalThemes";
 import { backgroundAssetUrl } from "../lib/assetUrl";
 import { TERMINAL_FILE_PATH_MIME } from "../lib/aiPathFormatter";
+import { resolveManualDirectCodexEnterData } from "../lib/codexManualInput";
 import { useI18n } from "../lib/i18n";
-import { isDirectCodexStartupCommand } from "../lib/projectStartupCommand";
 import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
 import { endTerminalFileDrag, getTerminalFileDragText } from "../lib/terminalFileDrag";
 import { planTerminalVisibilityRestore, refreshTerminalViewport } from "../lib/terminalVisibility";
@@ -39,7 +39,7 @@ import {
 import { Portal } from "./ui/Portal";
 import { useCommandHistoryStore } from "../stores/commandHistoryStore";
 import { useProjectStore } from "../stores/projectStore";
-import { formatManualDirectCodexInputForPty, useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
+import { useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
 import { useSettingsStore, type LightThemePalette, type DarkThemePalette } from "../stores/settingsStore";
 
 const FONT_SIZE_MIN = 8;
@@ -1473,10 +1473,12 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const forwardTerminalInput = (data: string, source: "onData" | "nativeTextInput") => {
       markAttentionInputHandled();
       const inputBufferBefore = inputBuffer.current;
-      const sessionShell = useTerminalStore.getState().sessions.find((s) => s.id === sessionId)?.shell;
-      const ptyData = data === "\r" && isDirectCodexStartupCommand(inputBufferBefore)
-        ? formatManualDirectCodexInputForPty(inputBufferBefore.trim(), normalizeShellKey(sessionShell) ?? null)
-        : data;
+      const manualDirectCodexOverride = resolveManualDirectCodexEnterData({
+        data,
+        inputBuffer: inputBufferBefore,
+        os: osPlatformRef.current,
+      });
+      const ptyData = manualDirectCodexOverride ?? data;
       invoke("pty_write", { sessionId, data: ptyData }).catch((err) => reportPtyWriteError(source, err));
       maybeLogCodexImeDuplicate(data);
       updateInputBufferFromTerminalData(data);
