@@ -314,7 +314,9 @@ function FileNode({
   entry,
   depth,
   getDisplayStatus,
+  getGitChange,
   onOpenFile,
+  onOpenDiff,
   onInput,
   onConfirm,
   renamingPath,
@@ -331,7 +333,9 @@ function FileNode({
   entry: ProjectFileEntry;
   depth: number;
   getDisplayStatus: (entry: ProjectFileEntry) => FileDisplayStatus | null;
+  getGitChange: (path: string) => GitFileChange | null;
   onOpenFile: (entry: ProjectFileEntry) => void;
+  onOpenDiff: (change: GitFileChange) => void;
   onInput: (action: InputAction) => void;
   onConfirm: (action: ConfirmAction) => void;
   renamingPath: string | null;
@@ -365,6 +369,7 @@ function FileNode({
   const icon = isDir ? getMaterialFolderIcon(entry.name, isOpen) : getMaterialFileIcon(entry.name);
   const paddingLeft = 8 + depth * 14;
   const displayStatus = getDisplayStatus(displayEntry);
+  const gitChange = !isDir ? getGitChange(displayEntry.path) : null;
   const isRenaming = renamingPath === displayEntry.path;
 
   const paste = async () => {
@@ -398,7 +403,9 @@ function FileNode({
       parentPath={displayEntry.path}
       depth={depth + 1}
       getDisplayStatus={getDisplayStatus}
+      getGitChange={getGitChange}
       onOpenFile={onOpenFile}
+      onOpenDiff={onOpenDiff}
       onInput={onInput}
       onConfirm={onConfirm}
       renamingPath={renamingPath}
@@ -527,6 +534,11 @@ function FileNode({
               <ContextMenuSeparator />
             </>
           )}
+          {gitChange && (
+            <ContextMenuItem onSelect={() => onOpenDiff(gitChange)}>
+              <FileCode size={13} /> {t("files.menu.openDiff")}
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={() => onInput({ kind: "rename", path: displayEntry.path, currentName: displayEntry.name })}>
             <Pencil size={13} /> {t("files.menu.rename")}
           </ContextMenuItem>
@@ -565,7 +577,9 @@ function FileTreeRows({
   parentPath,
   depth,
   getDisplayStatus,
+  getGitChange,
   onOpenFile,
+  onOpenDiff,
   onInput,
   onConfirm,
   renamingPath,
@@ -584,7 +598,9 @@ function FileTreeRows({
   parentPath: string;
   depth: number;
   getDisplayStatus: (entry: ProjectFileEntry) => FileDisplayStatus | null;
+  getGitChange: (path: string) => GitFileChange | null;
   onOpenFile: (entry: ProjectFileEntry) => void;
+  onOpenDiff: (change: GitFileChange) => void;
   onInput: (action: InputAction) => void;
   onConfirm: (action: ConfirmAction) => void;
   renamingPath: string | null;
@@ -613,7 +629,9 @@ function FileTreeRows({
           entry={entry}
           depth={depth}
           getDisplayStatus={getDisplayStatus}
+          getGitChange={getGitChange}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
           onInput={onInput}
           onConfirm={onConfirm}
           renamingPath={renamingPath}
@@ -642,7 +660,9 @@ function FileTreeRows({
               entry={entry}
               depth={depth + 1}
               getDisplayStatus={getDisplayStatus}
+              getGitChange={getGitChange}
               onOpenFile={onOpenFile}
+              onOpenDiff={onOpenDiff}
               onInput={onInput}
               onConfirm={onConfirm}
               renamingPath={renamingPath}
@@ -683,6 +703,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const setSearchMode = useFileExplorerStore((s) => s.setSearchMode);
   const setSearchQuery = useFileExplorerStore((s) => s.setSearchQuery);
   const openFile = useFileExplorerStore((s) => s.openFile);
+  const openDiff = useFileExplorerStore((s) => s.openDiff);
   const openFileAtSearchMatch = useFileExplorerStore((s) => s.openFileAtSearchMatch);
   const openFileEditorPane = useTerminalStore((s) => s.openFileEditorPane);
   const createEntry = useFileExplorerStore((s) => s.createEntry);
@@ -836,6 +857,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
       : getDirectoryGitChange(entry.path, gitChanges);
     return change ? makeGitDisplayStatus(change, t) : null;
   }, [dirtyFilePathList, dirtyFilePaths, gitChangeByPath, gitChanges, t]);
+  const getGitChange = useCallback((path: string): GitFileChange | null => gitChangeByPath.get(path) ?? null, [gitChangeByPath]);
 
   const openInput = (action: InputAction) => {
     if (action.kind === "rename") {
@@ -1033,6 +1055,11 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
     if (project) openFileEditorPane(project);
   };
 
+  const requestOpenDiff = useCallback((change: GitFileChange) => {
+    openDiff(change);
+    if (project) openFileEditorPane(project);
+  }, [openDiff, openFileEditorPane, project]);
+
   const renderContentSearchRow = useCallback((match: ProjectFileContentMatch) => {
     if (!project) return null;
     return (
@@ -1072,15 +1099,24 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
           <ContextMenuItem onSelect={() => void copyAiText(formatAiPathBlock(project, match.path, "file"), t("files.toast.aiPathCopied"))}>
             <Copy size={13} /> {t("files.menu.copyAiPath")}
           </ContextMenuItem>
+          {(() => {
+            const change = getGitChange(match.path);
+            return change ? (
+              <ContextMenuItem onSelect={() => requestOpenDiff(change)}>
+                <FileCode size={13} /> {t("files.menu.openDiff")}
+              </ContextMenuItem>
+            ) : null;
+          })()}
         </ContextMenuContent>
       </ContextMenu>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFile?.path, menuPortalContainer, openFileAtSearchMatch, openFileEditorPane, project, t]);
+  }, [activeFile?.path, getGitChange, menuPortalContainer, openFileAtSearchMatch, openFileEditorPane, project, requestOpenDiff, t]);
 
   const renderSearchRow = useCallback((entry: ProjectFileEntry) => {
     if (!project) return null;
     const displayStatus = getDisplayStatus(entry);
+    const gitChange = entry.kind === "file" ? getGitChange(entry.path) : null;
     if (renamingAction?.path === entry.path) {
       return (
         <div
@@ -1153,11 +1189,16 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
               <Folder size={13} /> {t("files.menu.copyAiTree")}
             </ContextMenuItem>
           )}
+          {gitChange && (
+            <ContextMenuItem onSelect={() => requestOpenDiff(gitChange)}>
+              <FileCode size={13} /> {t("files.menu.openDiff")}
+            </ContextMenuItem>
+          )}
         </ContextMenuContent>
       </ContextMenu>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFile?.path, cancelRename, getDisplayStatus, handleFileDragEnd, handleFileDragOver, handleFileDragStart, handleFileDrop, handleFileKeyDown, menuPortalContainer, openFile, project, renamingAction?.path, submitRename, t]);
+  }, [activeFile?.path, cancelRename, getDisplayStatus, getGitChange, handleFileDragEnd, handleFileDragOver, handleFileDragStart, handleFileDrop, handleFileKeyDown, menuPortalContainer, openFile, project, renamingAction?.path, requestOpenDiff, submitRename, t]);
 
   const copyRootAiPath = useCallback(() => {
     if (!project) return;
@@ -1197,7 +1238,9 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
         parentPath=""
         depth={0}
         getDisplayStatus={getDisplayStatus}
+        getGitChange={getGitChange}
         onOpenFile={requestOpenFile}
+        onOpenDiff={requestOpenDiff}
         onInput={openInput}
         onConfirm={setConfirmAction}
         renamingPath={renamingAction?.path ?? null}
@@ -1216,7 +1259,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
       <div className="px-3 py-8 text-center text-xs text-text-muted">{t("files.empty")}</div>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasSearchQuery, searchLoading, searchMode, contentSearchResults, renderContentSearchRow, visibleRows, renderSearchRow, getDisplayStatus, autoCollapseGroups, menuPortalContainer, handleFileKeyDown, handleFileDragStart, handleFileDragEnd, renamingAction?.path, submitRename, cancelRename, t]);
+  }, [hasSearchQuery, searchLoading, searchMode, contentSearchResults, renderContentSearchRow, visibleRows, renderSearchRow, getDisplayStatus, getGitChange, requestOpenDiff, autoCollapseGroups, menuPortalContainer, handleFileKeyDown, handleFileDragStart, handleFileDragEnd, renamingAction?.path, submitRename, cancelRename, t]);
 
   if (!project) return null;
 

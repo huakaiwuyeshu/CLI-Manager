@@ -34,6 +34,12 @@ interface ActiveProjectFile {
   modifiedMs?: number | null;
 }
 
+interface ActiveProjectDiff {
+  path: string;
+  name: string;
+  status: GitFileChange["status"];
+}
+
 interface FileSearchNavigationTarget {
   path: string;
   lineNumber: number;
@@ -53,6 +59,9 @@ interface FileExplorerStore {
   openFiles: ActiveProjectFile[];
   activeFilePath: string | null;
   activeFile: ActiveProjectFile | null;
+  openDiffs: ActiveProjectDiff[];
+  activeDiffPath: string | null;
+  activeDiff: ActiveProjectDiff | null;
   searchNavigationTarget: FileSearchNavigationTarget | null;
   gitChanges: GitFileChange[];
   clipboard: FileClipboard | null;
@@ -72,6 +81,9 @@ interface FileExplorerStore {
   clearSearchNavigationTarget: () => void;
   setActiveFilePath: (path: string) => void;
   closeFile: (path: string) => void;
+  openDiff: (change: GitFileChange) => void;
+  setActiveDiffPath: (path: string) => void;
+  closeDiff: (path: string) => void;
   setActiveContent: (content: string) => void;
   saveFile: (path: string) => Promise<void>;
   saveActiveFile: () => Promise<void>;
@@ -441,6 +453,21 @@ function selectFallbackFile(files: ActiveProjectFile[], closedPath: string): Act
   return files[Math.min(closedIndex - 1, files.length - 1)];
 }
 
+function selectFallbackDiff(diffs: ActiveProjectDiff[], closedPath: string): ActiveProjectDiff | null {
+  if (diffs.length === 0) return null;
+  const closedIndex = diffs.findIndex((diff) => diff.path === closedPath);
+  if (closedIndex <= 0) return diffs[0];
+  return diffs[Math.min(closedIndex - 1, diffs.length - 1)];
+}
+
+function diffFromChange(change: GitFileChange): ActiveProjectDiff {
+  return {
+    path: change.path,
+    name: basename(change.path),
+    status: change.status,
+  };
+}
+
 export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
   project: null,
   tree: [],
@@ -454,6 +481,9 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
   openFiles: [],
   activeFilePath: null,
   activeFile: null,
+  openDiffs: [],
+  activeDiffPath: null,
+  activeDiff: null,
   searchNavigationTarget: null,
   gitChanges: [],
   clipboard: null,
@@ -473,6 +503,9 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       openFiles: keepCurrentProject ? get().openFiles : [],
       activeFilePath: keepCurrentProject ? get().activeFilePath : null,
       activeFile: keepCurrentProject ? get().activeFile : null,
+      openDiffs: keepCurrentProject ? get().openDiffs : [],
+      activeDiffPath: keepCurrentProject ? get().activeDiffPath : null,
+      activeDiff: keepCurrentProject ? get().activeDiff : null,
       searchNavigationTarget: keepCurrentProject ? get().searchNavigationTarget : null,
       gitChanges: keepCurrentProject ? get().gitChanges : [],
       clipboard: keepCurrentProject ? get().clipboard : null,
@@ -503,6 +536,9 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       openFiles: [],
       activeFilePath: null,
       activeFile: null,
+      openDiffs: [],
+      activeDiffPath: null,
+      activeDiff: null,
       searchNavigationTarget: null,
       gitChanges: [],
       clipboard: null,
@@ -602,7 +638,18 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
     const project = get().project;
     if (!project) return;
     const gitChanges = await fetchGitChanges(project.path);
-    set({ gitChanges });
+    const changeByPath = new Map(gitChanges.map((change) => [change.path, change]));
+    const openDiffs = get().openDiffs
+      .map((diff) => changeByPath.get(diff.path))
+      .filter((change): change is GitFileChange => Boolean(change))
+      .map(diffFromChange);
+    const activeDiff = openDiffs.find((diff) => diff.path === get().activeDiffPath) ?? openDiffs[0] ?? null;
+    set({
+      gitChanges,
+      openDiffs,
+      activeDiffPath: activeDiff?.path ?? null,
+      activeDiff,
+    });
   },
 
   loadDir: async (path) => {
@@ -747,7 +794,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
     if (!project || entry.kind !== "file") return;
     const existing = get().openFiles.find((file) => file.path === entry.path);
     if (existing) {
-      set({ activeFilePath: existing.path, activeFile: existing });
+      set({ activeFilePath: existing.path, activeFile: existing, activeDiffPath: null, activeDiff: null });
       return;
     }
 
@@ -759,6 +806,8 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
         openFiles: [...get().openFiles, file],
         activeFilePath: file.path,
         activeFile: file,
+        activeDiffPath: null,
+        activeDiff: null,
       });
       if (errorMessage) {
         toast.warning("无法预览此文件", { description: errorMessage });
@@ -792,7 +841,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
   setActiveFilePath: (path) => {
     const file = get().openFiles.find((item) => item.path === path) ?? null;
     if (!file) return;
-    set({ activeFilePath: file.path, activeFile: file });
+    set({ activeFilePath: file.path, activeFile: file, activeDiffPath: null, activeDiff: null });
   },
 
   closeFile: (path) => {
@@ -803,6 +852,34 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
       openFiles: remaining,
       activeFilePath: fallback?.path ?? null,
       activeFile: fallback,
+      ...(fallback ? { activeDiffPath: null, activeDiff: null } : {}),
+    });
+  },
+
+  openDiff: (change) => {
+    const diff = diffFromChange(change);
+    const exists = get().openDiffs.some((item) => item.path === diff.path);
+    set({
+      openDiffs: exists ? get().openDiffs.map((item) => item.path === diff.path ? diff : item) : [...get().openDiffs, diff],
+      activeDiffPath: diff.path,
+      activeDiff: diff,
+    });
+  },
+
+  setActiveDiffPath: (path) => {
+    const diff = get().openDiffs.find((item) => item.path === path) ?? null;
+    if (!diff) return;
+    set({ activeDiffPath: diff.path, activeDiff: diff });
+  },
+
+  closeDiff: (path) => {
+    const diffs = get().openDiffs;
+    const remaining = diffs.filter((diff) => diff.path !== path);
+    const fallback = get().activeDiffPath === path ? selectFallbackDiff(remaining, path) : get().activeDiff;
+    set({
+      openDiffs: remaining,
+      activeDiffPath: fallback?.path ?? null,
+      activeDiff: fallback,
     });
   },
 

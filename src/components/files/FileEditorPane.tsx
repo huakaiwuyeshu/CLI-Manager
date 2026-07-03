@@ -11,8 +11,10 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { MarkdownContent } from "../ui/MarkdownContent";
 import { Button } from "../ui/button";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog";
 import { Copy, FileCode, Image, Save, X } from "../icons";
+import { GitDiffViewer } from "../git/DiffViewerModal";
 import { STATUS_CONFIG } from "../git/GitStatusIcon";
 
 configureMonaco();
@@ -173,22 +175,30 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
   const project = useFileExplorerStore((s) => s.project);
   const openProject = useFileExplorerStore((s) => s.openProject);
   const openFiles = useFileExplorerStore((s) => s.openFiles);
+  const openDiffs = useFileExplorerStore((s) => s.openDiffs);
   const activeFilePath = useFileExplorerStore((s) => s.activeFilePath);
   const activeFile = useFileExplorerStore((s) => s.activeFile);
+  const activeDiff = useFileExplorerStore((s) => s.activeDiff);
   const searchQuery = useFileExplorerStore((s) => s.searchQuery);
   const gitChanges = useFileExplorerStore((s) => s.gitChanges);
   const searchNavigationTarget = useFileExplorerStore((s) => s.searchNavigationTarget);
   const setActiveFilePath = useFileExplorerStore((s) => s.setActiveFilePath);
+  const setActiveDiffPath = useFileExplorerStore((s) => s.setActiveDiffPath);
   const clearSearchNavigationTarget = useFileExplorerStore((s) => s.clearSearchNavigationTarget);
   const closeFile = useFileExplorerStore((s) => s.closeFile);
+  const closeDiff = useFileExplorerStore((s) => s.closeDiff);
+  const refreshVisibleState = useFileExplorerStore((s) => s.refreshVisibleState);
   const setActiveContent = useFileExplorerStore((s) => s.setActiveContent);
   const saveFile = useFileExplorerStore((s) => s.saveFile);
   const saveActiveFile = useFileExplorerStore((s) => s.saveActiveFile);
   const [previewMode, setPreviewMode] = useState<"source" | "preview">("source");
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [discardDiffTarget, setDiscardDiffTarget] = useState<{ path: string; name: string; status: string } | null>(null);
   const ownsFileState = Boolean(project?.id && session.fileEditor?.projectId && project.id === session.fileEditor.projectId);
   const visibleFiles = ownsFileState ? openFiles : [];
+  const visibleDiffs = ownsFileState ? openDiffs : [];
   const visibleFile = ownsFileState ? activeFile : null;
+  const visibleDiff = ownsFileState ? activeDiff : null;
   const dirty = Boolean(visibleFile && visibleFile.content !== visibleFile.savedContent);
   const dirtyFiles = visibleFiles.filter((file) => file.content !== file.savedContent);
   const activeGitChange = useMemo<GitFileChange | null>(
@@ -421,6 +431,23 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
     closeFile(path);
   };
 
+  const requestDiscardDiffFile = (path: string, name: string, status: string) => {
+    setDiscardDiffTarget({ path, name, status });
+  };
+
+  const discardDiffFile = async () => {
+    if (!project || !discardDiffTarget) return;
+    const target = discardDiffTarget;
+    setDiscardDiffTarget(null);
+    await invoke("git_discard_file", {
+      projectPath: project.path,
+      filePath: target.path,
+      status: target.status,
+    });
+    closeDiff(target.path);
+    await refreshVisibleState();
+  };
+
   return (
     <div className="ui-file-editor-pane flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <div className="ui-file-editor-header flex h-10 shrink-0 items-center gap-2 border-b border-border bg-surface-container-low px-3">
@@ -471,10 +498,10 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
         </button>
       </div>
 
-      {visibleFiles.length > 0 && (
+      {(visibleFiles.length > 0 || visibleDiffs.length > 0) && (
         <div className="ui-file-editor-tabs flex h-8 shrink-0 items-center overflow-x-auto border-b border-border bg-surface-container-lowest px-1">
           {visibleFiles.map((file) => {
-            const isActiveFile = file.path === activeFilePath;
+            const isActiveFile = !visibleDiff && file.path === activeFilePath;
             const isDirty = file.content !== file.savedContent;
             return (
               <div
@@ -505,23 +532,65 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
               </div>
             );
           })}
+          {visibleDiffs.map((diff) => {
+            const isActiveDiff = visibleDiff?.path === diff.path;
+            return (
+              <div
+                key={`diff:${diff.path}`}
+                className="ui-file-editor-tab group flex h-7 max-w-[220px] shrink-0 items-center rounded-t text-[11px] text-on-surface-variant hover:bg-surface-container-high"
+                data-active={isActiveDiff ? "true" : "false"}
+                style={isActiveDiff ? { background: "var(--surface-container)", color: "var(--on-surface)" } : undefined}
+                title={diff.path}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate px-2 text-left"
+                  onClick={() => setActiveDiffPath(diff.path)}
+                >
+                  Diff: {diff.name}
+                </button>
+                <button
+                  type="button"
+                  className="mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-70 hover:bg-surface-container-highest hover:opacity-100"
+                  aria-label={t("files.editor.closeNamed", { name: `Diff: ${diff.name}` })}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeDiff(diff.path);
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
       <div className="ui-file-editor-body min-h-0 flex-1 overflow-hidden bg-surface">
-        {!visibleFile && (
+        {!visibleFile && !visibleDiff && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
             <FileCode size={36} strokeWidth={1.2} />
             <div className="text-sm">{t("files.editor.selectFromTree")}</div>
           </div>
         )}
-        {visibleFile?.previewKind === "unsupported" && (
+        {visibleDiff && project && (
+          <GitDiffViewer
+            projectPath={project.path}
+            filePath={visibleDiff.path}
+            fileName={visibleDiff.name}
+            status={visibleDiff.status}
+            onRequestDiscard={requestDiscardDiffFile}
+            onReverted={() => void refreshVisibleState()}
+            useTerminalTheme
+          />
+        )}
+        {!visibleDiff && visibleFile?.previewKind === "unsupported" && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
             <FileCode size={36} strokeWidth={1.2} />
             <div className="text-sm">{t("files.editor.unsupported")}</div>
           </div>
         )}
-        {visibleFile?.previewKind === "image" && visibleFile.image && (
+        {!visibleDiff && visibleFile?.previewKind === "image" && visibleFile.image && (
           <div className="ui-file-editor-image-preview flex h-full items-center justify-center overflow-auto bg-surface-container-lowest p-4">
             <div className="flex max-h-full max-w-full flex-col items-center gap-3">
               <img
@@ -536,7 +605,7 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
             </div>
           </div>
         )}
-        {visibleFile && (visibleFile.previewKind === "text" || visibleFile.previewKind === "markdown") && (
+        {!visibleDiff && visibleFile && (visibleFile.previewKind === "text" || visibleFile.previewKind === "markdown") && (
           visibleFile.previewKind === "markdown" && previewMode === "preview" ? (
             <div className="ui-file-editor-markdown-preview h-full overflow-auto p-4">
               <MarkdownContent content={visibleFile.content} variant="terminal" linkBehavior="preview" />
@@ -577,6 +646,16 @@ export function FileEditorPane({ session, isActive, terminalThemeBackground, onC
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={!!discardDiffTarget}
+        title={t("git.confirm.revertTitle")}
+        message={discardDiffTarget ? t("git.confirm.revertMessage", { name: discardDiffTarget.name }) : undefined}
+        confirmText={t("git.confirm.revert")}
+        cancelText={t("common.cancel")}
+        danger
+        onConfirm={() => void discardDiffFile()}
+        onClose={() => setDiscardDiffTarget(null)}
+      />
     </div>
   );
 }

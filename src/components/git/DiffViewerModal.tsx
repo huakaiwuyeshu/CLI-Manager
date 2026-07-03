@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { X, Undo2 } from "../icons";
 import { parseDiff, Diff, Hunk, tokenize, Decoration, getChangeKey } from "react-diff-view";
 import type { ChangeData } from "react-diff-view";
-import { useGitStore } from "../../stores/gitStore";
 import { useI18n } from "../../lib/i18n";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { refractor, detectLanguage } from "./diffHighlight";
@@ -21,24 +20,72 @@ interface DiffViewerModalProps {
   onRequestDiscard?: (path: string, name: string, status: string) => void;
 }
 
-export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName, status, onRequestDiscard }: DiffViewerModalProps) {
+interface GitDiffViewerProps {
+  projectPath: string;
+  filePath: string;
+  fileName: string;
+  status: string;
+  onRequestDiscard?: (path: string, name: string, status: string) => void;
+  onClose?: () => void;
+  onReverted?: () => void;
+  closeOnRevert?: boolean;
+  useTerminalTheme?: boolean;
+}
+
+const TERMINAL_DIFF_ROOT_STYLE = {
+  "--surface": "var(--terminal-theme-background, #0c0e10)",
+  "--surface-container-low": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 86%, var(--terminal-theme-foreground, #f8fafc) 8%)",
+  "--surface-container-lowest": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 94%, var(--terminal-theme-foreground, #f8fafc) 4%)",
+  "--text-primary": "var(--terminal-theme-foreground, #f8fafc)",
+  "--text-muted": "var(--file-editor-muted, var(--terminal-theme-muted, #94a3b8))",
+  "--border": "var(--file-editor-border, color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 13%, transparent))",
+  backgroundColor: "var(--terminal-theme-background, #0c0e10)",
+  borderColor: "var(--file-editor-border, color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 13%, transparent))",
+} as CSSProperties;
+
+const DEFAULT_DIFF_ROOT_STYLE = {
+  backgroundColor: "var(--surface)",
+  borderColor: "var(--border)",
+} as CSSProperties;
+
+const TERMINAL_DIFF_TABLE_STYLE = {
+  "--git-diff-bg": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 91%, var(--terminal-theme-foreground, #f8fafc) 5%)",
+  "--git-diff-gutter-bg": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 84%, var(--terminal-theme-foreground, #f8fafc) 8%)",
+  "--git-diff-border": "var(--file-editor-border, color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 13%, transparent))",
+  "--git-diff-text": "var(--terminal-theme-foreground, #f8fafc)",
+  "--git-diff-muted": "var(--file-editor-muted, var(--terminal-theme-muted, #94a3b8))",
+  "--git-diff-hunk-bg": "color-mix(in srgb, var(--terminal-theme-background, #0c0e10) 76%, var(--terminal-theme-accent, #60a5fa) 18%)",
+  "--git-diff-hunk-text": "var(--terminal-theme-accent, #60a5fa)",
+  "--git-diff-insert-bg": "color-mix(in srgb, var(--term-panel-green, #3dd68c) 15%, transparent)",
+  "--git-diff-insert-gutter-bg": "color-mix(in srgb, var(--term-panel-green, #3dd68c) 22%, var(--terminal-theme-background, #0c0e10) 78%)",
+  "--git-diff-insert-decoration": "color-mix(in srgb, var(--term-panel-green, #3dd68c) 34%, transparent)",
+  "--git-diff-delete-bg": "color-mix(in srgb, var(--term-panel-red, #ff6b6b) 15%, transparent)",
+  "--git-diff-delete-gutter-bg": "color-mix(in srgb, var(--term-panel-red, #ff6b6b) 22%, var(--terminal-theme-background, #0c0e10) 78%)",
+  "--git-diff-delete-decoration": "color-mix(in srgb, var(--term-panel-red, #ff6b6b) 34%, transparent)",
+  backgroundColor: "var(--surface-container-lowest)",
+  borderColor: "var(--border)",
+} as CSSProperties;
+
+export function GitDiffViewer({
+  projectPath,
+  filePath,
+  fileName,
+  status,
+  onRequestDiscard,
+  onClose,
+  onReverted,
+  closeOnRevert = false,
+  useTerminalTheme = false,
+}: GitDiffViewerProps) {
   const { t } = useI18n();
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const [diffText, setDiffText] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [reverting, setReverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
-  const revertHunk = useGitStore((s) => s.revertHunk);
-  const revertLines = useGitStore((s) => s.revertLines);
-  const discarding = useGitStore((s) => s.discarding);
 
   useEffect(() => {
-    if (!open) {
-      setDiffText("");
-      setError(null);
-      return;
-    }
-
     let cancelled = false;
     setLoading(true);
 
@@ -61,7 +108,7 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
     return () => {
       cancelled = true;
     };
-  }, [open, projectPath, filePath, status]);
+  }, [projectPath, filePath, status]);
 
   // diff 解析放在 hooks 区（行选择 hook 依赖 hunks，不能在条件 return 之后）。
   const parsed = useMemo(() => {
@@ -104,18 +151,20 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
     );
   }, []);
 
-  if (!open) return null;
-
   // 仅已跟踪文件可回滚；点击后关闭本弹窗并交由上层确认（规避与 z-50 ConfirmDialog 的层级冲突）。
   const canDiscard = status !== "U" && status !== "??" && !!onRequestDiscard;
 
   // Hunk 级回滚：成功后关闭弹窗（内容已变）；失败提示刷新（dry-run 兜底，未损坏文件）。
   const handleRevertHunk = async (hunkIndex: number) => {
+    setReverting(true);
     try {
-      await revertHunk(diffText, hunkIndex);
-      onClose();
+      await invoke("git_revert_hunk", { projectPath, diffText, hunkIndex });
+      onReverted?.();
+      if (closeOnRevert) onClose?.();
     } catch {
       toast.error(t("git.diff.revertHunkFailed"));
+    } finally {
+      setReverting(false);
     }
   };
 
@@ -138,28 +187,20 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
   const handleRevertLines = async () => {
     const selectedLines = collectSelectedLines();
     if (selectedLines.length === 0) return;
+    setReverting(true);
     try {
-      await revertLines(diffText, selectedLines);
-      onClose();
+      await invoke("git_revert_lines", { projectPath, diffText, selectedLines });
+      onReverted?.();
+      if (closeOnRevert) onClose?.();
     } catch {
       toast.error(t("git.diff.revertLinesFailed"));
+    } finally {
+      setReverting(false);
     }
   };
 
   return (
-    <div
-      className="fixed inset-0 flex items-center justify-center bg-black/60 p-4"
-      style={{ zIndex: 100 }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden rounded-xl border font-mono shadow-2xl"
-        data-theme-mode={resolvedTheme}
-        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="flex h-full min-h-0 flex-col overflow-hidden font-mono" data-theme-mode={resolvedTheme} style={useTerminalTheme ? TERMINAL_DIFF_ROOT_STYLE : DEFAULT_DIFF_ROOT_STYLE}>
         {/* Header */}
         <div
           className="flex items-center justify-between px-4 py-3 border-b"
@@ -177,7 +218,7 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
             {canDiscard && (
               <button
                 onClick={() => {
-                  onClose();
+                  if (closeOnRevert) onClose?.();
                   onRequestDiscard?.(filePath, fileName, status);
                 }}
                 className="ui-focus-ring flex items-center gap-1 rounded px-2 py-1 text-[12px] transition-opacity hover:opacity-80"
@@ -191,14 +232,16 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
                 {t("git.diff.revertFile")}
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="ui-focus-ring rounded p-1 transition-opacity hover:opacity-70"
-              style={{ color: "var(--text-muted)" }}
-              title={t("common.close")}
-            >
-              <X size={18} strokeWidth={1.5} />
-            </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="ui-focus-ring rounded p-1 transition-opacity hover:opacity-70"
+                style={{ color: "var(--text-muted)" }}
+                title={t("common.close")}
+              >
+                <X size={18} strokeWidth={1.5} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -227,7 +270,7 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
           {!loading && !error && diffText && parsedDiff && tokens && (
             <div
               className="diff-viewer-container rounded-lg shadow-sm border overflow-hidden"
-              style={{ backgroundColor: "var(--surface-container-lowest)", borderColor: "var(--border)" }}
+              style={useTerminalTheme ? TERMINAL_DIFF_TABLE_STYLE : { backgroundColor: "var(--surface-container-lowest)", borderColor: "var(--border)" }}
             >
               <Diff
                 viewType="split"
@@ -253,7 +296,7 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
                         {canDiscard && (
                           <button
                             onClick={() => handleRevertHunk(index)}
-                            disabled={discarding}
+                            disabled={reverting}
                             className="ui-focus-ring flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-opacity hover:opacity-80 disabled:opacity-40"
                             style={{ color: "var(--danger)" }}
                             title={t("git.diff.revertHunkTitle")}
@@ -301,7 +344,7 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
                 </button>
                 <button
                   onClick={handleRevertLines}
-                  disabled={discarding}
+                  disabled={reverting}
                   className="ui-focus-ring flex items-center gap-1 rounded px-2 py-0.5 transition-opacity hover:opacity-80 disabled:opacity-40"
                   style={{
                     color: "var(--danger)",
@@ -315,6 +358,35 @@ export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName
             )}
           </div>
         )}
+    </div>
+  );
+}
+
+export function DiffViewerModal({ open, onClose, projectPath, filePath, fileName, status, onRequestDiscard }: DiffViewerModalProps) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-black/60 p-4"
+      style={{ zIndex: 100 }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="h-[85vh] w-full max-w-6xl overflow-hidden rounded-xl border shadow-2xl"
+        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <GitDiffViewer
+          projectPath={projectPath}
+          filePath={filePath}
+          fileName={fileName}
+          status={status}
+          onClose={onClose}
+          onRequestDiscard={onRequestDiscard}
+          closeOnRevert
+        />
       </div>
     </div>
   );
