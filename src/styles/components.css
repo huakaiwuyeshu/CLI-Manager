@@ -898,7 +898,6 @@
   color: var(--danger);
 }
 
-[data-theme="light"] .ui-tree-project,
 [data-theme="light"] .ui-tree-project:hover {
   background-color: color-mix(in srgb, var(--surface-container-high) 62%, white 38%);
   border-color: color-mix(in srgb, var(--border) 40%, transparent);
@@ -3507,47 +3506,6 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, white 88%, transparent);
 }
 
-[data-theme="light"] .ui-terminal-action-sidebar .ui-toolbar-button,
-[data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-toolbar-button,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action {
-  border: 1px solid transparent;
-  background-color: transparent;
-  color: color-mix(in srgb, var(--on-surface) 58%, #6b7785 42%);
-  box-shadow: none;
-}
-
-[data-theme="light"] .ui-terminal-action-sidebar .ui-toolbar-button svg,
-[data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action svg,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-toolbar-button svg,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action svg {
-  color: currentColor;
-}
-
-[data-theme="light"] .ui-terminal-action-sidebar .ui-toolbar-button:hover:not(:disabled),
-[data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action:hover:not(:disabled),
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-toolbar-button:hover:not(:disabled),
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action:hover:not(:disabled) {
-  border-color: transparent;
-  background-color: color-mix(in srgb, #8aa0ad 10%, white 90%);
-  color: color-mix(in srgb, var(--on-surface) 74%, #55616f 26%);
-}
-
-[data-theme="light"] .ui-terminal-action-sidebar .ui-primary-action,
-[data-theme="light"] .ui-terminal-action-sidebar .ui-icon-action[data-active="true"],
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-primary-action,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-icon-action[data-active="true"] {
-  border-color: transparent;
-  background-color: transparent;
-  color: var(--terminal-action-color, currentColor);
-  box-shadow: none;
-}
-
-[data-theme="light"] .ui-terminal-action-sidebar .ui-action-new.ui-primary-action,
-[data-theme="light"] .ui-terminal-action-drag-overlay .ui-action-new.ui-primary-action {
-  background-color: transparent;
-}
-
 .ui-action-new {
   --terminal-action-color: #3dd68c;
 }
@@ -3593,16 +3551,13 @@
   --terminal-action-color: #b83280;
 }
 
-[data-theme="light"] .ui-action-command-history {
-  --terminal-action-color: #0891b2;
-}
-
-[data-theme="light"] .ui-action-fullscreen {
+[data-theme="light"] .ui-action-command-history,
+[data-theme="light"] .ui-action-session-history {
   --terminal-action-color: #2563eb;
 }
 
-[data-theme="light"] .ui-action-session-history {
-  --terminal-action-color: #a16207;
+[data-theme="light"] .ui-action-fullscreen {
+  --terminal-action-color: #1d4ed8;
 }
 
 [data-theme="light"] .ui-action-git {

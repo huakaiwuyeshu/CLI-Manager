@@ -479,15 +479,19 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const fitWhenStable = (force = false) => {
     const container = containerRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!container || !fitAddon) return;
+    const terminal = terminalRef.current;
+    if (!container || !fitAddon || !terminal) return;
     if (!force && (!isVisibleRef.current || isComposingRef.current)) return;
     if (container.offsetWidth <= 0 || container.offsetHeight <= 0) return;
 
     const dims = fitAddon.proposeDimensions();
     if (!dims || dims.cols < MIN_TERMINAL_COLS || dims.rows < MIN_TERMINAL_ROWS) return;
+    const beforeCols = terminal.cols;
+    const beforeRows = terminal.rows;
     fitAddon.fit();
-    if (needsViewportRefreshRef.current) {
-      refreshTerminalViewport(terminalRef.current);
+    const terminalSizeChanged = terminal.cols !== beforeCols || terminal.rows !== beforeRows;
+    if (force || terminalSizeChanged || needsViewportRefreshRef.current) {
+      refreshTerminalViewport(terminal);
       needsViewportRefreshRef.current = false;
     }
   };
