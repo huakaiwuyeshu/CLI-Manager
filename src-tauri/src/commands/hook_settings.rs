@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -539,7 +540,22 @@ fn resolve_ccswitch_db_path_for_hook(
 }
 
 async fn open_db_readwrite(path: &Path) -> Result<SqliteConnection, String> {
-    let options = SqliteConnectOptions::new().filename(path);
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .busy_timeout(Duration::from_secs(15));
+    SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|err| format!("db_open_failed: {err}"))
+}
+
+async fn open_db_readonly(path: &Path) -> Result<SqliteConnection, String> {
+    let mut options = SqliteConnectOptions::new()
+        .filename(path)
+        .read_only(true)
+        .busy_timeout(Duration::from_secs(15));
+    if crate::wsl::is_wsl_config_dir(&path.to_string_lossy()) {
+        options = options.immutable(true);
+    }
     SqliteConnection::connect_with(&options)
         .await
         .map_err(|err| format!("db_open_failed: {err}"))
@@ -1019,7 +1035,7 @@ async fn inspect_common_config_at_path(
     exe: &str,
     tool: CommonConfigTool,
 ) -> Result<CcSwitchHookProtectionState, String> {
-    let mut conn = open_db_readwrite(db_path).await?;
+    let mut conn = open_db_readonly(db_path).await?;
     if !settings_table_exists(&mut conn).await? {
         return Ok(CcSwitchHookProtectionState::Unavailable);
     }
