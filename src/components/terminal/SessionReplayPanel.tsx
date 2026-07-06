@@ -14,7 +14,6 @@ import {
   Network,
   PlugZap,
   RotateCcw,
-  Search,
   Sparkles,
   Terminal,
   Wrench,
@@ -78,7 +77,8 @@ const STATUS_KEYS: Record<ReplayEventStatus, TranslationKey> = {
   planned: "aiReplay.status.planned",
 };
 
-const TIMELINE_LINE_LEFT = "calc(78px + 12px + 14px)";
+const TIMELINE_LINE_LEFT = "calc(10px + 78px + 12px + 14px)";
+const TIMELINE_DETAIL_MAX_LENGTH = 96;
 const OOM_PATCH_WARN_BYTES = 1024 * 1024;
 const OOM_REPLAY_EVENTS_WARN_COUNT = 200;
 type TranslateFn = (key: TranslationKey, params?: Record<string, string | number>) => string;
@@ -159,17 +159,10 @@ function stringifyPayload(payload: Record<string, unknown>): string {
     .join("\n");
 }
 
-function eventMatches(event: ReplayEvent, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return [
-    event.title,
-    event.detail,
-    event.kind,
-    event.status,
-    event.tags.join(" "),
-    stringifyPayload(event.payload),
-  ].some((value) => value.toLowerCase().includes(q));
+function summarizeTimelineDetail(detail: string): string {
+  const normalized = detail.replace(/\s+/g, " ").trim();
+  if (normalized.length <= TIMELINE_DETAIL_MAX_LENGTH) return normalized;
+  return `${normalized.slice(0, TIMELINE_DETAIL_MAX_LENGTH - 3).trimEnd()}...`;
 }
 
 function getStringPayload(payload: Record<string, unknown>, key: string): string | null {
@@ -522,7 +515,6 @@ export function SessionReplayPanel({ activeSessionId, open, visible = true }: Se
   const loadSession = useReplayStore((state) => state.loadSession);
   const selectSession = useReplayStore((state) => state.selectSession);
   const captureCodeSnapshot = useReplayStore((state) => state.captureCodeSnapshot);
-  const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ReplayFilter>("all");
   const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);
   const [rollbackPending, setRollbackPending] = useState(false);
@@ -578,8 +570,8 @@ export function SessionReplayPanel({ activeSessionId, open, visible = true }: Se
   );
 
   const filteredEvents = useMemo(
-    () => events.filter((event) => (filter === "all" || event.kind === filter) && eventMatches(event, query)),
-    [events, filter, query]
+    () => events.filter((event) => filter === "all" || event.kind === filter),
+    [events, filter]
   );
   const timelineEvents = useMemo(
     () => [...filteredEvents].sort((a, b) => b.eventIndex - a.eventIndex),
@@ -863,20 +855,6 @@ export function SessionReplayPanel({ activeSessionId, open, visible = true }: Se
           <ListFilter size={12} style={{ color: TERM_PANEL.dim }} />
           <span>{t("aiReplay.timeline")}</span>
         </div>
-        <div className="relative mt-2.5">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
-            size={12}
-            style={{ color: TERM_PANEL.dim }}
-          />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            className="ui-focus-ring h-9 w-full rounded-lg border bg-transparent pl-9 pr-3 text-[11px] outline-none"
-            style={{ color: TERM_PANEL.fg, borderColor: TERM_PANEL.border }}
-            placeholder={t("aiReplay.search")}
-          />
-        </div>
         <div className="mt-2.5 flex gap-1.5 overflow-x-auto pb-1 ui-thin-scroll">
           {FILTERS.map((item) => {
             const selected = filter === item.key;
@@ -916,6 +894,8 @@ export function SessionReplayPanel({ activeSessionId, open, visible = true }: Se
                 const Icon = meta.icon;
                 const selected = selectedEvent?.eventIndex === event.eventIndex;
                 const color = meta.color;
+                const detailText = event.detail ? summarizeTimelineDetail(event.detail) : t(meta.labelKey);
+                const fullDetailText = event.detail || t(meta.labelKey);
                 return (
                   <button
                     key={`${event.sessionKey}:${event.eventIndex}`}
@@ -955,8 +935,18 @@ export function SessionReplayPanel({ activeSessionId, open, visible = true }: Se
                       <div className="truncate text-[12px] font-semibold leading-5" style={{ color: TERM_PANEL.fg }}>
                         {event.title}
                       </div>
-                      <div className="mt-1 text-[10px] leading-5" style={{ color: TERM_PANEL.dim }}>
-                        {event.detail || t(meta.labelKey)}
+                      <div
+                        className="mt-1 break-words text-[10px] leading-5"
+                        style={{
+                          color: TERM_PANEL.dim,
+                          display: "-webkit-box",
+                          overflow: "hidden",
+                          WebkitBoxOrient: "vertical",
+                          WebkitLineClamp: 2,
+                        }}
+                        title={fullDetailText}
+                      >
+                        {detailText}
                       </div>
                     </div>
                     <HeaderPill color={statusColor(event.status)}>{t(STATUS_KEYS[event.status])}</HeaderPill>
