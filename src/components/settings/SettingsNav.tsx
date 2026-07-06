@@ -1,8 +1,10 @@
+import type { LucideIcon } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 
 export interface SettingsNavTab<T extends string> {
   id: T;
   label: string;
+  icon: LucideIcon;
 }
 
 interface SettingsNavProps<T extends string> {
@@ -22,11 +24,13 @@ export function SettingsNav<T extends string>({ tabs, activeTab, onChange }: Set
       <nav className="ui-no-divider-list">
         {tabs.map((tab) => {
           const active = tab.id === activeTab;
+          const Icon = tab.icon;
+          const iconClass = active ? "text-primary" : "text-text-muted";
           return (
             <button
               key={tab.id}
               onClick={() => onChange(tab.id)}
-              className={`ui-interactive whitespace-nowrap rounded-xl px-3 py-2 text-left text-sm ${
+              className={`ui-interactive flex w-full items-center gap-2 whitespace-nowrap rounded-xl px-3 py-2 text-left text-sm ${
                 active ? "font-[800] text-on-surface" : "font-[700] text-on-surface-variant"
               }`}
               style={
@@ -39,7 +43,8 @@ export function SettingsNav<T extends string>({ tabs, activeTab, onChange }: Set
               }
               aria-pressed={active}
             >
-              {tab.label}
+              <Icon className={`h-4 w-4 shrink-0 ${iconClass}`} aria-hidden="true" />
+              <span>{tab.label}</span>
             </button>
           );
         })}

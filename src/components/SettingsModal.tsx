@@ -1,4 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  ClipboardList,
+  Coins,
+  Info,
+  Keyboard,
+  PanelLeft,
+  RefreshCw,
+  ServerCog,
+  Settings2,
+  Terminal,
+  Webhook,
+  type LucideIcon,
+} from "lucide-react";
 import "@mantine/core/styles.css";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { AppMantineThemeProvider } from "./ui/MantineThemeProvider";
@@ -33,6 +46,7 @@ interface SettingsTabConfig {
   label: TranslationKey;
   title: TranslationKey;
   description: TranslationKey;
+  icon: LucideIcon;
   searchPlaceholder?: TranslationKey;
 }
 
@@ -54,55 +68,65 @@ const SETTINGS_TAB_CONFIG: Record<SettingsTab, SettingsTabConfig> = {
     label: "settings.tabs.general.label",
     title: "settings.tabs.general.title",
     description: "settings.tabs.general.description",
+    icon: Settings2,
   },
   sidebar: {
     label: "settings.tabs.sidebar.label",
     title: "settings.tabs.sidebar.title",
     description: "settings.tabs.sidebar.description",
+    icon: PanelLeft,
   },
   "terminal-theme": {
     label: "settings.tabs.terminal.label",
     title: "settings.tabs.terminal.title",
     description: "settings.tabs.terminal.description",
+    icon: Terminal,
   },
   shortcuts: {
     label: "settings.tabs.shortcuts.label",
     title: "settings.tabs.shortcuts.title",
     description: "settings.tabs.shortcuts.description",
+    icon: Keyboard,
     searchPlaceholder: "settings.tabs.shortcuts.search",
   },
   templates: {
     label: "settings.tabs.templates.label",
     title: "settings.tabs.templates.title",
     description: "settings.tabs.templates.description",
+    icon: ClipboardList,
     searchPlaceholder: "settings.tabs.templates.search",
   },
   providers: {
     label: "settings.tabs.providers.label",
     title: "settings.tabs.providers.title",
     description: "settings.tabs.providers.description",
+    icon: ServerCog,
     searchPlaceholder: "settings.tabs.providers.search",
   },
   "model-pricing": {
     label: "settings.tabs.modelPricing.label",
     title: "settings.tabs.modelPricing.title",
     description: "settings.tabs.modelPricing.description",
+    icon: Coins,
     searchPlaceholder: "settings.tabs.modelPricing.search",
   },
   sync: {
     label: "settings.tabs.sync.label",
     title: "settings.tabs.sync.title",
     description: "settings.tabs.sync.description",
+    icon: RefreshCw,
   },
   hooks: {
     label: "settings.tabs.hooks.label",
     title: "settings.tabs.hooks.title",
     description: "settings.tabs.hooks.description",
+    icon: Webhook,
   },
   about: {
     label: "settings.tabs.about.label",
     title: "settings.tabs.about.title",
     description: "settings.tabs.about.description",
+    icon: Info,
   },
 };
 
@@ -174,7 +198,11 @@ export function SettingsModal({ open, onClose, onAfterClose, initialTab, onActiv
 
   if (!mounted) return null;
 
-  const tabs = SETTINGS_TAB_ORDER.map((id) => ({ id, label: t(SETTINGS_TAB_CONFIG[id].label) }));
+  const tabs = SETTINGS_TAB_ORDER.map((id) => ({
+    id,
+    label: t(SETTINGS_TAB_CONFIG[id].label),
+    icon: SETTINGS_TAB_CONFIG[id].icon,
+  }));
   const activeConfig = SETTINGS_TAB_CONFIG[activeTab];
   const activeContent = (() => {
     if (activeTab === "general") return <GeneralSettingsPage />;
