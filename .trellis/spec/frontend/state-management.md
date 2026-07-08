@@ -328,6 +328,9 @@ interface TerminalSession {
 - `worktreeStore.loadWorktrees()` runs during startup before the project tree needs worktree child nodes.
 - `projectStore.buildTree()` may include worktree child nodes, but it must not own Git lifecycle actions.
 - `TerminalSession.worktreeId` is metadata for badges, menus, stats, and install tabs; it is not the source of truth for whether a worktree exists.
+- UI surfaces that operate on filesystem/history scope (file panel, realtime stats, history entry points, Git branch queries) must resolve the active worktree path when a session belongs to a worktree. Do not reuse the parent project path for these path-scoped views.
+- History's visible project filter remains the parent project path for worktree history entry points; use a separate scoped/effective path for the backend history query when the list must be limited to one worktree.
+- When a derived `Project` is needed for a worktree file context, keep the parent project id but replace `path` with the worktree path, and compare contexts by `id + normalized path`, not `id` alone.
 - Sidebar/tree selection uses `TerminalSession.worktreeId` as the tab-to-worktree bridge: activating a worktree tab should select and reveal that worktree node; selecting a worktree node should activate an already-open PTY session for that worktree when one exists.
 - Missing worktree directories remain visible as `status="missing"` until the user cleans the stale record; do not silently hide them from the project tree.
 - Dependency prompt dismissal belongs to the worktree record, not the terminal tab, because multiple tabs may point at the same worktree.

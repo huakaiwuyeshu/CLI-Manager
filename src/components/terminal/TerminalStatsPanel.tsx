@@ -397,9 +397,12 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
     [projects, terminalSession?.projectId]
   );
 
-  // 项目级历史匹配优先用已绑定项目根目录；展示仍保留终端当前 cwd。
-  const lookupProjectPath = project?.path || terminalSession?.cwd || null;
-  const displayProjectPath = terminalSession?.cwd || project?.path || null;
+  // Worktree tabs must query history/Git by the isolated checkout path.
+  const activeWorktree = terminalSession?.worktreeId
+    ? worktrees.find((worktree) => worktree.id === terminalSession.worktreeId) ?? null
+    : null;
+  const lookupProjectPath = activeWorktree?.path || terminalSession?.cwd || project?.path || null;
+  const displayProjectPath = terminalSession?.cwd || activeWorktree?.path || project?.path || null;
 
   // 终端运行的 CLI 工具（claude/codex），来自项目设置；推断不出则不过滤
   const sourceFilter = useMemo(
@@ -538,9 +541,6 @@ export function TerminalStatsPanel({ activeSessionId, open, visible = true, embe
   if (!panelActive) return null;
 
   const projectName = project?.name || latestSession?.project_key || "—";
-  const activeWorktree = terminalSession?.worktreeId
-    ? worktrees.find((worktree) => worktree.id === terminalSession.worktreeId) ?? null
-    : null;
   const shellLabel = formatStatsShellLabel(terminalSession?.shell ?? project?.shell);
 
   const renderStatsCard = (cardKey: TerminalStatsCardKey) => {

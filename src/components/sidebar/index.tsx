@@ -1056,6 +1056,20 @@ export function Sidebar({
     },
     [openHistory, triggerGlobalSearchFocus]
   );
+  const handleOpenWorktreeHistory = useCallback(
+    (project: Project, worktree: WorktreeRecord) => {
+      void openHistory({
+        sourceFilter: resolveHistorySourceFilter(project.cli_tool),
+        projectPath: project.path,
+        scopedProjectPath: worktree.path,
+      }).then(() => {
+        triggerGlobalSearchFocus();
+      }).catch((err) => {
+        toast.error(t("sidebar.toast.openHistoryFailed"), { description: String(err) });
+      });
+    },
+    [openHistory, t, triggerGlobalSearchFocus]
+  );
   const handleRequestDeleteProject = useCallback((project: Project) => {
     setConfirmAction({ kind: "delete-project", project });
   }, []);
@@ -1642,6 +1656,17 @@ export function Sidebar({
                 >
                   <Check size={14} strokeWidth={1.5} />
                   {t("worktree.menu.finish")}
+                </button>
+                <button
+                  className="context-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    handleOpenWorktreeHistory(contextMenu.project, contextMenu.worktree);
+                    setContextMenu(null);
+                  }}
+                >
+                  <ListClockIcon size={14} />
+                  {t("worktree.menu.viewHistory")}
                 </button>
                 <button
                   className="context-menu-item"

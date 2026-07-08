@@ -1,4 +1,4 @@
-import type { Project, TerminalSession } from "./types";
+import type { Project, TerminalSession, WorktreeRecord } from "./types";
 
 export function normalizeProjectPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -20,6 +20,68 @@ export function findProjectByPath(projects: Project[], path: string | null | und
   }
 
   return bestMatch;
+}
+
+export function isSameProjectFileContext(
+  left: Pick<Project, "id" | "path"> | null | undefined,
+  right: Pick<Project, "id" | "path"> | null | undefined
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      left.id === right.id &&
+      normalizeProjectPath(left.path) === normalizeProjectPath(right.path)
+  );
+}
+
+export function findWorktreeByPath(worktrees: WorktreeRecord[], path: string | null | undefined): WorktreeRecord | null {
+  const normalizedPath = path?.trim() ? normalizeProjectPath(path) : "";
+  if (!normalizedPath) return null;
+
+  let bestMatch: WorktreeRecord | null = null;
+  let bestMatchLength = -1;
+  for (const worktree of worktrees) {
+    const normalizedWorktreePath = normalizeProjectPath(worktree.path);
+    const matches = normalizedPath === normalizedWorktreePath || normalizedPath.startsWith(`${normalizedWorktreePath}/`);
+    if (!matches || normalizedWorktreePath.length <= bestMatchLength) continue;
+    bestMatch = worktree;
+    bestMatchLength = normalizedWorktreePath.length;
+  }
+  return bestMatch;
+}
+
+export function findWorktreeForSession(
+  session: TerminalSession | null,
+  sessions: TerminalSession[],
+  worktrees: WorktreeRecord[],
+  seenSessionIds: Set<string> = new Set()
+): WorktreeRecord | null {
+  if (!session || seenSessionIds.has(session.id)) return null;
+  seenSessionIds.add(session.id);
+
+  if (session.kind === "subagent-transcript" && session.subagent?.parentSessionId) {
+    const parentSession = sessions.find((item) => item.id === session.subagent?.parentSessionId) ?? null;
+    return findWorktreeForSession(parentSession, sessions, worktrees, seenSessionIds);
+  }
+
+  if (session.worktreeId) {
+    return worktrees.find((worktree) => worktree.id === session.worktreeId) ?? null;
+  }
+
+  if (session.kind === "file-editor") {
+    return findWorktreeByPath(worktrees, session.fileEditor?.projectPath);
+  }
+
+  return findWorktreeByPath(worktrees, session.cwd);
+}
+
+export function projectWithWorktreePath(project: Project, worktree: WorktreeRecord): Project {
+  if (normalizeProjectPath(project.path) === normalizeProjectPath(worktree.path)) return project;
+  return {
+    ...project,
+    name: `${project.name} · ${worktree.name}`,
+    path: worktree.path,
+  };
 }
 
 export function resolveProjectForSession(
@@ -50,4 +112,17 @@ export function resolveProjectForSession(
   }
 
   return findProjectByPath(projects, session.cwd);
+}
+
+export function resolveProjectForSessionFileContext(
+  session: TerminalSession | null,
+  sessions: TerminalSession[],
+  projects: Project[],
+  projectById: Map<string, Project>,
+  worktrees: WorktreeRecord[]
+): Project | null {
+  const project = resolveProjectForSession(session, sessions, projects, projectById);
+  if (!project) return null;
+  const worktree = findWorktreeForSession(session, sessions, worktrees);
+  return worktree ? projectWithWorktreePath(project, worktree) : project;
 }

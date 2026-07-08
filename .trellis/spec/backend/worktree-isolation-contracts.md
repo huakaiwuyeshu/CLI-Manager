@@ -95,6 +95,8 @@ interface GitWorktreeMergeResult {
   merged: boolean;
   output: string;
   conflictFiles: string[];
+  skipped: boolean;
+  skipReason: string | null;
 }
 ```
 
@@ -167,6 +169,7 @@ type TreeNode =
 - MVP finish flow commits all worktree changes, merges the worktree branch back into the base branch, then removes the worktree and optionally deletes the branch.
 - Before merge, the main project checkout must be clean. Dirty main checkout returns a stable error and performs no Git mutation.
 - The merge command receives both `branch` and `baseBranch`; if the checkout is clean but not on the base branch, it may checkout the base branch before merging.
+- If the worktree branch and base branch have no content diff, the merge command must return `skipped=true` / `skipReason="no_diff"` and avoid checkout/merge mutation. The frontend should present this as "merge not needed" and still allow cleanup.
 - Merge conflicts must be detected, conflict files returned, and `merge --abort` executed immediately. Do not leave the main checkout in a half-merged state.
 - Stable backend error codes such as `dirty_main_worktree` are for the frontend contract, not end-user copy. The finish-task dialog must map dirty-main and merge-conflict states to readable guidance that says what happened, whether Git mutated the main checkout, and what the user should do next.
 - Cleanup may delete a non-empty directory only when `git worktree list --porcelain` still records the same path and branch. If Git records the path/branch but `git worktree remove --force` reports a stale checkout such as `is not a working tree` or missing `.git`, the backend may remove that registered path, run `git worktree prune`, and then delete the `wt/` branch.
@@ -182,6 +185,7 @@ type TreeNode =
 | Branch already exists | Return Git failure; frontend asks for a different name or auto-generates a collision suffix. |
 | Worktree path already exists | Return `worktree_path_exists`; frontend must not reuse silently. |
 | Main checkout dirty before merge | Return `dirty_main_worktree`; no checkout/merge happens. |
+| Worktree branch has no content diff from base branch | Return skipped `no_diff`; no checkout/merge happens; cleanup remains available. |
 | Merge branch missing | Return `branch_not_found`; no cleanup happens automatically. |
 | Merge conflict | Return conflict error with `conflictFiles`, run `merge --abort`, keep worktree record. |
 | Frontend receives `dirty_main_worktree` | Show human-readable text: main worktree has uncommitted changes, no merge ran, the Worktree commit is still safe, and the user should clean/commit/stash the main checkout before retrying. |

@@ -40,6 +40,8 @@ pub struct GitWorktreeMergeResult {
     pub merged: bool,
     pub output: String,
     pub conflict_files: Vec<String>,
+    pub skipped: bool,
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -392,6 +394,18 @@ fn branch_exists(project_path: &Path, branch: &str) -> Result<bool, String> {
     Ok(output.success)
 }
 
+fn has_branch_content_diff(
+    project_path: &Path,
+    base_branch: &str,
+    worktree_branch: &str,
+) -> Result<bool, String> {
+    let output = run_git_checked(
+        project_path,
+        ["diff", "--name-only", base_branch, worktree_branch],
+    )?;
+    Ok(output.lines().any(|line| !line.trim().is_empty()))
+}
+
 fn should_cleanup_worktree_branch_after_failed_add(
     branch: &str,
     branch_existed_before_add: bool,
@@ -701,16 +715,26 @@ pub async fn git_worktree_merge(
         if !status.trim().is_empty() {
             return Err("dirty_main_worktree".to_string());
         }
+        if !branch_exists(&project_path, &base_branch)? {
+            return Err("branch_not_found".to_string());
+        }
+        if !branch_exists(&project_path, &worktree_branch)? {
+            return Err("worktree_branch_not_found".to_string());
+        }
+        if !has_branch_content_diff(&project_path, &base_branch, &worktree_branch)? {
+            return Ok(GitWorktreeMergeResult {
+                merged: false,
+                output: format!(
+                    "merge_skipped: no_diff_between {} and {}",
+                    base_branch, worktree_branch
+                ),
+                conflict_files: Vec::new(),
+                skipped: true,
+                skip_reason: Some("no_diff".to_string()),
+            });
+        }
         if current_branch != base_branch {
             run_git_checked(&project_path, ["checkout", base_branch.as_str()])?;
-        }
-        let branch_ref = format!("refs/heads/{worktree_branch}");
-        let branch_exists = run_git_raw(
-            &project_path,
-            ["rev-parse", "--verify", branch_ref.as_str()],
-        )?;
-        if !branch_exists.success {
-            return Err("worktree_branch_not_found".to_string());
         }
 
         let merge_output = run_git_raw(
@@ -722,6 +746,8 @@ pub async fn git_worktree_merge(
                 merged: true,
                 output: merge_output.combined(),
                 conflict_files: Vec::new(),
+                skipped: false,
+                skip_reason: None,
             });
         }
 
@@ -732,6 +758,8 @@ pub async fn git_worktree_merge(
                 merged: false,
                 output: format!("merge_conflict: {}", merge_output.combined()),
                 conflict_files: files,
+                skipped: false,
+                skip_reason: None,
             });
         }
 

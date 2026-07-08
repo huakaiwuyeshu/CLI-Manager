@@ -99,13 +99,16 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
     setError(null);
     setLoadingChanges(true);
     invoke<GitFileChange[]>("git_get_changes", { projectPath: worktree.path })
-      .then(setChanges)
+      .then((items) => {
+        setChanges(items);
+        if (items.length === 0) setStep("merge");
+      })
       .catch((err) => setError(formatFinishError(err, t, worktree.path)))
       .finally(() => setLoadingChanges(false));
   }, [open, t, worktree]);
 
   const changeSummary = useMemo(() => formatChangeSummary(changes), [changes]);
-  const canCommit = commitMessage.trim().length > 0 && !busy;
+  const canCommit = changes.length > 0 && commitMessage.trim().length > 0 && !busy;
 
   if (!project || !worktree) return null;
 
@@ -140,6 +143,9 @@ export function WorktreeFinishDialog({ project, worktree, open, onClose }: Workt
       const result = await mergeWorktree(worktree);
       setOutput((current) => `${current}\n${result.output}`);
       if (result.merged) {
+        setStep("cleanup");
+      } else if (result.skipped && result.skipReason === "no_diff") {
+        setOutput((current) => `${current}\n${t("worktree.finish.noDiffToMerge")}`);
         setStep("cleanup");
       } else {
         setError(createMergeConflictError(result.conflictFiles, t));

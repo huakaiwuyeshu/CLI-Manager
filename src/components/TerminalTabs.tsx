@@ -81,7 +81,12 @@ import { Portal } from "./ui/Portal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { getTerminalTheme, isLightTerminalTheme } from "../lib/terminalThemes";
 import { getTerminalSidePanelSkinStyle } from "./stats/termStatsUi";
-import { resolveProjectForSession } from "../lib/terminalProject";
+import {
+  findWorktreeForSession,
+  isSameProjectFileContext,
+  resolveProjectForSession,
+  resolveProjectForSessionFileContext,
+} from "../lib/terminalProject";
 
 const HistoryWorkspace = lazy(() =>
   import("./HistoryWorkspace").then((module) => ({ default: module.HistoryWorkspace }))
@@ -536,7 +541,15 @@ function SortableTab({
                 </button>
               </PopoverTrigger>
               {worktreeMenuContent && (
-                <PopoverContent className="terminal-skin context-menu min-w-[160px] p-1" style={menuStyle}>
+                <PopoverContent
+                  className="terminal-skin context-menu min-w-[160px] p-1"
+                  style={menuStyle}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onPointerMove={(event) => event.stopPropagation()}
+                  onPointerUp={(event) => event.stopPropagation()}
+                >
                   {worktreeMenuContent(closeWorktreePopover)}
                 </PopoverContent>
               )}
@@ -724,6 +737,7 @@ interface PaneTabBarProps {
   onShowBackground: (sessionId: string) => void;
   onTogglePaneFullscreen: (paneId: string) => void;
   onOpenWorktreeChanges: (sessionId: string) => void;
+  onOpenWorktreeHistory: (project: Project, worktree: WorktreeRecord) => void;
   onFinishWorktree: (project: Project, worktree: WorktreeRecord) => void;
   onInstallWorktreeDeps: (project: Project, worktree: WorktreeRecord) => void;
   onDiscardWorktree: (project: Project, worktree: WorktreeRecord) => void;
@@ -758,6 +772,7 @@ function PaneTabBar({
   onShowBackground,
   onTogglePaneFullscreen,
   onOpenWorktreeChanges,
+  onOpenWorktreeHistory,
   onFinishWorktree,
   onInstallWorktreeDeps,
   onDiscardWorktree,
@@ -1029,6 +1044,7 @@ function PaneTabBar({
                 return (
                   <>
                     <button type="button" className="context-menu-item w-full" onClick={() => runAndClose(() => onOpenWorktreeChanges(session.id))}>{t("worktree.menu.viewChanges")}</button>
+                    <button type="button" className="context-menu-item w-full" onClick={() => runAndClose(() => onOpenWorktreeHistory(project, activeWorktree))}>{t("worktree.menu.viewHistory")}</button>
                     <button type="button" className="context-menu-item w-full" onClick={() => runAndClose(() => onFinishWorktree(project, activeWorktree))}>{t("worktree.menu.finish")}</button>
                     <button type="button" className="context-menu-item w-full" onClick={() => runAndClose(() => onInstallWorktreeDeps(project, activeWorktree))}>{t("worktree.menu.installDeps")}</button>
                     <button type="button" className="context-menu-item w-full" onClick={() => runAndClose(() => onOpenWorktreeDirectory(activeWorktree))}>{t("worktree.menu.openDirectory")}</button>
@@ -1063,6 +1079,7 @@ function PaneTabBar({
                     <>
                       <ContextMenuSeparator />
                       <ContextMenuItem onSelect={() => onOpenWorktreeChanges(session.id)}>{t("worktree.menu.viewChanges")}</ContextMenuItem>
+                      <ContextMenuItem onSelect={() => onOpenWorktreeHistory(projectById.get(session.projectId!)!, worktreeById.get(session.worktreeId!)!)}>{t("worktree.menu.viewHistory")}</ContextMenuItem>
                       <ContextMenuItem onSelect={() => onFinishWorktree(projectById.get(session.projectId!)!, worktreeById.get(session.worktreeId!)!)}>{t("worktree.menu.finish")}</ContextMenuItem>
                       <ContextMenuItem onSelect={() => onInstallWorktreeDeps(projectById.get(session.projectId!)!, worktreeById.get(session.worktreeId!)!)}>{t("worktree.menu.installDeps")}</ContextMenuItem>
                       <ContextMenuItem onSelect={() => onOpenWorktreeDirectory(worktreeById.get(session.worktreeId!)!)}>{t("worktree.menu.openDirectory")}</ContextMenuItem>
@@ -1213,6 +1230,7 @@ interface PaneLeafViewProps {
   onShowBackground: (sessionId: string) => void;
   onTogglePaneFullscreen: (paneId: string) => void;
   onOpenWorktreeChanges: (sessionId: string) => void;
+  onOpenWorktreeHistory: (project: Project, worktree: WorktreeRecord) => void;
   onFinishWorktree: (project: Project, worktree: WorktreeRecord) => void;
   onInstallWorktreeDeps: (project: Project, worktree: WorktreeRecord) => void;
   onDiscardWorktree: (project: Project, worktree: WorktreeRecord) => void;
@@ -1257,6 +1275,7 @@ function PaneLeafView({
   onShowBackground,
   onTogglePaneFullscreen,
   onOpenWorktreeChanges,
+  onOpenWorktreeHistory,
   onFinishWorktree,
   onInstallWorktreeDeps,
   onDiscardWorktree,
@@ -1297,6 +1316,7 @@ function PaneLeafView({
           onShowBackground={onShowBackground}
           onTogglePaneFullscreen={onTogglePaneFullscreen}
           onOpenWorktreeChanges={onOpenWorktreeChanges}
+          onOpenWorktreeHistory={onOpenWorktreeHistory}
           onFinishWorktree={onFinishWorktree}
           onInstallWorktreeDeps={onInstallWorktreeDeps}
           onDiscardWorktree={onDiscardWorktree}
@@ -1490,6 +1510,7 @@ function arePaneLeafViewPropsEqual(prevProps: PaneLeafViewProps, nextProps: Pane
     prevProps.onShowBackground === nextProps.onShowBackground &&
     prevProps.onTogglePaneFullscreen === nextProps.onTogglePaneFullscreen &&
     prevProps.onOpenWorktreeChanges === nextProps.onOpenWorktreeChanges &&
+    prevProps.onOpenWorktreeHistory === nextProps.onOpenWorktreeHistory &&
     prevProps.onFinishWorktree === nextProps.onFinishWorktree &&
     prevProps.onInstallWorktreeDeps === nextProps.onInstallWorktreeDeps &&
     prevProps.onDiscardWorktree === nextProps.onDiscardWorktree &&
@@ -1881,9 +1902,13 @@ export function TerminalTabs({
     return activeSession;
   }, [activeSession, sessions]);
   const panelSessionId = panelSession?.id ?? null;
+  const activeWorktree = useMemo(
+    () => findWorktreeForSession(activeSession, sessions, worktrees),
+    [activeSession, sessions, worktrees]
+  );
   const filePanelProject = useMemo(
-    () => resolveProjectForSession(activeSession, sessions, projects, projectById),
-    [activeSession, projectById, projects, sessions]
+    () => resolveProjectForSessionFileContext(activeSession, sessions, projects, projectById, worktrees),
+    [activeSession, projectById, projects, sessions, worktrees]
   );
   const sidePanelProjectPath = panelSession?.cwd ?? filePanelProject?.path ?? null;
   const activeDragSession = useMemo(
@@ -2069,6 +2094,22 @@ export function TerminalTabs({
     }
     setGitOpen(true);
   }, [closeHistory, setActive, sidePanelMerged]);
+
+  const handleOpenWorktreeHistory = useCallback((project: Project, worktree: WorktreeRecord) => {
+    if (terminalSidePanelSingleOpen) {
+      setSidePanelOpen(false);
+      setStatsOpen(false);
+      setGitOpen(false);
+      setReplayOpen(false);
+      setFilesOpen(false);
+    }
+    setActiveWorkspaceTab("history");
+    void openHistory({
+      sourceFilter: resolveHistorySourceFilter(project.cli_tool),
+      projectPath: project.path,
+      scopedProjectPath: worktree.path,
+    });
+  }, [openHistory, terminalSidePanelSingleOpen]);
 
   const handleDuplicateSession = useCallback((session: TerminalSession) => {
     void createSession(
@@ -2293,11 +2334,12 @@ export function TerminalTabs({
 
   const syncFilePanelProject = useCallback(async (project: Project) => {
     try {
-      if (fileProject?.id !== project.id && isProjectFileDirty()) {
+      const sameFileContext = isSameProjectFileContext(fileProject, project);
+      if (!sameFileContext && isProjectFileDirty()) {
         const confirmed = window.confirm(t("sidebar.toast.unsavedFileConfirm"));
         if (!confirmed) return false;
       }
-      if (fileProject?.id === project.id) return true;
+      if (sameFileContext) return true;
       await openFileProject(project);
       return true;
     } catch (err) {
@@ -2305,7 +2347,7 @@ export function TerminalTabs({
       toast.error(t("sidebar.toast.openProjectFilesFailed"), { description: String(err) });
       return false;
     }
-  }, [fileProject?.id, openFileProject, t]);
+  }, [fileProject, openFileProject, t]);
 
   const closeFilesPanel = useCallback(() => {
     if (sidePanelMerged) {
@@ -2392,7 +2434,7 @@ export function TerminalTabs({
       return;
     }
     void syncFilePanelProject(filePanelProject);
-  }, [closeFilesPanel, filePanelProject?.id, filesPanelActive, syncFilePanelProject]);
+  }, [closeFilesPanel, filePanelProject?.id, filePanelProject?.path, filesPanelActive, syncFilePanelProject]);
 
   const handleOpenHistoryTab = useCallback(() => {
     if (historyOpen) {
@@ -2411,9 +2453,10 @@ export function TerminalTabs({
     setActiveWorkspaceTab("history");
     void openHistory({
       sourceFilter: resolveHistorySourceFilter(project?.cli_tool),
-      projectPath: project?.path ?? null,
+      projectPath: project?.path ?? activeSession?.cwd ?? null,
+      scopedProjectPath: activeWorktree?.path ?? null,
     });
-  }, [activeSession, closeHistory, historyOpen, openHistory, projects, terminalSidePanelSingleOpen]);
+  }, [activeSession, activeWorktree?.path, closeHistory, historyOpen, openHistory, projects, terminalSidePanelSingleOpen]);
 
   const handleOpenSplitPicker = useCallback((sessionId: string, direction: TerminalPaneSplitDirection, anchor?: SplitPickerAnchor) => {
     clearSplitPickerOpenSchedule();
@@ -2782,6 +2825,7 @@ export function TerminalTabs({
       onShowBackground={showBackgroundForSession}
       onTogglePaneFullscreen={handleTogglePaneFullscreen}
       onOpenWorktreeChanges={handleOpenWorktreeChanges}
+      onOpenWorktreeHistory={handleOpenWorktreeHistory}
       onFinishWorktree={(project, worktree) => setFinishTarget({ project, worktree })}
       onInstallWorktreeDeps={handleInstallWorktreeDeps}
       onDiscardWorktree={(project, worktree) => setDiscardTarget({ project, worktree })}
@@ -2802,6 +2846,7 @@ export function TerminalTabs({
     handleDuplicateSession,
     handleOpenSplitPicker,
     handleOpenWorktreeChanges,
+    handleOpenWorktreeHistory,
     handleOpenWorktreeDirectory,
     handleInstallWorktreeDeps,
     handleTogglePaneFullscreen,

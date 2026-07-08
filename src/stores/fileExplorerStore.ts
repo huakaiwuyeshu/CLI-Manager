@@ -13,6 +13,7 @@ import type {
 } from "../lib/types";
 import { logError } from "../lib/logger";
 import { translateCurrent } from "../lib/i18n";
+import { isSameProjectFileContext } from "../lib/terminalProject";
 
 type ClipboardMode = "copy" | "move";
 type FileEntryKind = "file" | "directory";
@@ -543,7 +544,7 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
 
   openProject: async (project) => {
     const current = get().project;
-    const keepCurrentProject = current?.id === project.id;
+    const keepCurrentProject = isSameProjectFileContext(current, project);
     set({
       project,
       loading: true,

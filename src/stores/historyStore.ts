@@ -40,6 +40,7 @@ interface MetaPatchInput {
 interface OpenHistoryOptions {
   sourceFilter?: HistorySourceFilter;
   projectPath?: string | null;
+  scopedProjectPath?: string | null;
 }
 
 interface HistoryStore {
@@ -57,6 +58,7 @@ interface HistoryStore {
   statsCacheKey: string | null;
   sourceFilter: HistorySourceFilter;
   projectPathFilter: string | null;
+  scopedProjectPathFilter: string | null;
   sessions: HistorySessionView[];
   hasMoreSessions: boolean;
   sessionListOffset: number;
@@ -124,6 +126,10 @@ interface StatsCacheEntry {
 interface StatsProjectOptionsCacheEntry {
   options: string[];
   cachedAt: number;
+}
+
+function effectiveProjectPathFilter(state: Pick<HistoryStore, "projectPathFilter" | "scopedProjectPathFilter">): string | null {
+  return state.scopedProjectPathFilter ?? state.projectPathFilter;
 }
 
 const statsCache = new Map<string, StatsCacheEntry>();
@@ -669,11 +675,17 @@ export async function fetchLatestProjectSessionDetail(
       return summary;
     };
     const sessionQuery = cliSessionId?.trim() || null;
-    // 有 CLI 会话 ID 时优先按该会话查找；命中不到时回退项目最近会话，
-    // 让会话信息卡/今日用量等「非 token 类」数据仍能正常展示。
-    // token 类卡片的串显由调用方按 session_id 与 cliSessionId 比对门控，
-    // 此处回退不会造成 token 数据泄漏。
-    const summary = (sessionQuery ? await loadSummary(sessionQuery) : null) ?? await loadSummary(null);
+    // Bound CLI sessions must never borrow another terminal's latest project session.
+    const summary = sessionQuery ? await loadSummary(sessionQuery) : await loadSummary(null);
+    if (sessionQuery && summary?.session_id !== sessionQuery) {
+      logWarn("history.realtime.lookup.sessionMismatch", {
+        source: source ?? null,
+        projectPath,
+        cliSessionId: sessionQuery,
+        foundSessionId: summary?.session_id ?? null,
+      });
+      return null;
+    }
     if (!summary) {
       logWarn("history.realtime.lookup.miss", {
         source: source ?? null,
@@ -1063,6 +1075,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   statsCacheKey: null,
   sourceFilter: "all",
   projectPathFilter: null,
+  scopedProjectPathFilter: null,
   sessions: [],
   hasMoreSessions: false,
   sessionListOffset: 0,
@@ -1128,14 +1141,24 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   openHistory: async (options) => {
     const nextSourceFilter = options?.sourceFilter ?? get().sourceFilter;
     const nextProjectPathFilter = options?.projectPath?.trim() || null;
-    const filterChanged = nextSourceFilter !== get().sourceFilter || nextProjectPathFilter !== get().projectPathFilter;
+    const nextScopedProjectPathFilter = options?.scopedProjectPath?.trim() || null;
+    const filterChanged =
+      nextSourceFilter !== get().sourceFilter ||
+      nextProjectPathFilter !== get().projectPathFilter ||
+      nextScopedProjectPathFilter !== get().scopedProjectPathFilter;
     const hasSessions = get().sessions.length > 0;
     const stopPerf = createPerfMarker("history.open", {
       sourceFilter: nextSourceFilter,
       projectPathFilter: nextProjectPathFilter ?? "__all__",
+      scopedProjectPathFilter: nextScopedProjectPathFilter ?? "__none__",
       fromCache: hasSessions && !filterChanged,
     });
-    set({ isOpen: true, sourceFilter: nextSourceFilter, projectPathFilter: nextProjectPathFilter });
+    set({
+      isOpen: true,
+      sourceFilter: nextSourceFilter,
+      projectPathFilter: nextProjectPathFilter,
+      scopedProjectPathFilter: nextScopedProjectPathFilter,
+    });
     try {
       if (!hasSessions || filterChanged) {
         await get().loadSessions();
@@ -1166,7 +1189,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   },
 
   setProjectPathFilter: async (projectPath) => {
-    set({ projectPathFilter: projectPath?.trim() || null });
+    set({ projectPathFilter: projectPath?.trim() || null, scopedProjectPathFilter: null });
     await get().loadSessions();
     if (!get().globalQuery.trim()) {
       set({ searchHits: [] });
@@ -1174,9 +1197,11 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   },
 
   loadSessions: async () => {
+    const projectPath = effectiveProjectPathFilter(get());
     const stopPerf = createPerfMarker("history.sessions.load", {
       sourceFilter: get().sourceFilter,
       projectPathFilter: get().projectPathFilter ?? "__all__",
+      scopedProjectPathFilter: get().scopedProjectPathFilter ?? "__none__",
     });
     set({ loadingSessions: true, loadingMoreSessions: false, hasMoreSessions: false, sessionListOffset: 0 });
     try {
@@ -1186,7 +1211,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
         source,
         ...historyPathArgs,
-        projectPath: get().projectPathFilter,
+        projectPath,
         query: null,
         limit: SESSION_PAGE_FETCH_LIMIT,
         offset: 0,
@@ -1194,7 +1219,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const allSummaries = (summariesRaw ?? []).map((item) => normalizeSummary(item));
       const summaries = allSummaries.slice(0, SESSION_PAGE_SIZE);
       const metaMap = await readMetaMap();
-      const sessions = await applyFavoriteSnapshots(summaries, metaMap, get().sourceFilter, get().projectPathFilter);
+      const sessions = await applyFavoriteSnapshots(summaries, metaMap, get().sourceFilter, projectPath);
       const activeSessionKey = get().activeSessionKey;
       const activeExists = activeSessionKey
         ? sessions.some((item) => item.sessionKey === activeSessionKey)
@@ -1222,9 +1247,11 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   loadMoreSessions: async () => {
     if (get().loadingSessions || get().loadingMoreSessions || !get().hasMoreSessions) return;
     const offset = get().sessionListOffset;
+    const projectPath = effectiveProjectPathFilter(get());
     const stopPerf = createPerfMarker("history.sessions.load", {
       sourceFilter: get().sourceFilter,
       projectPathFilter: get().projectPathFilter ?? "__all__",
+      scopedProjectPathFilter: get().scopedProjectPathFilter ?? "__none__",
       mode: "loadMore",
       offset,
     });
@@ -1236,7 +1263,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       const summariesRaw = await invoke<unknown[]>("history_list_sessions", {
         source,
         ...historyPathArgs,
-        projectPath: get().projectPathFilter,
+        projectPath,
         query: null,
         limit: SESSION_PAGE_FETCH_LIMIT,
         offset,
@@ -1257,7 +1284,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         sourceSessionKeys.add(key);
       }
       const metaMap = get().metaMap;
-      const sessions = await applyFavoriteSnapshots(Array.from(summaryMap.values()), metaMap, get().sourceFilter, get().projectPathFilter, sourceSessionKeys);
+      const sessions = await applyFavoriteSnapshots(Array.from(summaryMap.values()), metaMap, get().sourceFilter, projectPath, sourceSessionKeys);
       set({
         sessions,
         hasMoreSessions: allSummaries.length > SESSION_PAGE_SIZE,
@@ -1401,7 +1428,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         query: normalized,
         source,
         ...getHistoryPathArgs(),
-        projectPath: get().projectPathFilter,
+        projectPath: effectiveProjectPathFilter(get()),
         limit: DEFAULT_SEARCH_LIMIT,
       });
       const hits = (hitsRaw ?? []).map((item) => normalizeHit(item));
@@ -1683,7 +1710,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
         branch: item.branch,
       };
     });
-    const sessions = await applyFavoriteSnapshots(summaries, nextMetaMap, get().sourceFilter, get().projectPathFilter, sourceSessionKeys);
+    const sessions = await applyFavoriteSnapshots(summaries, nextMetaMap, get().sourceFilter, effectiveProjectPathFilter(get()), sourceSessionKeys);
     set({ metaMap: nextMetaMap, sessions });
   },
 

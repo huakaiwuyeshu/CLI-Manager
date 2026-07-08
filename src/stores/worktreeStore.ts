@@ -23,6 +23,8 @@ export interface GitWorktreeMergeResult {
   merged: boolean;
   output: string;
   conflictFiles: string[];
+  skipped: boolean;
+  skipReason: string | null;
 }
 
 export type WorktreeIsolationDecision = "prompt" | "auto" | "none";

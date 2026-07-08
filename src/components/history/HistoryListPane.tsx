@@ -3,6 +3,8 @@ import { Bot, Check, ChevronDown, ChevronRight, Clock3, Folder, MessageSquare, R
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
 import type { Group, HistorySearchHit, HistorySessionView, HistorySourceFilter, Project } from "../../lib/types";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
+import { findWorktreeByPath } from "../../lib/terminalProject";
+import { useWorktreeStore } from "../../stores/worktreeStore";
 import { VendorIcon, inferVendor, type VendorKey } from "../VendorIcon";
 import { Portal } from "../ui/Portal";
 import { buildHistorySessionChildMap, formatTime } from "./historyViewUtils";
@@ -45,6 +47,7 @@ interface HistoryListPaneProps {
   sessionListRef: RefObject<HTMLDivElement | null>;
   sourceFilter: HistorySourceFilter;
   projectPathFilter: string | null;
+  scopedProjectPathFilter: string | null;
   projects: Project[];
   groups: Group[];
   globalQuery: string;
@@ -294,6 +297,7 @@ export function HistoryListPane({
   sessionListRef,
   sourceFilter,
   projectPathFilter,
+  scopedProjectPathFilter,
   projects,
   groups,
   globalQuery,
@@ -342,11 +346,20 @@ export function HistoryListPane({
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const projectDropdownRef = useRef<HTMLDivElement | null>(null);
   const projectMenuWasOpenRef = useRef(false);
+  const worktrees = useWorktreeStore((state) => state.worktrees);
 
   const projectTree = useMemo(() => buildHistoryProjectTree(groups, projects), [groups, projects]);
   const selectedProject = useMemo(
     () => projects.find((project) => project.path === projectPathFilter) ?? null,
     [projectPathFilter, projects]
+  );
+  const selectedWorktree = useMemo(
+    () => findWorktreeByPath(worktrees, scopedProjectPathFilter ?? projectPathFilter),
+    [projectPathFilter, scopedProjectPathFilter, worktrees]
+  );
+  const getSessionWorktree = useCallback(
+    (session: HistorySessionView) => findWorktreeByPath(worktrees, session.cwd) ?? selectedWorktree,
+    [selectedWorktree, worktrees]
   );
   const projectGroupIds = useMemo(() => collectGroupIds(projectTree), [projectTree]);
   const normalizedProjectSearch = useMemo(() => normalizeProjectSearch(projectSearchQuery), [projectSearchQuery]);
@@ -777,6 +790,7 @@ export function HistoryListPane({
               row.type === "session"
                 ? formatSessionListTitle(row.item.displayTitle, t("history.imagePlaceholder"))
                 : "";
+            const sessionWorktree = row.type === "session" ? getSessionWorktree(row.item) : null;
             return (
               <div
                 key={virtualRow.key}
@@ -893,6 +907,14 @@ export function HistoryListPane({
                                 <Bot size={12} strokeWidth={1.8} />
                               </span>
                             )}
+                            {sessionWorktree && (
+                              <span
+                                className="shrink-0 rounded-full border border-primary/35 px-1.5 py-px text-[10px] font-semibold text-primary"
+                                title={t("history.worktreeBadgeTitle", { name: sessionWorktree.name })}
+                              >
+                                {t("history.worktreeBadge")}
+                              </span>
+                            )}
                             <span className="truncate text-[13px] font-semibold text-text-primary">{sessionDisplayTitle}</span>
                             {row.childCount > 0 && (
                               <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-px text-[10px] font-medium text-text-muted">
@@ -930,6 +952,14 @@ export function HistoryListPane({
                                 title={t("history.tree.subagent")}
                               >
                                 <Bot size={12} strokeWidth={1.8} />
+                              </span>
+                            )}
+                            {sessionWorktree && (
+                              <span
+                                className="shrink-0 rounded-full border border-primary/35 px-1.5 py-px text-[10px] font-semibold text-primary"
+                                title={t("history.worktreeBadgeTitle", { name: sessionWorktree.name })}
+                              >
+                                {t("history.worktreeBadge")}
                               </span>
                             )}
                             <span className="truncate text-[13px] font-semibold text-text-primary">{sessionDisplayTitle}</span>

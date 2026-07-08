@@ -573,6 +573,8 @@ export function ProjectTree({
     () => filteredTree.map((node) => (node.type === "group" ? node.group.id : node.type === "project" ? node.project.id : `wt:${node.worktree.id}`)),
     [filteredTree]
   );
+  const showWelcomeEmptyState = tree.length === 0 && !loadError && !searchActive && !suppressEmptyState;
+  const shouldFillTreeArea = filteredTree.length > 0 || projectScopedTerminalViewEnabled || newGroupParentId === "__root__";
 
   if (initialLoading) {
     return (
@@ -619,7 +621,7 @@ export function ProjectTree({
   }
 
   return (
-    <div className={`${embedded ? "" : "h-full overflow-y-auto"} overflow-x-hidden ${density === "compact" ? "px-1 pb-1.5 pt-0.5" : "px-1.5 pb-2 pt-1"}`}>
+    <div className={`${embedded ? "" : "flex h-full flex-col overflow-y-auto"} overflow-x-hidden ${density === "compact" ? "px-1 pb-1.5 pt-0.5" : "px-1.5 pb-2 pt-1"}`}>
       {newGroupParentId === "__root__" && (
         <div className={`flex items-center px-2 ${density === "compact" ? "gap-1 py-1" : "gap-1.5 py-1.5"}`}>
           <span className="shrink-0 text-accent">
@@ -702,7 +704,7 @@ export function ProjectTree({
             aria-label={t("sidebar.tree.aria")}
             aria-multiselectable="true"
             tabIndex={-1}
-            className="min-h-full outline-none"
+            className={`${shouldFillTreeArea ? "min-h-full" : ""} outline-none`}
             onKeyDown={handleTreeKeyDown}
             onMouseDown={(event) => {
               if (event.button === 2) return;
@@ -773,13 +775,16 @@ export function ProjectTree({
         />
       )}
 
-      {tree.length === 0 && !loadError && !searchActive && !suppressEmptyState && (
-        <EmptyState
-          icon={<Terminal size={40} strokeWidth={1} />}
-          title={t("sidebar.tree.welcome")}
-          description={t("sidebar.tree.welcomeDescription")}
-          action={{ label: t("sidebar.tree.quickAddProject"), onClick: onQuickAddProject }}
-        />
+      {showWelcomeEmptyState && (
+        <div className="flex min-h-0 flex-1 items-center">
+          <EmptyState
+            className="w-full"
+            icon={<Terminal size={40} strokeWidth={1} />}
+            title={t("sidebar.tree.welcome")}
+            description={t("sidebar.tree.welcomeDescription")}
+            action={{ label: t("sidebar.tree.quickAddProject"), onClick: onQuickAddProject }}
+          />
+        </div>
       )}
     </div>
   );

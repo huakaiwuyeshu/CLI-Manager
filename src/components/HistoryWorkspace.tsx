@@ -137,6 +137,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const searching = useHistoryStore((s) => s.searching);
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
   const projectPathFilter = useHistoryStore((s) => s.projectPathFilter);
+  const scopedProjectPathFilter = useHistoryStore((s) => s.scopedProjectPathFilter);
   const sessions = useHistoryStore((s) => s.sessions);
   const metaMap = useHistoryStore((s) => s.metaMap);
   const activeSessionKey = useHistoryStore((s) => s.activeSessionKey);
@@ -306,7 +307,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
       void runGlobalSearch(globalQuery);
     }, 220);
     return () => clearTimeout(timer);
-  }, [globalQuery, projectPathFilter, runGlobalSearch, sourceFilter]);
+  }, [globalQuery, projectPathFilter, runGlobalSearch, scopedProjectPathFilter, sourceFilter]);
 
   useEffect(() => {
     if (!active) return;
@@ -372,7 +373,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
 
   useEffect(() => {
     setVisibleSessionCount(SESSION_PAGE_SIZE);
-  }, [favoriteOnly, normalizedGlobal, projectPathFilter, sourceFilter, loadingSessions]);
+  }, [favoriteOnly, normalizedGlobal, projectPathFilter, scopedProjectPathFilter, sourceFilter, loadingSessions]);
 
   const visibleFilteredSessions = useMemo(
     () => filteredSessions.slice(0, visibleSessionCount),
@@ -767,6 +768,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           sessionListRef={sessionListRef}
           sourceFilter={sourceFilter}
           projectPathFilter={projectPathFilter}
+          scopedProjectPathFilter={scopedProjectPathFilter}
           projects={projects}
           groups={groups}
           globalQuery={globalQuery}
