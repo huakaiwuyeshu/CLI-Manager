@@ -14,7 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { copyAiText } from "../../lib/aiClipboard";
-import { formatAiPathBlock, formatAiRootTree, formatAiTree, formatTerminalDragPath, TERMINAL_FILE_PATH_MIME } from "../../lib/aiPathFormatter";
+import { formatAiPathBlock, formatAiRootTree, formatAiTree, TERMINAL_FILE_PATH_MIME } from "../../lib/aiPathFormatter";
 import { debugConsoleWarn } from "../../lib/debugConsole";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
 import {
@@ -64,6 +64,14 @@ type Translate = ReturnType<typeof useI18n>["t"];
 const FILE_EXPLORER_ENTRY_MIME = "application/x-cli-manager-file-entry";
 const FILE_WATCH_REFRESH_DEBOUNCE_MS = 600;
 const POINTER_DRAG_START_PX = 6;
+
+const formatTerminalLocalPath = (projectPath: string, entry: ProjectFileEntry) => {
+  const separator = projectPath.includes("\\") ? "\\" : "/";
+  const root = projectPath.replace(/[\\/]+$/u, "");
+  const relativePath = entry.path.replace(/^[/\\]+/u, "").replace(/[\\/]/g, separator);
+  const path = relativePath ? `${root}${separator}${relativePath}` : root;
+  return entry.kind === "directory" ? `${path.replace(/[\\/]+$/u, "")}${separator}` : path;
+};
 
 interface AutoCollapseGroupState {
   expandedGroupPaths: Set<string>;
@@ -1129,7 +1137,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
 
   const handleFileDragStart = useCallback((event: ReactDragEvent<HTMLElement>, entry: ProjectFileEntry) => {
     if (!project) return;
-    const text = formatTerminalDragPath(project, entry.path, entry.kind);
+    const text = formatTerminalLocalPath(project.path, entry);
     beginTerminalFileDrag(text);
     updateTerminalFileDragPointFromEvent(event);
     event.dataTransfer.effectAllowed = "copyMove";
@@ -1195,7 +1203,7 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
         resetPointerDrag();
         return;
       }
-      beginTerminalFileDrag(formatTerminalDragPath(project, state.entry.path, state.entry.kind));
+      beginTerminalFileDrag(formatTerminalLocalPath(project.path, state.entry));
       document.body.style.userSelect = "none";
     }
 

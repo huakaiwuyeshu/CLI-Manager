@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Terminal, type IBufferCell, type IBufferLine } from "@xterm/xterm";
+import { Terminal, type IBufferCell, type IBufferLine, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -41,6 +41,7 @@ import {
 import type { CommandHistoryEntry, CommandTemplate, TerminalSession } from "../lib/types";
 import {
   endTerminalFileDrag,
+  getTerminalFileDropZoneIdAtPoint,
   getTerminalFileDragText,
   registerTerminalDropZone,
   updateTerminalFileDragPointFromEvent,
@@ -341,6 +342,52 @@ const wrapTerminalPasteTextForCtrlShiftV = (text: string) => {
   return /[\r\n]/u.test(trimmed) ? `'${trimmed}'` : trimmed;
 };
 
+const isCombiningCodePoint = (codePoint: number) => (
+  (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+  (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+  (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+  (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+  (codePoint >= 0xfe00 && codePoint <= 0xfe0f)
+);
+
+const isWideCodePoint = (codePoint: number) => (
+  codePoint >= 0x1100 && (
+    codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  )
+);
+
+const getTerminalCellWidth = (text: string) => {
+  let width = 0;
+  for (const char of text) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (codePoint === 0) continue;
+    if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0) || isCombiningCodePoint(codePoint)) continue;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return width;
+};
+
+const withVisibleSelectionTheme = (theme: ITheme): ITheme => {
+  const isLight = isLightTerminalTheme(theme);
+  return {
+    ...theme,
+    selectionBackground: isLight ? "rgba(37, 99, 235, 0.28)" : "rgba(56, 189, 248, 0.52)",
+    selectionInactiveBackground: isLight ? "rgba(37, 99, 235, 0.18)" : "rgba(56, 189, 248, 0.34)",
+    selectionForeground: isLight ? "#0f172a" : "#f8fafc",
+  };
+};
+
 const normalizeShellForKnownOs = (shell: string | null | undefined, os: OsPlatform): ShellKey | undefined => (
   os === "unknown" ? normalizeShellKey(shell) : normalizeShellForOs(shell, os)
 );
@@ -355,6 +402,52 @@ const quoteShellPath = (path: string, shell: string | null | undefined) => {
 const formatShellPathList = (paths: string[], shell: string | null | undefined) => (
   paths.filter(Boolean).map((path) => quoteShellPath(path, shell)).join(" ")
 );
+
+const joinLocalPath = (rootPath: string, relativePath: string) => {
+  const normalizedRelativePath = relativePath.replace(/^[/\\]+/u, "");
+  if (/[\\/]/u.test(rootPath) && rootPath.includes("\\")) {
+    return `${rootPath.replace(/[\\/]+$/u, "")}\\${normalizedRelativePath.replace(/\//g, "\\")}`;
+  }
+  return `${rootPath.replace(/\/+$/u, "")}/${normalizedRelativePath.replace(/\\/g, "/")}`;
+};
+
+const attachClipboardImageData = async (rootPath: string, fileName: string, dataBase64: string) => (
+  invoke<string>("file_attach_data", { rootPath, fileName, dataBase64 })
+);
+
+const cleanupExpiredAttachments = async (rootPath: string) => (
+  invoke<number>("file_cleanup_expired_attachments", { rootPath })
+);
+
+const getClipboardImageFile = (clipboardData: DataTransfer | null) => {
+  const items = Array.from(clipboardData?.items ?? []);
+  const imageItem = items.find((item) => item.kind === "file" && item.type.startsWith("image/"));
+  return imageItem?.getAsFile() ?? null;
+};
+
+const getImageFileExtension = (file: File) => {
+  const typeExtension = file.type.split("/")[1]?.replace("jpeg", "jpg").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (typeExtension) return typeExtension;
+  const nameExtension = file.name.split(".").pop()?.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return nameExtension || "png";
+};
+
+const createClipboardImageFileName = (file: File) => {
+  const trimmedName = file.name.trim();
+  if (trimmedName && /\.[a-z0-9]+$/iu.test(trimmedName)) return trimmedName;
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/u, "");
+  return `screenshot-${timestamp}.${getImageFileExtension(file)}`;
+};
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+};
 
 const hasDataTransferType = (dataTransfer: DataTransfer | null, type: string): boolean => {
   if (!dataTransfer) return false;
@@ -450,6 +543,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const specialOscBufferRef = useRef("");
   const suggestionRef = useRef<TerminalInputSuggestion | null>(null);
   const acceptSuggestionRef = useRef<() => boolean>(() => false);
+  const cleanedAttachmentRootsRef = useRef<Set<string>>(new Set());
   const terminalColorRepliesRef = useRef<{ foreground: string; background: string }>({
     foreground: formatSpecialColorReply(10, "#d8dee9"),
     background: formatSpecialColorReply(11, "#0c0e10"),
@@ -497,6 +591,15 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     const platform = await getOsPlatform();
     osPlatformRef.current = platform;
     return platform;
+  };
+
+  const cleanupExpiredAttachmentsOnce = (rootPath: string | null | undefined) => {
+    if (!rootPath || cleanedAttachmentRootsRef.current.has(rootPath)) return;
+    cleanedAttachmentRootsRef.current.add(rootPath);
+    cleanupExpiredAttachments(rootPath).catch((err) => {
+      cleanedAttachmentRootsRef.current.delete(rootPath);
+      logError("Failed to cleanup expired terminal attachments", { sessionId, rootPath, err });
+    });
   };
 
   useEffect(() => {
@@ -629,6 +732,14 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       });
     });
   };
+
+  useEffect(() => {
+    const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+    const project = session?.projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
+      : null;
+    cleanupExpiredAttachmentsOnce(project?.path || session?.cwd || null);
+  }, [sessionId]);
 
   const reportPtyWriteError = (stage: string, err: unknown) => {
     toast.error("终端写入失败", { description: String(err) });
@@ -1245,7 +1356,8 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     if (!terminal) return;
     const baseTheme = getTerminalTheme(terminalThemeName, resolvedTheme, lightThemePalette, darkThemePalette);
     const minimumContrastRatio = getTerminalMinimumContrastRatio(baseTheme);
-    terminal.options.theme = isTransparent ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme;
+    const nextTheme = isTransparent ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme;
+    terminal.options.theme = withVisibleSelectionTheme(nextTheme);
     if (terminal.options.minimumContrastRatio !== minimumContrastRatio) {
       terminal.options.minimumContrastRatio = minimumContrastRatio;
     }
@@ -1376,7 +1488,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       // xterm cannot toggle transparency after construction, so keep it enabled
       // even though WebGL is disabled while a background image is active.
       allowTransparency: true,
-      theme: isTransparentRef.current ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme,
+      theme: withVisibleSelectionTheme(isTransparentRef.current ? applyTransparency(baseTheme, background.overlayDarken) : baseTheme),
       // OSC 8 超链接（codex 等 CLI 输出）默认点击行为是 window.open，在 Tauri
       // webview 里会被拦成"是否导航"确认框。接管为系统默认浏览器打开，仅放行
       // http/https，避免恶意 scheme。
@@ -1464,16 +1576,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
     const pasteTarget = containerRef.current;
     const pasteListenerOptions = { capture: true } as const;
-    const onPaste = (e: ClipboardEvent) => {
-      const text = e.clipboardData?.getData("text/plain");
-      if (text === undefined) return;
-      e.preventDefault();
-      e.stopPropagation();
-      pasteIntoTerminal(text);
-    };
-
-    pasteTarget.addEventListener("paste", onPaste, pasteListenerOptions);
-
     const isPointInsidePasteTarget = (x: number, y: number) => {
       const rect = pasteTarget.getBoundingClientRect();
       return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
@@ -1499,6 +1601,56 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       const defaultShell = normalizeShellForKnownOs(useSettingsStore.getState().defaultShell, os);
       return defaultShell ?? defaultShellForOs(os);
     };
+    const getCurrentDropContext = () => {
+      const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+      const project = session?.projectId
+        ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
+        : null;
+      return { session, project };
+    };
+    const savePastedImageForTerminal = async (
+      file: File,
+      context: ReturnType<typeof getCurrentDropContext>
+    ): Promise<string | null> => {
+      const { session, project } = context;
+      const attachRootPath = project?.path || session?.cwd || null;
+      if (!attachRootPath) return null;
+
+      try {
+        const fileName = createClipboardImageFileName(file);
+        const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+        const attachedRelativePath = await attachClipboardImageData(attachRootPath, fileName, dataBase64);
+        cleanupExpiredAttachmentsOnce(attachRootPath);
+        return joinLocalPath(attachRootPath, attachedRelativePath);
+      } catch (err) {
+        logError("Failed to attach pasted terminal image", { sessionId, err });
+        toast.error("截图粘贴失败", { description: String(err) });
+        return null;
+      }
+    };
+
+    const onPaste = (e: ClipboardEvent) => {
+      const imageFile = getClipboardImageFile(e.clipboardData);
+      const context = getCurrentDropContext();
+      if (imageFile) {
+        e.preventDefault();
+        e.stopPropagation();
+        void savePastedImageForTerminal(imageFile, context).then(async (path) => {
+          if (!path) return;
+          pasteIntoTerminal(formatShellPathList([path], await getShellForPathQuoting()));
+          terminal.focus();
+        });
+        return;
+      }
+
+      const text = e.clipboardData?.getData("text/plain");
+      if (text === undefined) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pasteIntoTerminal(text);
+    };
+
+    pasteTarget.addEventListener("paste", onPaste, pasteListenerOptions);
 
     const onDragOver = (e: DragEvent) => {
       const isActiveTerminalFileDrag = Boolean(getTerminalFileDragText());
@@ -1532,7 +1684,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       const scaleFactor = await getCurrentWindow().scaleFactor().catch(() => window.devicePixelRatio || 1);
       if (fileDropCancelled) return;
       const position = payload.position.toLogical(scaleFactor);
-      if (!isPointInsidePasteTarget(position.x, position.y)) return;
+      const dropZoneId = getTerminalFileDropZoneIdAtPoint(position.x, position.y);
+      if (dropZoneId && dropZoneId !== sessionId) return;
+      if (!dropZoneId && (!isActiveRef.current || !isVisibleRef.current)) return;
 
       pasteIntoTerminal(formatShellPathList(payload.paths, await getShellForPathQuoting()));
       terminal.focus();
@@ -1561,7 +1715,128 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     };
     contextMenuTarget.addEventListener("contextmenu", onContextMenu);
 
+    let selectedInputSnapshot: string | null = null;
+
+    const rewriteCurrentInput = (nextInput: string, stage: string) => {
+      inputBuffer.current = nextInput;
+      terminal.clearSelection();
+      selectedInputSnapshot = null;
+      markAttentionInputHandled();
+      clearSuggestionGhost();
+      cancelAiSuggestionRefresh();
+      invoke("pty_write", { sessionId, data: `\x15${nextInput}` }).catch((err) => reportPtyWriteError(stage, err));
+    };
+
+    const isReplaceableInputData = (data: string) => {
+      if (!data || data === "\r" || data === "\x7f" || data === "\b") return false;
+      if (data.startsWith("\x1b") && !data.startsWith("\x1b[200~")) return false;
+      return true;
+    };
+
+    const consumeSelectedInputForReplacement = (data: string) => {
+      if (
+        !selectedInputSnapshot ||
+        selectedInputSnapshot !== inputBuffer.current ||
+        !terminal.hasSelection() ||
+        !isReplaceableInputData(data)
+      ) {
+        return false;
+      }
+
+      inputBuffer.current = "";
+      selectedInputSnapshot = null;
+      terminal.clearSelection();
+      return true;
+    };
+
+    const selectCurrentInputText = () => {
+      const currentInput = inputBuffer.current;
+      selectedInputSnapshot = currentInput || null;
+      terminal.clearSelection();
+      if (!currentInput) {
+        terminal.focus();
+        return true;
+      }
+
+      const inputCellWidth = getTerminalCellWidth(currentInput);
+      if (inputCellWidth <= 0) {
+        terminal.focus();
+        return true;
+      }
+
+      const buffer = terminal.buffer.active;
+      const cursorCellIndex = ((buffer.baseY + buffer.cursorY) * terminal.cols) + buffer.cursorX;
+      const startCellIndex = Math.max(0, cursorCellIndex - inputCellWidth);
+      const startRow = Math.floor(startCellIndex / terminal.cols);
+      const startColumn = startCellIndex % terminal.cols;
+      terminal.select(startColumn, startRow, inputCellWidth);
+      terminal.focus();
+      return true;
+    };
+
+    const removeSelectedInputText = () => {
+      const selectedText = terminal.getSelection();
+      const currentInput = inputBuffer.current;
+      if (!selectedText && selectedInputSnapshot === currentInput && currentInput) {
+        rewriteCurrentInput("", "selection_delete_all");
+        return true;
+      }
+
+      if (!selectedText || !currentInput) {
+        selectedInputSnapshot = null;
+        return false;
+      }
+
+      if (selectedInputSnapshot === currentInput) {
+        rewriteCurrentInput("", "selection_delete_all");
+        return true;
+      }
+
+      const candidates = [
+        selectedText,
+        selectedText.replace(/\r\n?/g, "\n"),
+        selectedText.replace(/\r\n?|\n/g, ""),
+      ].filter(Boolean);
+      const matchedText = candidates.find((text, index) => (
+        candidates.indexOf(text) === index && currentInput.includes(text)
+      ));
+      if (!matchedText) return false;
+
+      const index = currentInput.indexOf(matchedText);
+      const nextInput = `${currentInput.slice(0, index)}${currentInput.slice(index + matchedText.length)}`;
+      rewriteCurrentInput(nextInput, "selection_delete");
+      return true;
+    };
+
     terminal.attachCustomKeyEventHandler((e) => {
+      const isMacSelectAll = (
+        osPlatformRef.current === "macos" ||
+        (osPlatformRef.current === "unknown" && navigator.platform.toLowerCase().includes("mac"))
+      );
+      if (
+        e.type === "keydown" &&
+        e.key.toLowerCase() === "a" &&
+        !e.shiftKey &&
+        !e.altKey &&
+        ((isMacSelectAll && e.metaKey && !e.ctrlKey) || (!isMacSelectAll && e.ctrlKey && !e.metaKey))
+      ) {
+        e.preventDefault();
+        selectCurrentInputText();
+        return false;
+      }
+
+      if (
+        e.type === "keydown" &&
+        (e.key === "Backspace" || e.key === "Delete") &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey
+      ) {
+        if (removeSelectedInputText()) {
+          e.preventDefault();
+          return false;
+        }
+      }
       if (e.type === "keydown" && e.key === "Enter") {
         const shortcut = useSettingsStore.getState().terminalNewlineShortcut;
         const managedCombo =
@@ -2011,6 +2286,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     // 这里统一入口是为了让 xterm onData 与 IME 兜底保持完全一致，避免中文标点只写 PTY 不进历史缓冲。
     function forwardTerminalInput(data: string, source: "onData" | "nativeTextInput") {
       markAttentionInputHandled();
+      const replacingSelectedInput = consumeSelectedInputForReplacement(data);
       const inputBufferBefore = inputBuffer.current;
       const manualDirectCodexOverride = resolveManualDirectCodexEnterData({
         data,
@@ -2018,7 +2294,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
         os: osPlatformRef.current,
       });
       const ptyData = manualDirectCodexOverride ?? data;
-      invoke("pty_write", { sessionId, data: ptyData }).catch((err) => reportPtyWriteError(source, err));
+      invoke("pty_write", { sessionId, data: replacingSelectedInput ? `\x15${ptyData}` : ptyData }).catch((err) => reportPtyWriteError(source, err));
       maybeLogCodexImeDuplicate(data);
       updateInputBufferFromTerminalData(data);
     }

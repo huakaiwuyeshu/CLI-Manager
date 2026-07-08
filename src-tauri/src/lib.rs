@@ -499,6 +499,8 @@ pub fn run() {
             commands::fs::file_rename,
             commands::fs::file_delete,
             commands::fs::file_copy,
+            commands::fs::file_attach_data,
+            commands::fs::file_cleanup_expired_attachments,
             commands::fs::file_move,
             commands::shell::open_windows_terminal,
             commands::shell::open_folder_in_explorer,

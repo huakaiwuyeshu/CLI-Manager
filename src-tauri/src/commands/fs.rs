@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Component, Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose, Engine as _};
@@ -47,6 +47,7 @@ const CONTENT_SEARCH_SKIPPED_EXTENSIONS: &[&str] = &[
     "7z", "bmp", "class", "dll", "dmg", "exe", "gif", "gz", "ico", "jar", "jpeg", "jpg", "lockb",
     "mov", "mp3", "mp4", "pdf", "png", "pyc", "rar", "so", "tar", "wasm", "webp", "zip",
 ];
+const ATTACHMENT_RETENTION_SECS: u64 = 2 * 24 * 60 * 60;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -502,6 +503,44 @@ pub async fn file_copy(
 }
 
 #[tauri::command]
+pub async fn file_attach_data(
+    root_path: String,
+    file_name: String,
+    data_base64: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&root_path)?;
+        let data = general_purpose::STANDARD
+            .decode(data_base64)
+            .map_err(|err| format!("decode_failed: {err}"))?;
+        if data.is_empty() {
+            return Err("attachment_empty".into());
+        }
+        if data.len() as u64 > IMAGE_FILE_MAX_BYTES {
+            return Err("attachment_too_large".into());
+        }
+
+        let attachments_dir = ensure_attachment_dir(&root)?;
+        let file_name = sanitize_attachment_file_name(&file_name);
+        let target = unique_attachment_target(&attachments_dir, &file_name)?;
+        fs::write(&target, data).map_err(|err| format!("write_file_failed: {err}"))?;
+        relative_from_root(&root, &target)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn file_cleanup_expired_attachments(root_path: String) -> Result<u64, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = canonical_root(&root_path)?;
+        cleanup_expired_attachments(&root, Duration::from_secs(ATTACHMENT_RETENTION_SECS))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn file_move(
     root_path: String,
     source_path: String,
@@ -679,6 +718,135 @@ fn remove_path_with_metadata(path: &Path, metadata: fs::Metadata) -> Result<(), 
 fn remove_path(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| format!("metadata_failed: {err}"))?;
     remove_path_with_metadata(path, metadata)
+}
+
+fn ensure_plain_dir(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if is_symlink_or_reparse(&metadata) {
+                return Err("path_is_symlink".into());
+            }
+            if metadata.is_dir() {
+                Ok(())
+            } else {
+                Err("path_not_directory".into())
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|err| format!("create_dir_failed: {err}"))
+        }
+        Err(err) => Err(format!("metadata_failed: {err}")),
+    }
+}
+
+fn ensure_attachment_dir(root: &Path) -> Result<PathBuf, String> {
+    let cli_manager_dir = root.join(".cli-manager");
+    ensure_plain_dir(&cli_manager_dir)?;
+    let attachments_dir = cli_manager_dir.join("attachments");
+    ensure_plain_dir(&attachments_dir)?;
+    ensure_existing_child_within_root(root, &attachments_dir)?;
+    Ok(attachments_dir)
+}
+
+fn get_existing_attachment_dir(root: &Path) -> Result<Option<PathBuf>, String> {
+    let attachments_dir = root.join(".cli-manager").join("attachments");
+    match fs::symlink_metadata(&attachments_dir) {
+        Ok(metadata) => {
+            if is_symlink_or_reparse(&metadata) {
+                return Err("path_is_symlink".into());
+            }
+            if !metadata.is_dir() {
+                return Err("path_not_directory".into());
+            }
+            ensure_existing_child_within_root(root, &attachments_dir)?;
+            Ok(Some(attachments_dir))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("metadata_failed: {err}")),
+    }
+}
+
+fn cleanup_expired_attachments(root: &Path, max_age: Duration) -> Result<u64, String> {
+    let Some(attachments_dir) = get_existing_attachment_dir(root)? else {
+        return Ok(0);
+    };
+    let now = SystemTime::now();
+    let mut deleted = 0;
+    for item in fs::read_dir(&attachments_dir).map_err(|err| format!("read_dir_failed: {err}"))? {
+        let entry = item.map_err(|err| format!("dir_entry_failed: {err}"))?;
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(format!("metadata_failed: {err}")),
+        };
+        if is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if now.duration_since(modified).unwrap_or_default() < max_age {
+            continue;
+        }
+        fs::remove_file(&path).map_err(|err| format!("remove_file_failed: {err}"))?;
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+fn sanitize_attachment_file_name(name: &str) -> String {
+    let sanitized = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_control()
+                || ch.is_whitespace()
+                || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim_matches('.')
+        .trim_matches('_')
+        .to_string();
+
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        "attachment".into()
+    } else {
+        sanitized
+    }
+}
+
+fn unique_attachment_target(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("attachment");
+    let extension = path.extension().and_then(|value| value.to_str());
+
+    for index in 0..10_000 {
+        let candidate_name = if index == 0 {
+            file_name.to_string()
+        } else if let Some(extension) = extension {
+            format!("{stem}-{index}.{extension}")
+        } else {
+            format!("{stem}-{index}")
+        };
+        let candidate = dir.join(candidate_name);
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(err) => return Err(format!("metadata_failed: {err}")),
+        }
+    }
+
+    Err("attachment_name_exhausted".into())
 }
 
 fn ensure_copy_source_safe(root: &Path, source: &Path) -> Result<fs::Metadata, String> {
