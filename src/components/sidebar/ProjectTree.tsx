@@ -332,13 +332,13 @@ export function ProjectTree({
     setFocusedNodeKey(key);
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLElement>(`[data-tree-key="${key}"]`);
-      el?.focus();
+      el?.focus({ preventScroll: true });
     });
   }, []);
 
   const focusTreeContainer = useCallback(() => {
     requestAnimationFrame(() => {
-      treeContainerRef.current?.focus();
+      treeContainerRef.current?.focus({ preventScroll: true });
     });
   }, []);
 
