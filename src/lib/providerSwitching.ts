@@ -21,6 +21,13 @@ export interface ProjectProviderOverrides {
   codex?: CodexProviderOverride;
 }
 
+const UNCONFIGURED_CLI_TOOL_VALUES = new Set(["none", "未选择", "未選擇"]);
+
+export function hasConfiguredCliTool(project: Pick<Project, "cli_tool">): boolean {
+  const cliTool = project.cli_tool.trim().toLowerCase();
+  return cliTool.length > 0 && !UNCONFIGURED_CLI_TOOL_VALUES.has(cliTool);
+}
+
 export function getProviderSwitchAppType(project: Pick<Project, "cli_tool">): ProviderSwitchAppType | null {
   const cliTool = project.cli_tool.trim().toLowerCase();
   if (cliTool === "codex") return "codex";

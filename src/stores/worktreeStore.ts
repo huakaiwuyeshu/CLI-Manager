@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { getDb } from "../lib/db";
 import { logWarn } from "../lib/logger";
+import { hasConfiguredCliTool } from "../lib/providerSwitching";
 import type { Project, TerminalSession, WorktreeIsolationStrategy, WorktreeRecord } from "../lib/types";
 import { useProjectStore } from "./projectStore";
 import { useTerminalStore } from "./terminalStore";
@@ -33,8 +34,6 @@ const RESERVED_WINDOWS_WORKTREE_NAMES = new Set([
   "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
   "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ]);
-const UNCONFIGURED_CLI_TOOL_VALUES = new Set(["none", "未选择"]);
-
 const WORKTREE_SESSION_RELEASE_DELAY_MS = 350;
 
 function waitForSessionRelease(): Promise<void> {
@@ -80,11 +79,6 @@ function isMissingWorktreesTableError(err: unknown): boolean {
     message.includes("initialization") ||
     message.includes("init failed")
   );
-}
-
-function hasConfiguredCliTool(project: Project): boolean {
-  const cliTool = project.cli_tool.trim().toLowerCase();
-  return cliTool.length > 0 && !UNCONFIGURED_CLI_TOOL_VALUES.has(cliTool);
 }
 
 function hasSameProjectTerminalSession(projectId: string, sessions: TerminalSession[]): boolean {
