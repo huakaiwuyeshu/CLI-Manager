@@ -2200,6 +2200,15 @@ export function TerminalTabs({
     () => (terminalScopeValue.kind === "worktree" ? worktreeById.get(terminalScopeValue.worktreeId) ?? null : null),
     [terminalScopeValue, worktreeById]
   );
+  const rejectMissingWorktree = useCallback((worktree: WorktreeRecord | null | undefined): boolean => {
+    if (!worktree || worktree.status !== "missing") return false;
+    toast.error(t("worktree.status.missing"), { description: worktree.path });
+    return true;
+  }, [t]);
+  const rejectMissingSessionWorktree = useCallback((session: TerminalSession | null | undefined): boolean => {
+    if (!session?.worktreeId) return false;
+    return rejectMissingWorktree(worktreeById.get(session.worktreeId));
+  }, [rejectMissingWorktree, worktreeById]);
   const scopedGroup = useMemo(
     () => (terminalScopeValue.kind === "group" ? groups.find((group) => group.id === terminalScopeValue.groupId) ?? null : null),
     [groups, terminalScopeValue]
@@ -2577,6 +2586,7 @@ export function TerminalTabs({
   }, []);
 
   const handleNewTab = useCallback(async () => {
+    if (rejectMissingSessionWorktree(activeSession)) return;
     const newTerminalContext =
       activeSession?.kind === "subagent-transcript"
         ? { cwd: undefined, title: "Terminal" }
@@ -2592,13 +2602,14 @@ export function TerminalTabs({
     await createSession(undefined, newTerminalContext.cwd ?? undefined, newTerminalContext.title);
     closeHistory();
     setActiveWorkspaceTab("terminal");
-  }, [activeSession, closeHistory, createSession, useExternalTerminal]);
+  }, [activeSession, closeHistory, createSession, rejectMissingSessionWorktree, useExternalTerminal]);
 
   const handleOpenScopedTerminal = useCallback(async () => {
     if (!scopedProject || useExternalTerminal) return;
 
     if (terminalScopeValue.kind === "worktree") {
       if (!scopedWorktree) return;
+      if (rejectMissingWorktree(scopedWorktree)) return;
       const options = buildProjectSplitOptions(projectWithWorktreeProviderOverrides(scopedProject, scopedWorktree));
       await createSession(
         options.projectId,
@@ -2620,9 +2631,10 @@ export function TerminalTabs({
     await createSession(options.projectId, options.cwd, options.title, options.startupCmd, options.envVars, options.shell);
     closeHistory();
     setActiveWorkspaceTab("terminal");
-  }, [closeHistory, createSession, scopedProject, scopedWorktree, terminalScopeValue, useExternalTerminal]);
+  }, [closeHistory, createSession, rejectMissingWorktree, scopedProject, scopedWorktree, terminalScopeValue, useExternalTerminal]);
 
   const handleInstallWorktreeDeps = useCallback((project: Project, worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     void checkWorktreeDeps(worktree).then((deps) => {
       if (!deps.needsInstall || !deps.command) {
         toast.info(t("worktree.deps.notNeeded"));
@@ -2641,15 +2653,18 @@ export function TerminalTabs({
         worktree.id,
       );
     }).catch((err) => toast.error(t("worktree.deps.checkFailed"), { description: String(err) }));
-  }, [checkWorktreeDeps, createSession, dismissWorktreeDepsPrompt, t]);
+  }, [checkWorktreeDeps, createSession, dismissWorktreeDepsPrompt, rejectMissingWorktree, t]);
 
   const handleOpenWorktreeDirectory = useCallback((worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     void invoke("open_folder_in_explorer", { path: worktree.path }).catch((err) =>
       toast.error(t("sidebar.toast.openDirectoryFailed"), { description: String(err) }),
     );
-  }, [t]);
+  }, [rejectMissingWorktree, t]);
 
   const handleOpenWorktreeChanges = useCallback((sessionId: string) => {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (rejectMissingSessionWorktree(session)) return;
     closeHistory();
     setActiveWorkspaceTab("terminal");
     setActive(sessionId);
@@ -2659,9 +2674,10 @@ export function TerminalTabs({
       return;
     }
     setGitOpen(true);
-  }, [closeHistory, setActive, sidePanelMerged]);
+  }, [closeHistory, rejectMissingSessionWorktree, sessions, setActive, sidePanelMerged]);
 
   const handleOpenWorktreeHistory = useCallback((project: Project, worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     if (terminalSidePanelSingleOpen) {
       setSidePanelOpen(false);
       setStatsOpen(false);
@@ -2676,9 +2692,10 @@ export function TerminalTabs({
       projectPath: project.path,
       scopedProjectPath: worktree.path,
     });
-  }, [openHistory, terminalSidePanelSingleOpen]);
+  }, [openHistory, rejectMissingWorktree, terminalSidePanelSingleOpen]);
 
   const handleDuplicateSession = useCallback((session: TerminalSession) => {
+    if (rejectMissingSessionWorktree(session)) return;
     void createSession(
       session.projectId,
       session.cwd,
@@ -2692,7 +2709,7 @@ export function TerminalTabs({
       closeHistory();
       setActiveWorkspaceTab("terminal");
     }).catch(() => {});
-  }, [closeHistory, createSession]);
+  }, [closeHistory, createSession, rejectMissingSessionWorktree]);
 
   const handleActivateSession = useCallback((sessionId: string) => {
     closeHistory();
@@ -3615,7 +3632,10 @@ export function TerminalTabs({
         onTogglePaneFullscreen={handleTogglePaneFullscreen}
         onOpenWorktreeChanges={handleOpenWorktreeChanges}
         onOpenWorktreeHistory={handleOpenWorktreeHistory}
-        onFinishWorktree={(project, worktree) => setFinishTarget({ project, worktree })}
+        onFinishWorktree={(project, worktree) => {
+          if (rejectMissingWorktree(worktree)) return;
+          setFinishTarget({ project, worktree });
+        }}
         onInstallWorktreeDeps={handleInstallWorktreeDeps}
         onDiscardWorktree={(project, worktree) => setDiscardTarget({ project, worktree })}
         onOpenWorktreeDirectory={handleOpenWorktreeDirectory}
@@ -3646,6 +3666,7 @@ export function TerminalTabs({
     moveSessionToPane,
     projects,
     handleSubmitTabEdit,
+    rejectMissingWorktree,
     resolvedTheme,
     scopedSessionIds,
     sessions,

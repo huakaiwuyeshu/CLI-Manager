@@ -32,6 +32,8 @@ pub struct SyncPayload {
     pub projects: Vec<serde_json::Value>,
     pub groups: Vec<serde_json::Value>,
     pub command_templates: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub worktrees: Vec<serde_json::Value>,
     pub settings: serde_json::Value,
 }
 
@@ -339,5 +341,25 @@ mod tests {
             legacy_sync_file_path("cli-manager"),
             "cli-manager/sync.json"
         );
+    }
+
+    #[test]
+    fn sync_payload_defaults_missing_worktrees() {
+        let json = r#"{
+            "version": 1,
+            "device_id": "device-1",
+            "device_name": "laptop",
+            "last_modified": "2026-07-14T00:00:00Z",
+            "data": {
+                "projects": [],
+                "groups": [],
+                "command_templates": [],
+                "settings": {}
+            }
+        }"#;
+
+        let data: SyncData = serde_json::from_str(json).unwrap();
+
+        assert!(data.data.worktrees.is_empty());
     }
 }

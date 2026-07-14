@@ -18,6 +18,7 @@ const STORE_FILES: [&str; 4] = [
     SYNC_STORE_FILE_NAME,
     EXTERNAL_SESSION_SYNC_STORE_FILE_NAME,
 ];
+const SYNC_STORE_LEGACY_IGNORED_KEYS: &[&str] = &["webdavPassword", "hasPassword"];
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,10 +172,35 @@ fn parse_json_object(path: &Path) -> Result<Option<Map<String, Value>>, String> 
 }
 
 fn migrate_store_file(source: &Path, target: &Path) -> Result<(), String> {
+    migrate_store_file_with_ignored_keys(source, target, &[])
+}
+
+fn migrate_sync_store_file(source: &Path, target: &Path) -> Result<(), String> {
+    migrate_store_file_with_ignored_keys(source, target, SYNC_STORE_LEGACY_IGNORED_KEYS)
+}
+
+fn migrate_store_file_with_ignored_keys(
+    source: &Path,
+    target: &Path,
+    ignored_keys: &[&str],
+) -> Result<(), String> {
     if !source.is_file() {
         return Ok(());
     }
     if !target.exists() {
+        if !ignored_keys.is_empty() {
+            let Some(mut source_object) = parse_json_object(source)? else {
+                return Ok(());
+            };
+            source_object.retain(|key, _| !ignored_keys.contains(&key.as_str()));
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|err| format!("data_migration_failed: {err}"))?;
+            }
+            let bytes = serde_json::to_vec_pretty(&Value::Object(source_object))
+                .map_err(|err| format!("data_migration_serialize_failed: {err}"))?;
+            fs::write(target, bytes).map_err(|err| format!("data_migration_write_failed: {err}"))?;
+            return Ok(());
+        }
         return copy_if_missing(source, target);
     }
     if !target.is_file() {
@@ -190,6 +216,9 @@ fn migrate_store_file(source: &Path, target: &Path) -> Result<(), String> {
 
     let mut changed = false;
     for (key, value) in source_object {
+        if ignored_keys.contains(&key.as_str()) {
+            continue;
+        }
         if !target_object.contains_key(&key) {
             target_object.insert(key, value);
             changed = true;
@@ -230,7 +259,13 @@ pub fn migrate_legacy_app_files<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
     if let Ok(old_store_dir) = app.path().app_data_dir() {
         let data_dir = cli_manager_data_dir()?;
         for file_name in STORE_FILES {
-            migrate_store_file(&old_store_dir.join(file_name), &data_dir.join(file_name))?;
+            let source = old_store_dir.join(file_name);
+            let target = data_dir.join(file_name);
+            if file_name == SYNC_STORE_FILE_NAME {
+                migrate_sync_store_file(&source, &target)?;
+            } else {
+                migrate_store_file(&source, &target)?;
+            }
         }
     }
 
@@ -306,5 +341,59 @@ mod tests {
         migrate_store_file(&source, &target).unwrap();
 
         assert_eq!(fs::read_to_string(target).unwrap(), r#"{"theme":"light"}"#);
+    }
+
+    #[test]
+    fn sync_store_migration_ignores_removed_password_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("legacy-sync.json");
+        let target = temp.path().join("sync-config.json");
+        fs::write(
+            &source,
+            r#"{"webdavUrl":"https://example.test","webdavPassword":"secret","hasPassword":true}"#,
+        )
+        .unwrap();
+        fs::write(&target, r#"{"webdavUrl":"https://example.test"}"#).unwrap();
+
+        migrate_sync_store_file(&source, &target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target).unwrap(),
+            r#"{"webdavUrl":"https://example.test"}"#
+        );
+        let backup_count = fs::read_dir(temp.path())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("sync-config.json.backup-")
+            })
+            .count();
+        assert_eq!(backup_count, 0);
+    }
+
+    #[test]
+    fn sync_store_copy_filters_removed_password_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("legacy-sync.json");
+        let target = temp.path().join("sync-config.json");
+        fs::write(
+            &source,
+            r#"{"webdavUrl":"https://example.test","webdavPassword":"secret","hasPassword":true}"#,
+        )
+        .unwrap();
+
+        migrate_sync_store_file(&source, &target).unwrap();
+
+        let migrated: Value = serde_json::from_str(&fs::read_to_string(target).unwrap()).unwrap();
+        assert_eq!(
+            migrated.get("webdavUrl").and_then(Value::as_str),
+            Some("https://example.test")
+        );
+        assert!(migrated.get("webdavPassword").is_none());
+        assert!(migrated.get("hasPassword").is_none());
     }
 }

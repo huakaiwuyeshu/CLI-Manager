@@ -20,12 +20,14 @@ pub async fn sync_get_default_device_name() -> Result<DeviceNameResult, String>;
 pub async fn sync_list_device_snapshots(
     config: SyncConfigInput,
     device_names: Vec<String>,
+    remote_dir: Option<String>,
 ) -> Result<Vec<DeviceSnapshotInfo>, String>;
 
 #[tauri::command]
 pub async fn sync_upload(
     config: SyncConfigInput,
     data: SyncData,
+    remote_dir: Option<String>,
 ) -> Result<SyncUploadResult, String>;
 
 #[tauri::command]
@@ -34,23 +36,30 @@ pub async fn sync_download(
     local_data: Option<SyncData>,
     force: bool,
     device_name: Option<String>,
+    remote_dir: Option<String>,
 ) -> Result<SyncDownloadResult, String>;
 ```
 
 Rust sync layer:
 
 ```rust
-pub async fn upload(config: WebDavConfig, data: SyncData) -> Result<(), String>;
+pub async fn upload(
+    config: WebDavConfig,
+    data: SyncData,
+    remote_dir: Option<String>,
+) -> Result<(), String>;
 
 pub async fn download(
     config: WebDavConfig,
     device_name: Option<String>,
     allow_legacy_fallback: bool,
+    remote_dir: Option<String>,
 ) -> Result<SyncData, String>;
 
 pub async fn list_device_snapshots(
     config: WebDavConfig,
     device_names: Vec<String>,
+    remote_dir: Option<String>,
 ) -> Result<Vec<DeviceSnapshotInfo>, String>;
 
 pub fn default_device_name() -> String;
@@ -106,6 +115,8 @@ pub struct SyncPayload {
     pub projects: Vec<serde_json::Value>,
     pub groups: Vec<serde_json::Value>,
     pub command_templates: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub worktrees: Vec<serde_json::Value>,
     pub settings: serde_json::Value,
 }
 ```
@@ -113,6 +124,8 @@ pub struct SyncPayload {
 - Upload body: UTF-8 JSON bytes from `serde_json::to_vec(&data)`.
 - Upload `Content-Type`: `application/json`.
 - Download body: UTF-8 JSON bytes parsed into `SyncData`.
+- `SyncPayload.worktrees` is durable active project state and must default to an empty list when old payloads omit it.
+- Discarded worktrees and local records marked `status="missing"` must not be uploaded or restored from remote snapshots.
 - WebDAV successful response body limit: `16 * 1024 * 1024` bytes.
 
 #### Manual preview and partial restore
@@ -121,10 +134,12 @@ pub struct SyncPayload {
 - Upload preview may show `remote.missing = true`; upload is still allowed and creates the device snapshot.
 - Download/restore preview with `remote.missing = true` must show `无法从云端同步` and must not call `download(...)`.
 - Partial restore domain set is exactly: `projects`, `groups`, `command_templates`.
+- Active worktree records are restored with the `projects` domain; if `projects` is not selected, local worktree records are preserved.
 - Empty or omitted domain list means all domains.
 - When restoring a subset, unselected domains must be rebuilt from local backup data, not deleted.
 - Foreign keys must be normalized after mixed-domain restore:
   - project `group_id` becomes `null` if the selected final groups do not contain it;
+  - worktree rows whose `project_id` is not in the final projects set are skipped;
   - template `project_id` becomes `null` if the selected final projects do not contain it.
 
 #### Auto sync
@@ -133,6 +148,8 @@ pub struct SyncPayload {
 - Startup auto sync must not block app initialization.
 - Close auto sync may run before session cleanup/window destroy, but failure must not prevent the window from closing.
 - Non-`force` download conflict rule: if `local.last_modified > remote.last_modified`, return conflict; do not require `device_id` to differ.
+- Resolving a conflict with local data must upload and then clear conflict state.
+- Resolving a conflict with remote data must apply remote data and upload the resolved current-device snapshot, so the same conflict does not reappear on restart.
 
 ### 4. Validation & Error Matrix
 
@@ -146,6 +163,9 @@ pub struct SyncPayload {
 | `sync_download(force = true)` and remote exists | return remote data without conflict check |
 | Manual restore domain list is empty/omitted | restore all supported domains |
 | Manual restore selects only one/two domains | preserve unselected domains from local backup |
+| Manual restore selects `projects` | restore projects and worktree records together |
+| Manual restore does not select `projects` | preserve local worktree records |
+| Remote payload contains `missing` worktree records | skip those worktree records |
 | Downloaded JSON parse fails | `Err("Failed to parse sync data: <err>")` |
 | HTTP status is not success | `Err(WebDavError { message: "HTTP error: <status>", status_code: Some(status) })` |
 | Response exceeds 16 MiB | `Err(WebDavError { message: "Response too large: <len> bytes", status_code: Some(status) })` |

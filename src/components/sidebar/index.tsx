@@ -934,7 +934,14 @@ export function Sidebar({
     closeHistory();
   };
 
+  const rejectMissingWorktree = (worktree: WorktreeRecord): boolean => {
+    if (worktree.status !== "missing") return false;
+    toast.error(t("worktree.status.missing"), { description: worktree.path });
+    return true;
+  };
+
   const openWorktreeSession = async (project: Project, worktree: WorktreeRecord, targetPaneId?: string, startupCmd?: string, title?: string) => {
+    if (rejectMissingWorktree(worktree)) return false;
     const projectOptions = projectWithWorktreeProviderOverrides(project, worktree);
     const options = await buildSyncedAwareProjectSplitOptions(projectOptions);
     await createSession(
@@ -948,9 +955,11 @@ export function Sidebar({
       worktree.id,
     );
     closeHistory();
+    return true;
   };
 
   const maybePromptWorktreeDeps = async (project: Project, worktree: WorktreeRecord) => {
+    if (worktree.status === "missing") return;
     if (!project.worktree_deps_prompt_enabled) return;
     if (worktree.deps_prompt_dismissed || depsPromptingWorktreeIdsRef.current.has(worktree.id)) return;
     depsPromptingWorktreeIdsRef.current.add(worktree.id);
@@ -968,6 +977,7 @@ export function Sidebar({
   };
 
   const handleInstallWorktreeDeps = (project: Project, worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     void checkWorktreeDeps(worktree)
       .then((deps) => {
         if (!deps.needsInstall || !deps.command) {
@@ -1073,6 +1083,7 @@ export function Sidebar({
 
   const handleNewWorktreeTerminal = useCallback(
     async (project: Project, worktree: WorktreeRecord) => {
+      if (rejectMissingWorktree(worktree)) return;
       const title = `${project.name} · ${worktree.name}`;
       if (compactMode || useExternalTerminal) {
         await openWindowsTerminal([{ title, cwd: worktree.path }]);
@@ -1146,6 +1157,7 @@ export function Sidebar({
   }, [t]);
 
   const handleOpenWorktreeDirectory = useCallback(async (worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     try {
       await invoke("open_folder_in_explorer", { path: worktree.path });
     } catch (err) {
@@ -1230,7 +1242,9 @@ export function Sidebar({
   }, [projects, selectedWorktreeIds, worktrees]);
 
   const handleOpenWorktree = useCallback((project: Project, worktree: WorktreeRecord) => {
-    void openWorktreeSession(project, worktree).then(() => maybePromptWorktreeDeps(project, worktree));
+    void openWorktreeSession(project, worktree).then((opened) => {
+      if (opened) void maybePromptWorktreeDeps(project, worktree);
+    });
   }, []);
 
   const handleOpenProjectFiles = useCallback(async (project: Project) => {
@@ -1249,6 +1263,7 @@ export function Sidebar({
   }, [closeHistory, fileProject, openFileProject, t]);
 
   const handleOpenWorktreeFiles = useCallback(async (project: Project, worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
     await handleOpenProjectFiles(projectWithWorktreePath(project, worktree));
   }, [handleOpenProjectFiles]);
 
@@ -2158,6 +2173,10 @@ export function Sidebar({
                   className="context-menu-item"
                   role="menuitem"
                   onClick={() => {
+                    if (rejectMissingWorktree(contextMenu.worktree)) {
+                      setContextMenu(null);
+                      return;
+                    }
                     setFinishTarget({ project: contextMenu.project, worktree: contextMenu.worktree });
                     setContextMenu(null);
                   }}

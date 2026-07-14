@@ -1,5 +1,13 @@
 # Changelog
 
+## [V1.2.8] - 2026-07-14
+
+### 修复
+- **WebDAV Worktree 同步修复**：WebDAV 与本地同步 payload 补齐 active Worktree 记录及项目 Worktree 配置字段，旧同步包缺失 `worktrees` 时按空列表兼容；解决 Worktree 子目录记录上传/下载后丢失的问题，已丢弃或 missing 的 Worktree 不进入同步。
+- **WebDAV 冲突处理修复**：点击“保留本地”成功上传后会清除冲突状态；点击“使用远程”会应用远程数据并回写当前设备快照，避免重启后同一冲突再次出现。
+- **WebDAV Worktree 缺失目录拦截**：从远端恢复 Worktree 后会立即校验本机路径，不存在的目录标记为 missing，并阻止打开终端、文件面板、资源管理器或依赖安装终端。
+- **同步配置迁移备份修复**：启动迁移旧数据目录时不再把废弃的 `webdavPassword` / `hasPassword` 键反复合并回 `.cli-manager/sync-config.json`，避免生成大量 `sync-config.json.backup-*` 文件。
+
 ## [TEMP] - 2026-07-13
 
 ### 历史与统计

@@ -26,6 +26,7 @@
   - merge only missing top-level JSON object keys when the target file already exists;
   - never overwrite an existing target key;
   - backup the target file before writing a merged target.
+- Sync store migration must ignore removed legacy keys `webdavPassword` and `hasPassword` both when copying and merging, because WebDAV passwords now live in the OS credential store. These keys must not cause repeated `sync-config.json.backup-*` creation on every startup.
 - Legacy SQLite DB recovery may copy the legacy DB family only when the legacy DB has user rows and the current DB has no user rows.
 - SQLite DB family operations must include `cli-manager.db`, `cli-manager.db-wal`, and `cli-manager.db-shm`.
 - Current DB user data always wins over legacy DB user data.
@@ -39,6 +40,7 @@
 | `cfg(dev)` runtime | Return `.cli-manager/sessions.dev.json`; do not read or modify production `sessions.json`. |
 | Installed runtime | Return `.cli-manager/sessions.json`; ignore `sessions.dev.json`. |
 | Both stores are JSON objects | Add only keys missing from target. |
+| Legacy `sync-config.json` only has removed password keys missing from target | No-op; do not backup target. |
 | Either store is non-object or invalid JSON | Skip merge; do not corrupt target. |
 | Target store has existing key | Keep target value. |
 | Legacy DB has rows and current DB has none | Backup current DB family, copy legacy DB family. |

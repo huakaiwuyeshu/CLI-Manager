@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getDb, batchInsert } from "../lib/db";
 import { getCliManagerDataPaths } from "../lib/appPaths";
 import { useProjectStore } from "./projectStore";
+import { useWorktreeStore } from "./worktreeStore";
 import { logInfo } from "../lib/logger";
 import { defaultShellForOs, getOsPlatform, isWindowsOnlyShellKey, normalizeShellForOs } from "../lib/shell";
 
@@ -32,6 +33,7 @@ interface SyncPayload {
   projects: Record<string, unknown>[];
   groups: Record<string, unknown>[];
   command_templates: Record<string, unknown>[];
+  worktrees: Record<string, unknown>[];
   settings: Record<string, unknown>;
 }
 
@@ -123,6 +125,12 @@ const AUTO_SYNC_ACTIONS: readonly AutoSyncAction[] = ["off", "upload", "download
 const SYNC_DATA_DOMAINS: readonly SyncDataDomain[] = ["projects", "groups", "command_templates"];
 const HTTP_NOT_FOUND_PATTERN = /HTTP error:\s*(404|409)\b/i;
 const REMOTE_SYNC_UNAVAILABLE_MESSAGE = "无法从云端同步";
+const PROJECT_SYNC_SELECT =
+  "SELECT id, name, path, group_id, sort_order, cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides, worktree_strategy, worktree_root, worktree_deps_prompt_enabled FROM projects ORDER BY sort_order";
+const GROUP_SYNC_SELECT = "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order";
+const TEMPLATE_SYNC_SELECT = "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order";
+const WORKTREE_SYNC_SELECT =
+  "SELECT id, project_id, name, branch, path, base_branch, deps_prompt_dismissed, provider_overrides, status, created_at, updated_at FROM worktrees WHERE status = 'active' ORDER BY created_at DESC";
 
 interface SyncDownloadCommandResult {
   success: boolean;
@@ -184,6 +192,24 @@ function downloadRemoteSnapshot(
 
 function isConfigured(state: Pick<SyncStore, "syncMode" | "webdavUrl" | "hasPassword">): boolean {
   return state.syncMode === "cloud" && Boolean(state.webdavUrl.trim()) && state.hasPassword;
+}
+
+function normalizeWorktreeStrategy(value: unknown): string {
+  return value === "prompt" || value === "autoParallel" || value === "always" ? value : "disabled";
+}
+
+function normalizeWorktreeStatus(value: unknown): string {
+  return value === "missing" ? "missing" : "active";
+}
+
+function toInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+}
+
+async function refreshSyncedStores() {
+  await useWorktreeStore.getState().loadWorktrees();
+  await useWorktreeStore.getState().markMissingWorktrees();
+  await useProjectStore.getState().fetchAll();
 }
 
 export const useSyncStore = create<SyncStore>((set, get) => ({
@@ -340,29 +366,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
     try {
       const db = await getDb();
-
-      const projects = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, path, group_id, sort_order, cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides FROM projects ORDER BY sort_order"
-      );
-      const groups = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order"
-      );
-      const templates = await db.select<Record<string, unknown>[]>(
-        "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order"
-      );
-
-      const syncData: SyncData = {
-        version: SYNC_DATA_VERSION,
-        device_id: deviceId,
-        device_name: deviceName,
-        last_modified: new Date().toISOString(),
-        data: {
-          projects,
-          groups,
-          command_templates: templates,
-          settings: {},
-        },
-      };
+      const syncData = await collectLocalSyncData(db, deviceId, deviceName, new Date().toISOString());
 
       await invoke("sync_upload", {
         config: { url: webdavUrl, username: webdavUsername, password },
@@ -370,13 +374,17 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
         remoteDir: remoteDir || undefined,
       });
 
-      const now = new Date().toISOString();
       await db.execute(
         "INSERT OR REPLACE INTO sync_meta (id, device_id, last_sync_at, remote_version) VALUES ('singleton', ?, ?, ?)",
-        [deviceId, now, now]
+        [deviceId, syncData.last_modified, syncData.last_modified]
       );
 
-      set({ status: "success", lastSyncAt: now });
+      set({
+        status: "success",
+        lastSyncAt: syncData.last_modified,
+        conflictInfo: null,
+        pendingRemoteData: null,
+      });
     } catch (error) {
       console.error("Upload failed:", error);
       set({ status: "error" });
@@ -397,29 +405,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
     try {
       const db = await getDb();
-
-      const localProjects = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, path, group_id, sort_order, cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides FROM projects ORDER BY sort_order"
-      );
-      const localGroups = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order"
-      );
-      const localTemplates = await db.select<Record<string, unknown>[]>(
-        "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order"
-      );
-
-      const localData: SyncData = {
-        version: SYNC_DATA_VERSION,
-        device_id: deviceId,
-        device_name: deviceName,
-        last_modified: get().lastSyncAt ?? new Date(0).toISOString(),
-        data: {
-          projects: localProjects,
-          groups: localGroups,
-          command_templates: localTemplates,
-          settings: {},
-        },
-      };
+      const localData = await collectLocalSyncData(db, deviceId, deviceName, get().lastSyncAt ?? new Date(0).toISOString());
 
       const result = await downloadRemoteSnapshot(
         webdavUrl,
@@ -446,8 +432,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       }
 
       await applySyncData(db, result.data, deviceId, options?.domains);
-      // Refresh project list after sync
-      useProjectStore.getState().fetchAll().catch(console.error);
+      await refreshSyncedStores();
       set({
         status: "success",
         lastSyncAt: result.data.last_modified,
@@ -533,14 +518,8 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     } else if (pendingRemoteData) {
       const db = await getDb();
       await applySyncData(db, pendingRemoteData, deviceId);
-      // Refresh project list after sync
-      useProjectStore.getState().fetchAll().catch(console.error);
-      set({
-        status: "success",
-        lastSyncAt: pendingRemoteData.last_modified,
-        conflictInfo: null,
-        pendingRemoteData: null,
-      });
+      await refreshSyncedStores();
+      await get().upload();
     }
   },
 
@@ -574,29 +553,9 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     set({ status: "syncing" });
     try {
       const db = await getDb();
-      const projects = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, path, group_id, sort_order, cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides FROM projects ORDER BY sort_order"
-      );
-      const groups = await db.select<Record<string, unknown>[]>(
-        "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order"
-      );
-      const templates = await db.select<Record<string, unknown>[]>(
-        "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order"
-      );
 
       const now = new Date().toISOString();
-      const syncData: SyncData = {
-        version: SYNC_DATA_VERSION,
-        device_id: deviceId,
-        device_name: deviceName,
-        last_modified: now,
-        data: {
-          projects,
-          groups,
-          command_templates: templates,
-          settings: {},
-        },
-      };
+      const syncData = await collectLocalSyncData(db, deviceId, deviceName, now);
 
       const result = await invoke<{ success: boolean; path: string; message: string }>(
         "sync_local_export",
@@ -624,7 +583,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       const data = await invoke<SyncData>("sync_local_import", { zipPath });
       const db = await getDb();
       await applySyncData(db, data, deviceId);
-      useProjectStore.getState().fetchAll().catch(console.error);
+      await refreshSyncedStores();
       set({
         status: "success",
         lastSyncAt: data.last_modified,
@@ -645,15 +604,10 @@ async function collectLocalSyncData(
   deviceName: string,
   lastModified: string,
 ): Promise<SyncData> {
-  const projects = await db.select<Record<string, unknown>[]>(
-    "SELECT id, name, path, group_id, sort_order, cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides FROM projects ORDER BY sort_order"
-  );
-  const groups = await db.select<Record<string, unknown>[]>(
-    "SELECT id, name, parent_id, sort_order FROM groups ORDER BY sort_order"
-  );
-  const commandTemplates = await db.select<Record<string, unknown>[]>(
-    "SELECT id, project_id, name, command, description, sort_order FROM command_templates ORDER BY sort_order"
-  );
+  const projects = await db.select<Record<string, unknown>[]>(PROJECT_SYNC_SELECT);
+  const groups = await db.select<Record<string, unknown>[]>(GROUP_SYNC_SELECT);
+  const commandTemplates = await db.select<Record<string, unknown>[]>(TEMPLATE_SYNC_SELECT);
+  const worktrees = await db.select<Record<string, unknown>[]>(WORKTREE_SYNC_SELECT);
   return {
     version: SYNC_DATA_VERSION,
     device_id: deviceId,
@@ -663,6 +617,7 @@ async function collectLocalSyncData(
       projects,
       groups,
       command_templates: commandTemplates,
+      worktrees,
       settings: {},
     },
   };
@@ -708,6 +663,7 @@ async function applySyncData(
   const backupProjects = await db.select<Record<string, unknown>[]>("SELECT * FROM projects");
   const backupGroups = await db.select<Record<string, unknown>[]>("SELECT * FROM groups");
   const backupTemplates = await db.select<Record<string, unknown>[]>("SELECT * FROM command_templates");
+  const backupWorktrees = await db.select<Record<string, unknown>[]>("SELECT * FROM worktrees");
 
   const nowStr = Date.now().toString();
   const os = await getOsPlatform();
@@ -733,7 +689,24 @@ async function applySyncData(
     await batchInsert(
       db,
       "projects",
-      ["id", "name", "path", "group_id", "sort_order", "cli_tool", "cli_args", "startup_cmd", "env_vars", "shell", "provider_overrides", "created_at", "updated_at"],
+      [
+        "id",
+        "name",
+        "path",
+        "group_id",
+        "sort_order",
+        "cli_tool",
+        "cli_args",
+        "startup_cmd",
+        "env_vars",
+        "shell",
+        "provider_overrides",
+        "worktree_strategy",
+        "worktree_root",
+        "worktree_deps_prompt_enabled",
+        "created_at",
+        "updated_at",
+      ],
       projects,
       (project) => {
         const groupId = typeof project.group_id === "string" && validGroupIds.has(project.group_id) ? project.group_id : null;
@@ -753,10 +726,54 @@ async function applySyncData(
           (project.env_vars as string) ?? "{}",
           shell,
           (project.provider_overrides as string) ?? "{}",
+          normalizeWorktreeStrategy(project.worktree_strategy),
+          (project.worktree_root as string) ?? "",
+          toInteger(project.worktree_deps_prompt_enabled, 0),
           (project.created_at as string) ?? nowStr,
           (project.updated_at as string) ?? nowStr,
         ];
       },
+    );
+  };
+
+  const insertWorktrees = async (worktrees: Record<string, unknown>[], validProjectIds: Set<string>) => {
+    const validWorktrees = worktrees.filter((worktree) => {
+      return (
+        typeof worktree.project_id === "string" &&
+        validProjectIds.has(worktree.project_id) &&
+        normalizeWorktreeStatus(worktree.status) === "active"
+      );
+    });
+    await batchInsert(
+      db,
+      "worktrees",
+      [
+        "id",
+        "project_id",
+        "name",
+        "branch",
+        "path",
+        "base_branch",
+        "deps_prompt_dismissed",
+        "provider_overrides",
+        "status",
+        "created_at",
+        "updated_at",
+      ],
+      validWorktrees,
+      (worktree) => [
+        worktree.id as string,
+        worktree.project_id as string,
+        worktree.name as string,
+        worktree.branch as string,
+        worktree.path as string,
+        (worktree.base_branch as string) ?? "",
+        toInteger(worktree.deps_prompt_dismissed, 0),
+        (worktree.provider_overrides as string) ?? "{}",
+        normalizeWorktreeStatus(worktree.status),
+        (worktree.created_at as string) ?? nowStr,
+        (worktree.updated_at as string) ?? nowStr,
+      ],
     );
   };
 
@@ -787,6 +804,7 @@ async function applySyncData(
       await db.execute("DELETE FROM command_templates");
     }
     if (shouldApplyProjects || shouldApplyGroups) {
+      await db.execute("DELETE FROM worktrees");
       await db.execute("DELETE FROM projects");
     }
     if (shouldApplyGroups) {
@@ -796,6 +814,7 @@ async function applySyncData(
     const finalGroups = shouldApplyGroups ? data.data.groups : backupGroups;
     const finalProjects = shouldApplyProjects ? data.data.projects : backupProjects;
     const finalTemplates = shouldApplyTemplates ? data.data.command_templates : backupTemplates;
+    const finalWorktrees = shouldApplyProjects ? (data.data.worktrees ?? []) : backupWorktrees;
     const finalGroupIds = new Set(finalGroups.map((group) => String(group.id)));
     const finalProjectIds = new Set(finalProjects.map((project) => String(project.id)));
 
@@ -804,6 +823,7 @@ async function applySyncData(
     }
     if (shouldApplyProjects || shouldApplyGroups) {
       await insertProjects(finalProjects, finalGroupIds);
+      await insertWorktrees(finalWorktrees, finalProjectIds);
     }
     if (shouldApplyTemplates || shouldApplyProjects || shouldApplyGroups) {
       await insertTemplates(finalTemplates, finalProjectIds);
@@ -820,6 +840,7 @@ async function applySyncData(
 
     try {
       await db.execute("DELETE FROM command_templates");
+      await db.execute("DELETE FROM worktrees");
       await db.execute("DELETE FROM projects");
       await db.execute("DELETE FROM groups");
 
@@ -827,6 +848,7 @@ async function applySyncData(
       const backupProjectIds = new Set(backupProjects.map((project) => String(project.id)));
       await insertGroups(backupGroups);
       await insertProjects(backupProjects, backupGroupIds);
+      await insertWorktrees(backupWorktrees, backupProjectIds);
       await insertTemplates(backupTemplates, backupProjectIds);
 
       logInfo("Backup restored successfully");
