@@ -794,10 +794,9 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
     }
 
     try {
-      const projectName = project?.name.trim();
       const title = worktree
-        ? `${projectName || activeSession.project_key || activeSession.title} · ${worktree.name}`
-        : projectName || `${activeSession.source === "claude" ? "Claude" : "Codex"} 继续：${activeView?.displayTitle ?? activeSession.title}`;
+        ? worktree.name
+        : project?.name.trim() || `${activeSession.source === "claude" ? "Claude" : "Codex"} 继续：${activeView?.displayTitle ?? activeSession.title}`;
       const shell = launchProject?.shell && launchProject.shell !== "powershell" ? launchProject.shell : undefined;
       await createSession(project?.id ?? worktree?.project_id, cwd, title, command, parseProjectEnvVars(launchProject), shell, undefined, worktree?.id);
       closeHistory();
@@ -926,10 +925,9 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
       }
 
       const shell = launchProject?.shell && launchProject.shell !== "powershell" ? launchProject.shell : undefined;
-      const projectName = project?.name.trim();
       const title = worktree
-        ? `${projectName || session.project_key || session.displayTitle} · ${worktree.name}`
-        : projectName || `${session.source === "claude" ? "Claude" : "Codex"}: ${session.displayTitle || session.session_id}`;
+        ? worktree.name
+        : project?.name.trim() || `${session.source === "claude" ? "Claude" : "Codex"}: ${session.displayTitle || session.session_id}`;
 
       void createSession(project?.id ?? worktree?.project_id, cwd, title, command, parseProjectEnvVars(launchProject), shell, undefined, worktree?.id)
         .then(() => {

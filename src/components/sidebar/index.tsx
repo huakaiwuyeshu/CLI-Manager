@@ -940,7 +940,7 @@ export function Sidebar({
     await createSession(
       options.projectId,
       worktree.path,
-      title ?? `${project.name} · ${worktree.name}`,
+      title ?? worktree.name,
       startupCmd ?? options.startupCmd,
       options.envVars,
       options.shell,
@@ -1004,7 +1004,7 @@ export function Sidebar({
     await splitTerminal(activeSessionId, direction, {
       ...options,
       cwd: worktree.path,
-      title: `${project.name} · ${worktree.name}`,
+      title: worktree.name,
       worktreeId: worktree.id,
     });
     closeHistory();
@@ -1073,7 +1073,7 @@ export function Sidebar({
 
   const handleNewWorktreeTerminal = useCallback(
     async (project: Project, worktree: WorktreeRecord) => {
-      const title = `${project.name} · ${worktree.name}`;
+      const title = worktree.name;
       if (compactMode || useExternalTerminal) {
         await openWindowsTerminal([{ title, cwd: worktree.path }]);
       } else {

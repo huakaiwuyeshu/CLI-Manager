@@ -2606,7 +2606,7 @@ export function TerminalTabs({
       await createSession(
         options.projectId,
         scopedWorktree.path,
-        `${scopedProject.name} · ${scopedWorktree.name}`,
+        scopedWorktree.name,
         options.startupCmd,
         options.envVars,
         options.shell,
