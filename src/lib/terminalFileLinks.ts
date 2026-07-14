@@ -6,10 +6,11 @@ export interface TerminalFileLinkMatch {
 
 const ABSOLUTE_FILE_PATH_PATTERN = /(?:[A-Za-z]:[\\/][^\s`"'<>|?*]+|\\\\[^\\/\s]+[\\/][^\s`"'<>|?*]+|\/(?:mnt\/[A-Za-z]|home|root|workspace|work|data|opt|tmp|usr|var)(?:\/[^\s`"'<>|]+)+)/gu;
 const TRAILING_PATH_PUNCTUATION = /[,.;:!?，。；：！？、)\]}）】》」』]+$/u;
+const TRAILING_SOURCE_LOCATION = /:\d+(?::\d+)?(?::[^\s]*)?$/u;
 const WSL_UNC_ROOT_PATTERN = /^\\\\wsl(?:\.localhost|\$)\\([^\\/]+)(?:[\\/]|$)/iu;
 
 function trimPathPunctuation(value: string): string {
-  return value.replace(TRAILING_PATH_PUNCTUATION, "");
+  return value.replace(TRAILING_PATH_PUNCTUATION, "").replace(TRAILING_SOURCE_LOCATION, "");
 }
 
 export function findTerminalFileLinks(line: string): TerminalFileLinkMatch[] {

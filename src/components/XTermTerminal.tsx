@@ -29,12 +29,8 @@ import { translateCurrent, useI18n } from "../lib/i18n";
 import { buildFastCursorMoveSequence } from "../lib/terminalCursorMovement";
 import { normalizeTerminalFontFamily } from "../lib/terminalFontFamily";
 import { decodeOscPathValue, parseOsc7Cwd } from "../lib/terminalOscPath";
-import {
-  absolutePathToProjectRelative,
-  findTerminalFileLinks,
-  resolveTerminalFileSystemPath,
-} from "../lib/terminalFileLinks";
-import { findProjectByPath, findWorktreeByPath, projectWithWorktreePath } from "../lib/terminalProject";
+import { findTerminalFileLinks, resolveTerminalFileSystemPath } from "../lib/terminalFileLinks";
+import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
 import {
   TERMINAL_INPUT_SUGGESTION_BUILTIN_PROMPT,
   TERMINAL_INPUT_SUGGESTION_AI_MODEL,
@@ -74,7 +70,6 @@ import {
 } from "../lib/shell";
 import { Portal } from "./ui/Portal";
 import { useCommandHistoryStore } from "../stores/commandHistoryStore";
-import { useFileExplorerStore } from "../stores/fileExplorerStore";
 import { useProjectStore } from "../stores/projectStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { formatStartupInputForPty, useTerminalStore, type ShellRuntimeEventName } from "../stores/terminalStore";
@@ -578,34 +573,7 @@ const openTerminalFilePath = async (sessionId: string, rawPath: string) => {
   const systemPath = resolveTerminalFileSystemPath(rawPath, currentRootPath);
   if (!systemPath) return;
 
-  const targetWorktree = findWorktreeByPath(projectState.worktrees, systemPath);
-  const targetProject = targetWorktree
-    ? projectState.projects.find((item) => item.id === targetWorktree.project_id) ?? null
-    : findProjectByPath(projectState.projects, systemPath);
-  const fileProject = targetProject && targetWorktree
-    ? projectWithWorktreePath(targetProject, targetWorktree)
-    : targetProject;
-  const relativePath = fileProject ? absolutePathToProjectRelative(fileProject.path, systemPath) : null;
-
-  if (fileProject && relativePath) {
-    const fileName = relativePath.split("/").pop() || relativePath;
-    try {
-      const fileStore = useFileExplorerStore.getState();
-      await fileStore.openProject(fileProject);
-      await useFileExplorerStore.getState().openFile({
-        name: fileName,
-        path: relativePath,
-        kind: "file",
-        sizeBytes: 0,
-      });
-      terminalState.openFileEditorPane(fileProject);
-      return;
-    } catch (err) {
-      logError("Failed to open terminal file in editor", { sessionId, path: systemPath, err });
-    }
-  }
-
-  void invoke("open_folder_in_explorer", { path: systemPath, openFile: true }).catch((err) => {
+  void invoke("open_folder_in_explorer", { path: systemPath }).catch((err) => {
     logError("Failed to open terminal file", { sessionId, path: systemPath, err });
     toast.error(translateCurrent("files.toast.openFileFailed"), { description: String(err) });
   });
