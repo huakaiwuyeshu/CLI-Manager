@@ -561,3 +561,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Hook 桥接独立启用开关
+
+**Date**: 2026-07-14
+**Task**: Hook 桥接独立启用开关
+**Branch**: `master`
+
+### Summary
+
+为 Claude Code 与 Codex CLI Hook 桥接增加独立启用配置，统一状态灯、自动修复、统计检查、快捷重装和终端 Hook 环境注入口径；同步中英文文案、变更记录、功能清单与 Hook 契约。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a4019cd` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

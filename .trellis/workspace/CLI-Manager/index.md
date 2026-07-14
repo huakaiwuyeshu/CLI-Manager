@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-07-14
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~563 | Active |
+| `journal-1.md` | ~596 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-07-14 | Hook 桥接独立启用开关 | `a4019cd` | `master` |
 | 16 | 2026-07-14 | 修复终端切换渐进重绘 | `904e4a3` | `master` |
 | 15 | 2026-07-14 | 全局统一应用内确认对话框 | `34da804` | `master` |
 | 14 | 2026-07-14 | 简化 Worktree Tab 标题 | `5619a3e` | `master` |
