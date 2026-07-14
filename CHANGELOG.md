@@ -42,7 +42,6 @@
 - **CPU 小猫高负载加速**：CPU 使用率超过 45% 后额外平滑缩短奔跑周期，负载越高越显急促，低负载区间保持原有速度变化。
 
 ### 修复
-- **Codex 供应商通用配置解析修复**：切换 Codex 供应商时按 TOML 合并 `common_config_codex` 与供应商 `config`，不再把 Codex 通用配置误当 JSON 解析，修复 AnyRouter 等供应商提示“配置解析失败、无法应用”。
 - **后台任务按钮悬浮提示样式统一**：终端工具栏中的“后台任务”按钮移除浏览器原生 `title` 提示，改为复用工具栏统一的自定义 tooltip 样式，与“命令面板”“Git 变更”等按钮保持一致。
 - **PTY daemon 自举启动修复**：PTY 守护进程改为由主程序以 `__daemon` 模式自举拉起，不再依赖单独的 `cli-manager-daemon` 二进制或 sidecar 打包；安装版、GitHub Actions 构建与本地启动统一复用同一个应用可执行文件，用户无需额外下载文件，macOS 也随主应用一并签名/公证，避免因找不到独立 daemon 文件而误退回 in-process。
 - **终端 Tab 切换重绘优化**：终端从隐藏状态恢复时仅在布局稳定后执行一次尺寸适配与全视口刷新，不再跨多个动画帧重复强制重绘，减少 WebGL 画面从左上到右下逐块出现的现象。
@@ -147,7 +146,6 @@
 - **WebDAV 密码持久化到 Windows 凭据管理器**：修复保存密码后重启应用即丢失、需反复重输的问题。密码现保存到系统凭据管理器（不落明文配置文件），启动时自动恢复，设置页"已配置密码"状态与启动自动同步恢复正常。
 
 ### 修复
-- **Codex 供应商通用配置解析修复**：切换 Codex 供应商时按 TOML 合并 `common_config_codex` 与供应商 `config`，不再把 Codex 通用配置误当 JSON 解析，修复 AnyRouter 等供应商提示“配置解析失败、无法应用”。
 - **通用设置页卡死修复**：WSL 环境损坏或未正确安装时（部分 Win11 LTSC 机器常见），`wsl.exe`、`bun`/`bunx` 等探测子进程会挂起约 60 秒且无超时，进入设置 -> 通用触发的用量分析状态检测会连环阻塞数分钟形同卡死；现为全部探测调用加上超时（探测 10-15 秒、报告生成 180 秒、安装 600 秒），终端 Shell 扫描同时改为异步执行并对 WSL 探测限时 5 秒，不再阻塞主线程。
 - **Codex 同步历史上下文启动修复**：从历史上下文启动 Codex 时改为按 PowerShell、cmd、fish 与 POSIX shell 分支生成注入命令，未显式传入 Shell 时在 Windows 默认按 PowerShell 处理，并传入原始上下文文本，避免 `developer_instructions` 被拆成 `starting` 等错误子命令。
 - **图标依赖打包**：供应商图标改用 `@lobehub/icons` 深路径导入，避免打包时经由顶层入口拉入未安装的 `antd` peer 依赖导致构建失败。
@@ -185,7 +183,6 @@
 - **AI Replay 快照瘦身**：代码快照 Diff 改为写入 `.cli-manager/replay-snapshots/` 文件，SQLite 只保存快照文件引用和元数据；每个应用版本首次启动会自动检查并迁移旧内联快照，清理 DB 中的大型 `payload.patch` 字段，保留查看 Diff、回滚与 Fork 能力。
 
 ### 修复
-- **Codex 供应商通用配置解析修复**：切换 Codex 供应商时按 TOML 合并 `common_config_codex` 与供应商 `config`，不再把 Codex 通用配置误当 JSON 解析，修复 AnyRouter 等供应商提示“配置解析失败、无法应用”。
 
 - **恢复全局供应商徽章残留**：项目或 Worktree 从项目级供应商恢复为跟随全局时，会同步清理旧 Claude settings 覆盖、刷新实时项目快照并防止旧的徽章探测结果回写，避免侧栏继续显示已移除的供应商徽章。
 - **WSL 软连接项目路径选择与校验**：通用设置新增默认关闭的“软连接兼容性”开关，开启后新建项目路径旁才显示小号 WSL 入口，选择器只展示被 Windows 原生弹窗过滤的 WSL 目录软连接；校验 `\\wsl.localhost\...` / `\\wsl$\...` 路径时改用 WSL 内部 `test -e`，文件浏览根路径枚举也会跟随命令行软连接目录。
@@ -764,7 +761,6 @@
 - **修复 Codex 子 Agent 分屏空输出**：Codex `SubagentStart` 仅提供父 transcript、`SubagentStop` 才带独立 `agentTranscriptPath` 时，前端会先升级既有 pane 到 child JSONL、同步回填订阅前已写入的完整内容，再标记结束；Stop 后延长晚到 transcript pane 可见时间，避免自动分屏成功但输出为空。
 
 ### 修复
-- **Codex 供应商通用配置解析修复**：切换 Codex 供应商时按 TOML 合并 `common_config_codex` 与供应商 `config`，不再把 Codex 通用配置误当 JSON 解析，修复 AnyRouter 等供应商提示“配置解析失败、无法应用”。
 
 - **WSL 实时统计读取不到会话**：WSL 环境下扫描 Claude 会话文件时，`find /path -name '*.jsonl'` 的 glob 模式被 zsh 的 `nomatch` 选项拦截——zsh 将未加引号的 `*.jsonl` 当作 glob 展开，若无匹配文件直接报错退出，导致 `find` 无法执行、始终返回 0 个文件。已转义 glob 通配符（`\*`）避免 shell 展开。
 
