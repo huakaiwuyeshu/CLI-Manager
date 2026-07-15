@@ -1015,3 +1015,36 @@ Added a Hook setting to suppress OS notifications while CLI-Manager is focused, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: 跨平台 WebDAV 密码安全存储
+
+**Date**: 2026-07-16
+**Task**: 跨平台 WebDAV 密码安全存储
+**Branch**: `master`
+
+### Summary
+
+修复 macOS WebDAV 密码保存失败，并扩展 Linux/原生 WSL Secret Service 支持；Windows 继续使用凭据管理器，密码不明文降级。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `66286a3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
