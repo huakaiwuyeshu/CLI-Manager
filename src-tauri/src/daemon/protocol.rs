@@ -9,6 +9,11 @@ use std::collections::HashMap;
 
 /// 单帧最大字节数（含换行前的 JSON 文本）。超限视为非法帧，断连。
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+/// Daemon handshake revision. Capabilities remain the source of truth for
+/// individual behavior so compatible features can evolve independently.
+pub const DAEMON_PROTOCOL_REVISION: u32 = 1;
+/// The daemon accepts xterm's real minimum geometry instead of clamping to 40x8.
+pub const CAPABILITY_PTY_RESIZE_2X1: &str = "pty_resize_2x1";
 
 /// 客户端 → daemon 请求帧。`id` 用于应答关联（Auth 除外，Auth 必须是首帧）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -104,6 +109,11 @@ pub enum DaemonFrame {
     AuthOk {
         daemon_version: String,
         pid: u32,
+        /// Missing on older daemons; serde defaults keep the handshake backward compatible.
+        #[serde(default)]
+        protocol_revision: u32,
+        #[serde(default)]
+        capabilities: Vec<String>,
     },
     AuthErr {
         reason: String,
@@ -252,6 +262,33 @@ mod tests {
         let frame = DaemonFrame::Output {
             session_id: "abc".into(),
             data_base64: "aGk=".into(),
+        };
+        let decoded = decode_daemon_frame(encode_frame(&frame).trim_end()).unwrap();
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn legacy_auth_ok_defaults_new_handshake_fields() {
+        let decoded =
+            decode_daemon_frame(r#"{"type":"auth_ok","daemon_version":"1.2.8","pid":42}"#).unwrap();
+        assert_eq!(
+            decoded,
+            DaemonFrame::AuthOk {
+                daemon_version: "1.2.8".into(),
+                pid: 42,
+                protocol_revision: 0,
+                capabilities: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn current_auth_ok_roundtrips_capabilities() {
+        let frame = DaemonFrame::AuthOk {
+            daemon_version: "1.2.8".into(),
+            pid: 42,
+            protocol_revision: DAEMON_PROTOCOL_REVISION,
+            capabilities: vec![CAPABILITY_PTY_RESIZE_2X1.into()],
         };
         let decoded = decode_daemon_frame(encode_frame(&frame).trim_end()).unwrap();
         assert_eq!(decoded, frame);

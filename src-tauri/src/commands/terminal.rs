@@ -5,7 +5,9 @@ use crate::commands::ccswitch::{
 };
 use crate::daemon::client::DaemonBridge;
 use crate::daemon::protocol::SessionMeta;
-use crate::pty::manager::{PtyManager, PtyOrphanCleanupSummary, PtyProcessStatus};
+use crate::pty::manager::{
+    PtyManager, PtyOrphanCleanupSummary, PtyProcessStatus, MIN_PTY_COLS, MIN_PTY_ROWS,
+};
 use crate::pty::tauri_sink::TauriPtyEventSink;
 use log::{debug, error, info, warn};
 use serde::Serialize;
@@ -247,6 +249,40 @@ pub async fn pty_daemon_active(
     daemon_bridge: tauri::State<'_, DaemonBridge>,
 ) -> Result<bool, String> {
     Ok(daemon_bridge.get().is_some())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyMinimumGridSize {
+    pub cols: u16,
+    pub rows: u16,
+    pub ready: bool,
+}
+
+/// Report the effective minimum shared by xterm and the process hosting the PTY.
+/// Older persistent daemons still clamp to 40x8, so the frontend must use the
+/// same grid until those sessions are safely closed and the daemon is replaced.
+#[tauri::command]
+pub async fn pty_minimum_grid_size(
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+) -> Result<PtyMinimumGridSize, String> {
+    Ok(match daemon_bridge.compact_resize_state() {
+        None => PtyMinimumGridSize {
+            cols: 40,
+            rows: 8,
+            ready: false,
+        },
+        Some(true) => PtyMinimumGridSize {
+            cols: MIN_PTY_COLS,
+            rows: MIN_PTY_ROWS,
+            ready: true,
+        },
+        Some(false) => PtyMinimumGridSize {
+            cols: 40,
+            rows: 8,
+            ready: true,
+        },
+    })
 }
 
 /// daemon 中的会话列表（启动恢复时优先 attach 的依据）。

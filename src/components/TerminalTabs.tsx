@@ -3591,6 +3591,27 @@ export function TerminalTabs({
     [renameOpenProjectTabs, renameSession, sessions, t, updateProject]
   );
 
+  // SplitTerminalView updates its drag preview every animation frame. Keep all
+  // callbacks passed through MemoPaneLeafView referentially stable so those
+  // geometry-only updates do not re-render the tab bar and every xterm subtree.
+  const handlePaneSubmitEdit = useCallback((sessionId: string, title: string) => {
+    void handleSubmitTabEdit(sessionId, title);
+  }, [handleSubmitTabEdit]);
+  const handlePaneCancelEdit = useCallback(() => setEditingSessionId(null), []);
+  const handlePaneNewTab = useCallback(() => {
+    void handleNewTab();
+  }, [handleNewTab]);
+  const handlePaneUnsplit = useCallback((sessionId: string) => {
+    void unsplitTerminal(sessionId);
+  }, [unsplitTerminal]);
+  const handlePaneFinishWorktree = useCallback((project: Project, worktree: WorktreeRecord) => {
+    if (rejectMissingWorktree(worktree)) return;
+    setFinishTarget({ project, worktree });
+  }, [rejectMissingWorktree]);
+  const handlePaneDiscardWorktree = useCallback((project: Project, worktree: WorktreeRecord) => {
+    setDiscardTarget({ project, worktree });
+  }, []);
+
   const renderWorkspanLeaf = useCallback((
     pane: TerminalPaneLeaf,
     layoutPanes: TerminalPaneLeaf[],
@@ -3629,26 +3650,21 @@ export function TerminalTabs({
         onActivateSession={handleActivateSession}
         onCloseSessions={handleCloseSessions}
         onStartEdit={setEditingSessionId}
-        onSubmitEdit={(sessionId, title) => {
-          void handleSubmitTabEdit(sessionId, title);
-        }}
-        onCancelEdit={() => setEditingSessionId(null)}
-        onNewTab={() => void handleNewTab()}
+        onSubmitEdit={handlePaneSubmitEdit}
+        onCancelEdit={handlePaneCancelEdit}
+        onNewTab={handlePaneNewTab}
         onDuplicateSession={handleDuplicateSession}
         onOpenSplitPicker={handleOpenSplitPicker}
-        onUnsplit={(sessionId) => void unsplitTerminal(sessionId)}
+        onUnsplit={handlePaneUnsplit}
         onMoveToPane={moveSessionToPane}
         onHideBackground={hideBackgroundForSession}
         onShowBackground={showBackgroundForSession}
         onTogglePaneFullscreen={handleTogglePaneFullscreen}
         onOpenWorktreeChanges={handleOpenWorktreeChanges}
         onOpenWorktreeHistory={handleOpenWorktreeHistory}
-        onFinishWorktree={(project, worktree) => {
-          if (rejectMissingWorktree(worktree)) return;
-          setFinishTarget({ project, worktree });
-        }}
+        onFinishWorktree={handlePaneFinishWorktree}
         onInstallWorktreeDeps={handleInstallWorktreeDeps}
-        onDiscardWorktree={(project, worktree) => setDiscardTarget({ project, worktree })}
+        onDiscardWorktree={handlePaneDiscardWorktree}
         onOpenWorktreeDirectory={handleOpenWorktreeDirectory}
         hideTabBar={workspanEnabled && visiblePaneSessionCount <= 1}
       />
@@ -3662,7 +3678,12 @@ export function TerminalTabs({
     fontSize,
     handleActivateSession,
     handleCloseSessions,
-    handleNewTab,
+    handlePaneCancelEdit,
+    handlePaneDiscardWorktree,
+    handlePaneFinishWorktree,
+    handlePaneNewTab,
+    handlePaneSubmitEdit,
+    handlePaneUnsplit,
     handleDuplicateSession,
     handleOpenSplitPicker,
     handleOpenWorktreeChanges,
@@ -3676,8 +3697,6 @@ export function TerminalTabs({
     lightThemePalette,
     moveSessionToPane,
     projects,
-    handleSubmitTabEdit,
-    rejectMissingWorktree,
     resolvedTheme,
     scopedSessionIds,
     sessions,
@@ -3689,7 +3708,6 @@ export function TerminalTabs({
     terminalBackgroundEnabled,
     terminalBackgroundImagePath,
     terminalThemeName,
-    unsplitTerminal,
   ]);
 
   const hasScopedTerminalFilter = projectScopedTerminalViewEnabled && terminalScopeValue.kind !== "all";

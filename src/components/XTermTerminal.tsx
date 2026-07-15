@@ -43,6 +43,14 @@ import { hexToRgba, normalizeHexColor } from "../lib/terminalColor";
 import { terminalShortcutMatches, wrapTerminalPasteTextForCtrlShiftV } from "../lib/terminalKeyboard";
 import { resolveSubmittedDirectoryChange } from "../lib/terminalInputSuggestions";
 import {
+  LEGACY_TERMINAL_MIN_COLS,
+  LEGACY_TERMINAL_MIN_ROWS,
+  LatestTerminalPtyResizeQueue,
+  TERMINAL_MIN_COLS,
+  TERMINAL_MIN_ROWS,
+  type TerminalGridSize,
+} from "../lib/terminalResizeCoordinator";
+import {
   didRenderFullTerminalViewport,
   planTerminalVisibilityRestore,
   refreshTerminalViewport,
@@ -66,8 +74,6 @@ import {
   type DarkThemePalette,
 } from "../stores/settingsStore";
 
-const MIN_TERMINAL_COLS = 40;
-const MIN_TERMINAL_ROWS = 8;
 const SEARCH_HIGHLIGHT_LIMIT = 1000;
 const IMAGE_ADDON_PIXEL_LIMIT = 4 * 1024 * 1024;
 const IMAGE_ADDON_SEQUENCE_LIMIT = 8 * 1024 * 1024;
@@ -244,7 +250,19 @@ const canShowSuggestionAtCurrentInputEnd = (terminal: Terminal, input: string) =
 };
 
 const isLikelyMacPlatform = (os: OsPlatform) => (
-  os === "macos" || (os === "unknown" && navigator.platform.toLowerCase().includes("mac"))
+  os === "macos" || (
+    os === "unknown"
+    && typeof navigator !== "undefined"
+    && /mac/i.test(`${navigator.platform} ${navigator.userAgent}`)
+  )
+);
+
+const isLikelyWindowsPlatform = (os: OsPlatform) => (
+  os === "windows" || (
+    os === "unknown"
+    && typeof navigator !== "undefined"
+    && /win/i.test(`${navigator.platform} ${navigator.userAgent}`)
+  )
 );
 
 // When search is active, SearchAddon calls terminal.select() on each match to
@@ -339,12 +357,20 @@ interface Props extends TerminalContextMenuActions {
   darkThemePalette?: DarkThemePalette;
 }
 
+interface PtyMinimumGridSize extends TerminalGridSize {
+  ready: boolean;
+}
+
 export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fontSize = 14, fontFamily = "Cascadia Code, Consolas, monospace", resolvedTheme = "dark", terminalThemeName = "auto", lightThemePalette = "warm-paper", darkThemePalette = "night-indigo", onNewTab, onCloseSession, onCloseOthers, onCloseToLeft, onCloseToRight, onSplitRight, onSplitDown }: Props) {
   const { t } = useI18n();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const minimumGridRef = useRef<TerminalGridSize>({
+    cols: LEGACY_TERMINAL_MIN_COLS,
+    rows: LEGACY_TERMINAL_MIN_ROWS,
+  });
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const inputBuffer = useRef("");
   const inputCursorIndexRef = useRef(0);
@@ -359,6 +385,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const visibilityRestoreRevealRafRef = useRef<number | null>(null);
   const cursorShowTimerRef = useRef<number | null>(null);
   const tuiComposerNormalizeRafRef = useRef<number | null>(null);
+  const tuiComposerNormalizeMicrotaskPendingRef = useRef(false);
   const displayNormalizeOutputRef = useRef<(text: string) => string>((text) => text);
   const displayTransformOutputRef = useRef<(text: string) => string>((text) => text);
   const displayAfterWriteRef = useRef<((terminal: Terminal) => void) | null>(null);
@@ -392,6 +419,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const [suggestionGhost, setSuggestionGhost] = useState<TerminalSuggestionGhostState | null>(null);
   const [linuxGraphicsConstrained, setLinuxGraphicsConstrained] = useState(false);
   const [linuxGraphicsDisableWebgl, setLinuxGraphicsDisableWebgl] = useState(false);
+  const [preferDomRenderer, setPreferDomRenderer] = useState(() => isLikelyMacPlatform("unknown"));
   const { menuState, menuRef, openMenu, closeContextMenu } = useTerminalContextMenu();
   const osPlatformRef = useRef<OsPlatform>("unknown");
   const codexImeDebugRef = useRef<CodexImeDebugState>({
@@ -422,6 +450,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     void getOsPlatform().then((platform) => {
       if (!cancelled) {
         osPlatformRef.current = platform;
+        setPreferDomRenderer(isLikelyMacPlatform(platform));
       }
     });
     return () => {
@@ -524,6 +553,45 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     clearSuggestionGhost();
   }, [terminalInputSuggestionProvider]);
 
+  const getSessionToolContext = () => {
+    const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
+    const project = session?.projectId
+      ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
+      : null;
+    return {
+      projectTool: project?.cli_tool.trim().toLowerCase() ?? "",
+      startupCmd: session?.startupCmd ?? "",
+      titleTool: session?.title.match(/\(([^()]*)\)\s*$/)?.[1]?.trim().toLowerCase() ?? "",
+    };
+  };
+
+  const isCodexSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool === "codex"
+      || context.titleTool === "codex"
+      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
+
+  const isClaudeSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool.includes("claude")
+      || context.titleTool.includes("claude")
+      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
+
+  const isClaudeOrCodexSession = (context = getSessionToolContext()) => {
+    return (
+      context.projectTool === "codex"
+      || context.projectTool.includes("claude")
+      || context.titleTool === "codex"
+      || context.titleTool.includes("claude")
+      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
+      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
+    );
+  };
+
   const {
     syncWebglRenderer,
     scheduleHiddenWebglDispose,
@@ -540,16 +608,22 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     attachPtyOutput,
     resetOutputState,
     cancelScheduledFit,
+    resumeDeferredFitAfterWrite,
     resetViewportRefreshState,
   } = useTerminalDisplay({
     sessionId,
     containerRef,
     terminalRef,
     fitAddonRef,
+    minimumGridRef,
     isVisibleRef,
     isComposingRef,
     lowMemoryMode,
     terminalScrollbackRows: effectiveTerminalScrollbackRows,
+    preferDomRenderer,
+    shouldCoordinateTuiResize: (terminal) => (
+      terminal.buffer.active.type === "alternate" || isClaudeOrCodexSession()
+    ),
     disableHardwareAcceleration,
     linuxGraphicsDisableWebgl,
     isTransparentRef,
@@ -559,6 +633,46 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     onInactiveReplayPendingChange: setInactiveReplayPending,
     onPtyOutputListenError: (err) => logError("Failed to listen PTY output", { sessionId, err }),
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    let attempts = 0;
+    const resolveMinimumGrid = () => {
+      attempts += 1;
+      invoke<PtyMinimumGridSize>("pty_minimum_grid_size")
+        .then((minimum) => {
+          if (cancelled) return;
+          if (!minimum.ready) {
+            if (attempts < 60) {
+              retryTimer = window.setTimeout(resolveMinimumGrid, 100);
+            } else {
+              logWarn("PTY minimum grid discovery timed out; keeping legacy-safe geometry", { sessionId });
+            }
+            return;
+          }
+          if (!Number.isSafeInteger(minimum.cols) || !Number.isSafeInteger(minimum.rows)) return;
+          minimumGridRef.current = {
+            cols: Math.max(TERMINAL_MIN_COLS, minimum.cols),
+            rows: Math.max(TERMINAL_MIN_ROWS, minimum.rows),
+          };
+          scheduleFit(true);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (attempts < 60) {
+            retryTimer = window.setTimeout(resolveMinimumGrid, 100);
+            return;
+          }
+          logError("Failed to resolve PTY minimum grid size", { sessionId, err });
+        });
+    };
+    resolveMinimumGrid();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
@@ -599,44 +713,6 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   });
   displayNormalizeOutputRef.current = normalizeTerminalOutput;
 
-  const getSessionToolContext = () => {
-    const session = useTerminalStore.getState().sessions.find((item) => item.id === sessionId);
-    const project = session?.projectId
-      ? useProjectStore.getState().projects.find((item) => item.id === session.projectId)
-      : null;
-    return {
-      projectTool: project?.cli_tool.trim().toLowerCase() ?? "",
-      startupCmd: session?.startupCmd ?? "",
-      titleTool: session?.title.match(/\(([^()]*)\)\s*$/)?.[1]?.trim().toLowerCase() ?? "",
-    };
-  };
-
-  const isCodexSession = (context = getSessionToolContext()) => {
-    return (
-      context.projectTool === "codex"
-      || context.titleTool === "codex"
-      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
-    );
-  };
-
-  const isClaudeSession = (context = getSessionToolContext()) => {
-    return (
-      context.projectTool.includes("claude")
-      || context.titleTool.includes("claude")
-      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
-    );
-  };
-
-  const isClaudeOrCodexSession = (context = getSessionToolContext()) => {
-    return (
-      context.projectTool === "codex"
-      || context.projectTool.includes("claude")
-      || context.titleTool === "codex"
-      || context.titleTool.includes("claude")
-      || CODEX_COMMAND_PATTERN.test(context.startupCmd)
-      || CLAUDE_COMMAND_PATTERN.test(context.startupCmd)
-    );
-  };
   const shouldNormalizeTuiComposerBackground = (context = getSessionToolContext()) => (
     isTransparentRef.current || (isClaudeOrCodexSession(context) && isLightTerminalRef.current)
   );
@@ -868,9 +944,22 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       normalizeTuiComposerBackground(terminal);
     });
   };
+  const scheduleTuiComposerBackgroundNormalizationBeforePaint = (
+    terminal: Terminal | null = terminalRef.current,
+  ) => {
+    if (!terminal || tuiComposerNormalizeMicrotaskPendingRef.current) return;
+    tuiComposerNormalizeMicrotaskPendingRef.current = true;
+    queueMicrotask(() => {
+      tuiComposerNormalizeMicrotaskPendingRef.current = false;
+      if (terminalRef.current !== terminal) return;
+      normalizeTuiComposerBackground(terminal);
+    });
+  };
   displayAfterWriteRef.current = (terminal) => {
-    normalizeTuiComposerBackground(terminal);
-    scheduleTuiComposerBackgroundNormalization(terminal);
+    // Coalesce writes in the current task, but normalize before the browser's
+    // next paint. Deferring this first pass to RAF lets xterm briefly paint raw
+    // Claude/Codex backgrounds and causes a visible one-frame flash.
+    scheduleTuiComposerBackgroundNormalizationBeforePaint(terminal);
   };
 
   const processCursorVisibility = (text: string) => {
@@ -981,7 +1070,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }
     normalizeTuiComposerBackground(terminal);
     scheduleTuiComposerBackgroundNormalization(terminal);
-  }, [fontSize, effectiveFontFamily, effectiveTerminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsDisableWebgl, searchOpen]);
+  }, [fontSize, effectiveFontFamily, effectiveTerminalScrollbackRows, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette, isTransparent, background.overlayDarken, lowMemoryMode, preferDomRenderer, disableHardwareAcceleration, linuxGraphicsDisableWebgl, searchOpen]);
 
   // Visibility drives live rendering. A pane tab is "visible" when it is the
   // shown tab in its own pane — which, in a split, includes panes that are not
@@ -1041,7 +1130,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       normalizeTuiComposerBackground(terminalRef.current);
       scheduleTuiComposerBackgroundNormalization(terminalRef.current);
     }
-  }, [isVisible, lowMemoryMode, disableHardwareAcceleration, linuxGraphicsConstrained, linuxGraphicsDisableWebgl, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
+  }, [isVisible, lowMemoryMode, preferDomRenderer, disableHardwareAcceleration, linuxGraphicsConstrained, linuxGraphicsDisableWebgl, resolvedTheme, terminalThemeName, lightThemePalette, darkThemePalette]);
 
   // The WebGL glyph atlas can be silently corrupted while the GPU sleeps
   // (display sleep, lock screen, driver reset) without ever firing
@@ -1109,7 +1198,12 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       scrollback: effectiveTerminalScrollbackRows,
       scrollOnEraseInDisplay: true,
       allowProposedApi: true,
-      windowsPty: { backend: "conpty" },
+      // The ConPTY compatibility mode changes buffer growth semantics. Applying
+      // it unconditionally on macOS/Linux can create stale or duplicated rows
+      // during resize, so keep it Windows-only.
+      ...(isLikelyWindowsPlatform(osPlatformRef.current)
+        ? { windowsPty: { backend: "conpty" as const } }
+        : {}),
       minimumContrastRatio: getTerminalMinimumContrastRatio(baseTheme, isTransparentRef.current),
       // xterm cannot toggle transparency after construction, so keep it enabled
       // even though WebGL is disabled while a background image is active.
@@ -1997,12 +2091,21 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       forwardTerminalInput(data, "onData");
     }));
 
-    // Sync resize to PTY
-    displayDisposables.push(terminal.onResize(({ cols, rows }) => {
-      if (cols < MIN_TERMINAL_COLS || rows < MIN_TERMINAL_ROWS) return;
-      invoke("pty_resize", { sessionId, cols, rows }).catch((err) => {
+    const ptyResizeQueue = new LatestTerminalPtyResizeQueue(
+      async ({ cols, rows }) => {
+        await invoke("pty_resize", { sessionId, cols, rows });
+      },
+      (err, { cols, rows }) => {
         logError("PTY resize failed in XTermTerminal", { sessionId, cols, rows, err });
-      });
+      },
+    );
+
+    // Local TUI grid changes are already cadence-coordinated by the display
+    // hook. Serialize the matching native resize and collapse any IPC backlog so
+    // stale completions can never move the application backwards.
+    displayDisposables.push(terminal.onResize(({ cols, rows }) => {
+      if (cols < minimumGridRef.current.cols || rows < minimumGridRef.current.rows) return;
+      ptyResizeQueue.enqueue({ cols, rows });
     }));
 
     const detachPtyOutput = attachPtyOutput();
@@ -2311,6 +2414,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     }));
     displayDisposables.push(terminal.onRender((range) => {
       handleVisibilityRestoreRender(terminal, range);
+      resumeDeferredFitAfterWrite();
       scheduleTuiComposerBackgroundNormalization(terminal);
       if (!isComposingRef.current) {
         updateSuggestionGhostPosition();
@@ -2320,6 +2424,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       scheduleCompositionScrollRestore();
       scheduleCompositionAnchorFix();
     }));
+    displayDisposables.push(terminal.onWriteParsed(resumeDeferredFitAfterWrite));
 
     // 中文 IME 的直出标点可能不会稳定进入 xterm 的 textarea diff：
     // Windows 常见信号是 keyCode 229；macOS 中文输入法的全角标点（如 "（"）
@@ -2462,6 +2567,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
       textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       textarea?.removeEventListener("compositionend", onCompositionEnd);
       terminalContainer.removeEventListener("scroll", scheduleTerminalContainerScrollReset);
+      ptyResizeQueue.dispose();
       disposeTerminalSubsystem(inputDisposables);
       disposeTerminalSubsystem(displayDisposables);
       wheelTarget.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
@@ -2716,7 +2822,12 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
           </button>
         </div>
       )}
-      <div ref={containerRef} className="h-full w-full overflow-hidden pl-2" style={terminalContainerStyle} />
+      <div className="h-full w-full overflow-hidden pl-2">
+        {/* FitAddon measures the direct parent of `.xterm`. Keep that measured
+            element padding-free; parent padding is otherwise counted as usable
+            width and xterm allocates roughly one clipped column on the right. */}
+        <div ref={containerRef} className="h-full w-full overflow-hidden" style={terminalContainerStyle} />
+      </div>
       {terminalInputSuggestionsEnabled && isActive && isVisible && !searchOpen && suggestionGhost && (
         <div
           aria-hidden="true"

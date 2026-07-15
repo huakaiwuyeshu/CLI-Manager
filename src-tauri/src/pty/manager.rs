@@ -26,8 +26,12 @@ pub trait PtyEventSink: Send + Sync + 'static {
 /// 每次 read 都触发一次 IPC + Base64 编码。
 const READER_FLUSH_THRESHOLD: usize = 32 * 1024;
 const READER_BUF_SIZE: usize = 16 * 1024;
-const MIN_PTY_COLS: u16 = 40;
-const MIN_PTY_ROWS: u16 = 8;
+// Match xterm's real minimum geometry. Keeping the PTY at 40x8 while the
+// visible center pane is narrower makes full-screen TUIs render against a
+// different grid than the user sees, causing clipping and stale right-edge
+// content during panel drag.
+pub const MIN_PTY_COLS: u16 = 2;
+pub const MIN_PTY_ROWS: u16 = 1;
 const GIT_BASH_INITIAL_OUTPUT_DELAY_MS: u64 = 250;
 const ORPHAN_CREATE_GRACE_SECS: u64 = 30;
 const ORPHAN_MISSING_GRACE_SECS: u64 = 90;

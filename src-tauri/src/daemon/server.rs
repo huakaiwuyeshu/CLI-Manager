@@ -7,7 +7,7 @@
 use super::discovery::{remove_daemon_info, write_daemon_info_exclusive, DaemonInfo};
 use super::protocol::{
     decode_client_frame, encode_frame, ClientFrame, DaemonFrame, ProtocolError, SessionMeta,
-    SessionStatusInfo, MAX_FRAME_BYTES,
+    SessionStatusInfo, CAPABILITY_PTY_RESIZE_2X1, DAEMON_PROTOCOL_REVISION, MAX_FRAME_BYTES,
 };
 use crate::claude_hook::{spawn_hook_listener, HookPayloadSink};
 use crate::pty::manager::{PtyEventSink, PtyManager, PtyProcessStatus};
@@ -418,6 +418,8 @@ impl DaemonServer {
                         &DaemonFrame::AuthOk {
                             daemon_version: self.version.clone(),
                             pid: std::process::id(),
+                            protocol_revision: DAEMON_PROTOCOL_REVISION,
+                            capabilities: vec![CAPABILITY_PTY_RESIZE_2X1.to_string()],
                         },
                     );
                 }

@@ -602,6 +602,8 @@ pub fn run() {
                     .unwrap_or(false);
                 if daemon_disabled {
                     log::info!("pty daemon disabled via CLI_MANAGER_DISABLE_DAEMON");
+                    app.state::<daemon::client::DaemonBridge>()
+                        .mark_unavailable();
                 } else {
                     let handle = app.handle().clone();
                     std::thread::spawn(move || match app_paths::cli_manager_data_dir() {
@@ -621,11 +623,19 @@ pub fn run() {
                                 Err(err) => {
                                     log::warn!(
                                         "pty daemon unavailable, falling back in-process: {err}"
-                                    )
+                                    );
+                                    handle
+                                        .state::<daemon::client::DaemonBridge>()
+                                        .mark_unavailable();
                                 }
                             }
                         }
-                        Err(err) => log::warn!("pty daemon skipped (no data dir): {err}"),
+                        Err(err) => {
+                            log::warn!("pty daemon skipped (no data dir): {err}");
+                            handle
+                                .state::<daemon::client::DaemonBridge>()
+                                .mark_unavailable();
+                        }
                     });
                 }
             }
@@ -712,6 +722,7 @@ pub fn run() {
             commands::terminal::pty_reconcile_active_sessions,
             commands::terminal::pty_status,
             commands::terminal::pty_daemon_active,
+            commands::terminal::pty_minimum_grid_size,
             commands::terminal::pty_daemon_sessions,
             commands::terminal::pty_attach,
             take_pending_background_session,

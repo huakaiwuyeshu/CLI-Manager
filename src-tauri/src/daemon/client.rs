@@ -9,7 +9,7 @@ use super::discovery::{
 };
 use super::protocol::{
     decode_daemon_frame, encode_frame, ClientFrame, DaemonFrame, ProtocolError, SessionMeta,
-    MAX_FRAME_BYTES,
+    CAPABILITY_PTY_RESIZE_2X1, MAX_FRAME_BYTES,
 };
 use crate::pty::manager::PtyProcessStatus;
 use std::collections::HashMap;
@@ -38,38 +38,74 @@ fn windows_daemon_creation_flags() -> u32 {
 
 pub struct DaemonClient {
     info: DaemonInfo,
+    daemon_version: String,
+    protocol_revision: u32,
+    capabilities: Vec<String>,
     writer: Mutex<TcpStream>,
     pending: Mutex<HashMap<u64, SyncSender<DaemonFrame>>>,
     next_id: AtomicU64,
     connected: Arc<AtomicBool>,
 }
 
+struct DaemonBridgeState {
+    client: Option<Arc<DaemonClient>>,
+    ready: bool,
+}
+
 /// Tauri managed state：daemon 客户端插槽。
 /// None = daemon 不可用（降级进程内 PTY）。
 pub struct DaemonBridge {
-    inner: Mutex<Option<Arc<DaemonClient>>>,
+    inner: Mutex<DaemonBridgeState>,
 }
 
 impl DaemonBridge {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(None),
+            inner: Mutex::new(DaemonBridgeState {
+                client: None,
+                ready: false,
+            }),
         }
     }
 
     pub fn set(&self, client: Arc<DaemonClient>) {
         if let Ok(mut inner) = self.inner.lock() {
-            *inner = Some(client);
+            inner.client = Some(client);
+            inner.ready = true;
+        }
+    }
+
+    pub fn mark_unavailable(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.client = None;
+            inner.ready = true;
+        }
+    }
+
+    /// None means startup discovery is still running. Some(true) means the
+    /// selected PTY host supports 2x1; Some(false) is a legacy daemon at 40x8.
+    pub fn compact_resize_state(&self) -> Option<bool> {
+        let mut inner = self.inner.lock().ok()?;
+        if !inner.ready {
+            return None;
+        }
+        match inner.client.as_ref() {
+            Some(client) if client.is_connected() => Some(client.supports_compact_resize()),
+            Some(_) => {
+                inner.client = None;
+                Some(true)
+            }
+            None => Some(true),
         }
     }
 
     /// 取存活的客户端；连接已断则清槽返回 None（后续命令自动降级）。
     pub fn get(&self) -> Option<Arc<DaemonClient>> {
         let mut inner = self.inner.lock().ok()?;
-        match inner.as_ref() {
+        match inner.client.as_ref() {
             Some(client) if client.is_connected() => Some(Arc::clone(client)),
             Some(_) => {
-                *inner = None;
+                inner.client = None;
                 None
             }
             None => None,
@@ -108,24 +144,33 @@ impl DaemonClient {
         let _ = stream.set_read_timeout(Some(AUTH_READ_TIMEOUT));
         let mut reader = BufReader::new(stream);
         let first = read_line_bounded(&mut reader).ok_or("daemon auth read failed")?;
-        match decode_daemon_frame(&first) {
-            Ok(DaemonFrame::AuthOk { daemon_version, .. }) => {
+        let (daemon_version, protocol_revision, capabilities) = match decode_daemon_frame(&first) {
+            Ok(DaemonFrame::AuthOk {
+                daemon_version,
+                protocol_revision,
+                capabilities,
+                ..
+            }) => {
                 if daemon_version != env!("CARGO_PKG_VERSION") {
                     log::warn!(
                         "daemon version mismatch: daemon={daemon_version}, app={}",
                         env!("CARGO_PKG_VERSION")
                     );
                 }
+                (daemon_version, protocol_revision, capabilities)
             }
             Ok(DaemonFrame::AuthErr { reason }) => {
                 return Err(format!("daemon auth rejected: {reason}"));
             }
             other => return Err(format!("daemon auth unexpected reply: {other:?}")),
-        }
+        };
         let _ = reader.get_ref().set_read_timeout(None);
 
         let client = Arc::new(DaemonClient {
             info,
+            daemon_version,
+            protocol_revision,
+            capabilities,
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -374,6 +419,23 @@ impl DaemonClient {
         let id = self.next_request_id();
         self.expect_ok(&ClientFrame::Shutdown { id }, id)
     }
+
+    fn is_runtime_compatible(&self) -> bool {
+        daemon_runtime_is_compatible(&self.daemon_version, &self.capabilities)
+    }
+
+    pub fn supports_compact_resize(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability == CAPABILITY_PTY_RESIZE_2X1)
+    }
+}
+
+fn daemon_runtime_is_compatible(daemon_version: &str, capabilities: &[String]) -> bool {
+    daemon_version == env!("CARGO_PKG_VERSION")
+        && capabilities
+            .iter()
+            .any(|capability| capability == CAPABILITY_PTY_RESIZE_2X1)
 }
 
 /// 发现或拉起 daemon 并建立连接。失败返回 Err（调用方降级进程内 PTY）。
@@ -389,8 +451,9 @@ pub fn connect_or_spawn(
         if is_pid_alive(info.pid) {
             match DaemonClient::connect(info.clone(), app_handle.clone()) {
                 Ok(client) => {
-                    // 版本不匹配且无存活会话 → 让旧 daemon 自杀后重拉（契约升级路径）。
-                    if client.info().version != env!("CARGO_PKG_VERSION") {
+                    // Incompatible runtime and no live sessions: safely replace
+                    // the daemon. Active sessions are never killed or migrated.
+                    if !client.is_runtime_compatible() {
                         let no_alive = client
                             .list()
                             .map(|sessions| sessions.iter().all(|s| !s.alive))
@@ -400,7 +463,10 @@ pub fn connect_or_spawn(
                             return spawn_and_connect(app_handle, &info_path);
                         }
                         log::warn!(
-                            "daemon version mismatch with active sessions, keeping old daemon"
+                            "incompatible daemon with active sessions, keeping it: version={}, protocol_revision={}, capabilities={:?}",
+                            client.daemon_version,
+                            client.protocol_revision,
+                            client.capabilities,
                         );
                     }
                     return Ok(client);
@@ -493,10 +559,39 @@ fn read_line_bounded(reader: &mut BufReader<TcpStream>) -> Option<String> {
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn matching_version_requires_compact_resize_capability() {
+        assert!(!daemon_runtime_is_compatible(
+            env!("CARGO_PKG_VERSION"),
+            &[],
+        ));
+        assert!(daemon_runtime_is_compatible(
+            env!("CARGO_PKG_VERSION"),
+            &[CAPABILITY_PTY_RESIZE_2X1.to_string()],
+        ));
+    }
+
+    #[test]
+    fn capability_does_not_hide_product_version_mismatch() {
+        assert!(!daemon_runtime_is_compatible(
+            "0.0.0",
+            &[CAPABILITY_PTY_RESIZE_2X1.to_string()],
+        ));
+    }
+
+    #[test]
+    fn daemon_bridge_distinguishes_startup_from_in_process_fallback() {
+        let bridge = DaemonBridge::new();
+        assert_eq!(bridge.compact_resize_state(), None);
+        bridge.mark_unavailable();
+        assert_eq!(bridge.compact_resize_state(), Some(true));
+    }
+
+    #[cfg(target_os = "windows")]
     #[test]
     fn windows_daemon_keeps_conpty_ctrl_c_process_group_compatible() {
         const DETACHED_PROCESS: u32 = 0x0000_0008;

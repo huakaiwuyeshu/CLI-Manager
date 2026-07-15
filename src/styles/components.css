@@ -3881,16 +3881,14 @@
 
 .ui-terminal-split-child {
   opacity: 1;
-  transform: translateZ(0);
+  /* Terminal geometry must track its owning panel immediately. Animating
+     left/top/width/height makes the center pane trail an external sidebar drag
+     by ~250ms, while xterm repeatedly fits intermediate sizes. A promoted
+     geometry layer can also retain stale WebGL pixels at the right edge. */
   transition:
-    left var(--animate-duration-normal) var(--ease-standard),
-    top var(--animate-duration-normal) var(--ease-standard),
-    width var(--animate-duration-normal) var(--ease-standard),
-    height var(--animate-duration-normal) var(--ease-standard),
     opacity var(--animate-duration-fast) var(--ease-standard),
     transform var(--animate-duration-fast) var(--ease-standard),
     visibility var(--animate-duration-fast) var(--ease-standard);
-  will-change: left, top, width, height, opacity, transform;
 }
 
 .ui-terminal-split-node[data-dragging="true"] .ui-terminal-split-child {
@@ -4417,9 +4415,6 @@
   transform: translateX(0);
   animation: terminal-side-panel-enter var(--animate-duration-fast) var(--ease-standard);
   transition:
-    width var(--animate-duration-normal) var(--ease-standard),
-    min-width var(--animate-duration-normal) var(--ease-standard),
-    max-width var(--animate-duration-normal) var(--ease-standard),
     border-color var(--animate-duration-fast) var(--ease-standard),
     box-shadow var(--animate-duration-fast) var(--ease-standard),
     opacity var(--animate-duration-fast) var(--ease-standard),
