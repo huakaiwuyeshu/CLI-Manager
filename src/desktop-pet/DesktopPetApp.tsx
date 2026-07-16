@@ -73,6 +73,8 @@ export default function DesktopPetApp() {
   const [installedPet, setInstalledPet] = useState<InstalledPet | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const moveTimerRef = useRef<number | null>(null);
+  const dragResetTimerRef = useRef<number | null>(null);
+  const userDraggingRef = useRef(false);
 
   useEffect(() => {
     const rootElements = [document.documentElement, document.body, document.getElementById("root")];
@@ -89,16 +91,23 @@ export default function DesktopPetApp() {
     });
     const appWindow = getCurrentWindow();
     const unlistenMoved = appWindow.onMoved(({ payload }) => {
+      if (!userDraggingRef.current) return;
       if (moveTimerRef.current !== null) window.clearTimeout(moveTimerRef.current);
       moveTimerRef.current = window.setTimeout(() => {
+        userDraggingRef.current = false;
+        moveTimerRef.current = null;
+        if (dragResetTimerRef.current !== null) {
+          window.clearTimeout(dragResetTimerRef.current);
+          dragResetTimerRef.current = null;
+        }
         void emitTo("main", DESKTOP_PET_POSITION_EVENT, { x: payload.x, y: payload.y });
       }, 400);
     });
     void emit(DESKTOP_PET_READY_EVENT);
-    void invoke("desktop_pet_window_ready");
     return () => {
       disposed = true;
       if (moveTimerRef.current !== null) window.clearTimeout(moveTimerRef.current);
+      if (dragResetTimerRef.current !== null) window.clearTimeout(dragResetTimerRef.current);
       void unlistenConfig.then((unlisten) => unlisten());
       void unlistenSnapshot.then((unlisten) => unlisten());
       void unlistenMoved.then((unlisten) => unlisten());
@@ -150,7 +159,19 @@ export default function DesktopPetApp() {
     if (event.button !== 0 || config.settings.lockPosition || menuOpen) return;
     const target = event.target as HTMLElement;
     if (target.closest("button")) return;
-    void getCurrentWindow().startDragging();
+    userDraggingRef.current = true;
+    if (dragResetTimerRef.current !== null) window.clearTimeout(dragResetTimerRef.current);
+    dragResetTimerRef.current = window.setTimeout(() => {
+      userDraggingRef.current = false;
+      dragResetTimerRef.current = null;
+    }, 5000);
+    void getCurrentWindow().startDragging().catch(() => {
+      userDraggingRef.current = false;
+      if (dragResetTimerRef.current !== null) {
+        window.clearTimeout(dragResetTimerRef.current);
+        dragResetTimerRef.current = null;
+      }
+    });
   };
 
   const openTarget = () => {

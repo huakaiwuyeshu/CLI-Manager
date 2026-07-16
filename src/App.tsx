@@ -484,6 +484,7 @@ function App() {
   const [isMacOs, setIsMacOs] = useState(isLikelyMacOs);
   const [initError, setInitError] = useState<string | null>(null);
   const [startupStage, setStartupStage] = useState<StartupStage>("settings");
+  const [startupReady, setStartupReady] = useState(false);
   const [restorePromptOpen, setRestorePromptOpen] = useState(false);
   // 启动时若检测到上次遗留的可恢复工作区标签，弹窗询问是否恢复（Issue #123）。
   const terminalFullscreenMaximizedRef = useRef(false);
@@ -510,12 +511,19 @@ function App() {
     }
   }, [updateSetting]);
 
+  const startupOpenSettingsRef = useRef(handleOpenSettings);
+  const startupTranslateRef = useRef(t);
+  useEffect(() => {
+    startupOpenSettingsRef.current = handleOpenSettings;
+    startupTranslateRef.current = t;
+  }, [handleOpenSettings, t]);
+
   useEffect(() => {
     closeBehaviorRef.current = closeBehavior;
   }, [closeBehavior]);
 
   useEffect(() => {
-    if (!IN_TAURI || !settingsLoaded) return;
+    if (!IN_TAURI || !settingsLoaded || !startupReady) return;
     let disposed = false;
     let syncing = false;
 
@@ -543,7 +551,7 @@ function App() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [claudeHookConfigDir, codexHookConfigDir, settingsLoaded]);
+  }, [claudeHookConfigDir, codexHookConfigDir, settingsLoaded, startupReady]);
 
   useEffect(() => {
     exitTasksBehaviorRef.current = exitWithRunningTasksBehavior;
@@ -706,6 +714,7 @@ function App() {
   }, []);
 
   useDesktopPetCoordinator({
+    appReady: startupReady,
     terminalFullscreen,
     onOpenSettings: () => handleOpenSettings("desktop-pet"),
     onActivateSession: handleActivateHookNotificationTarget,
@@ -823,6 +832,7 @@ function App() {
     let cancelled = false;
     const init = async () => {
       setInitError(null);
+      setStartupReady(false);
       startupBaseReady = false;
 
       const runStartupStage = async (stage: StartupStage, action: () => Promise<void>) => {
@@ -844,18 +854,16 @@ function App() {
         }
       };
 
-      // 1. 先加载设置，再并行加载依赖设置路径的子系统
+      // 1. Tauri Store 初始化串行执行，避免插件在启动期发生并发读写竞态。
       await runStartupStage("settings", loadSettings);
 
       await runStartupStage("stores", async () => {
-        await Promise.all([
-          useSyncStore.getState().load().catch((err) => {
-            logWarn("Failed to load sync store during startup", err);
-          }),
-          useSessionStore.getState().load().catch((err) => {
-            logWarn("Failed to load persisted sessions during startup", err);
-          }),
-        ]);
+        await useSessionStore.getState().load().catch((err) => {
+          logWarn("Failed to load persisted sessions during startup", err);
+        });
+        await useSyncStore.getState().load().catch((err) => {
+          logWarn("Failed to load sync store during startup", err);
+        });
       });
 
       void useModelPricingStore.getState().load().catch((err) => {
@@ -889,23 +897,29 @@ function App() {
 
       startupBaseReady = true;
       if (!cancelled) {
+        setStartupReady(true);
         setStartupStage("projects");
-        runDeferredStartupTasks(handleOpenSettings);
+        runDeferredStartupTasks(startupOpenSettingsRef.current);
       }
     };
-    init().catch((err) => {
-      const message = err instanceof Error ? err.stack || err.message : String(err);
-      logWarn("Application init failed", err);
-      if (!cancelled) {
-        setInitError(message);
-      }
-      toast.error(t("notifications.app.initFailed"), { description: String(err) });
-    });
+
+    // Let StrictMode run its setup/cleanup probe before starting non-cancellable store I/O.
+    const startupTimer = window.setTimeout(() => {
+      void init().catch((err) => {
+        const message = err instanceof Error ? err.stack || err.message : String(err);
+        logWarn("Application init failed", err);
+        if (!cancelled) {
+          setInitError(message);
+        }
+        toast.error(startupTranslateRef.current("notifications.app.initFailed"), { description: String(err) });
+      });
+    }, 0);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(startupTimer);
     };
-  }, [handleOpenSettings, loadSettings, t]);
+  }, [loadSettings]);
 
   const handleConfirmRestoreSessions = useCallback(() => {
     setRestorePromptOpen(false);
@@ -1434,7 +1448,7 @@ function App() {
   }, [isMacOs, viewMode, settingsWindowExpanded]);
 
   useEffect(() => {
-    if (!settingsLoaded || firstScreenPerfReported) return;
+    if (!settingsLoaded || !startupReady || firstScreenPerfReported) return;
     let raf1 = 0;
     let raf2 = 0;
     const stopPerf = createPerfMarker("app.first_screen", {
@@ -1462,7 +1476,7 @@ function App() {
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [handleOpenSettings, resolvedTheme, settingsLoaded, viewMode]);
+  }, [handleOpenSettings, resolvedTheme, settingsLoaded, startupReady, viewMode]);
 
   if (initError) {
     return (
@@ -1478,7 +1492,7 @@ function App() {
     );
   }
 
-  if (!settingsLoaded) {
+  if (!settingsLoaded || !startupReady) {
     const stageLabel = startupStage === "settings"
       ? t("app.init.loadingSettings")
       : startupStage === "stores"

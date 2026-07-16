@@ -3,6 +3,7 @@ import { Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { getDb, batchInsert } from "../lib/db";
 import { getCliManagerDataPaths } from "../lib/appPaths";
+import { singleFlight } from "../lib/singleFlight";
 import { useProjectStore } from "./projectStore";
 import { useSettingsStore } from "./settingsStore";
 import { useWorktreeStore } from "./worktreeStore";
@@ -244,7 +245,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   localSyncDir: "",
   remoteDir: "",
 
-  load: async () => {
+  load: singleFlight(async () => {
     const s = await getStore();
     const url = (await s.get<string>("webdavUrl")) ?? "";
     const username = (await s.get<string>("webdavUsername")) ?? "";
@@ -302,7 +303,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       autoSyncOnClose,
       loaded: true,
     });
-  },
+  }),
 
   setConfig: async (url, username, password) => {
     const s = await getStore();

@@ -9,7 +9,7 @@ use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, Runtime, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, Runtime,
 };
 use uuid::Uuid;
 use zip::ZipArchive;
@@ -775,55 +775,27 @@ pub fn desktop_pet_window_sync(
     app: AppHandle,
     config: DesktopPetWindowConfig,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
-        if !config.enabled {
-            window
-                .hide()
-                .map_err(|err| format!("pet_window_hide_failed: {err}"))?;
-            return Ok(());
-        }
-        let (width, height) = window_size(config.scale);
-        window
-            .set_size(LogicalSize::new(width, height))
-            .map_err(|err| format!("pet_window_resize_failed: {err}"))?;
-        window
-            .set_always_on_top(config.always_on_top)
-            .map_err(|err| format!("pet_window_topmost_failed: {err}"))?;
-        if let Some(position) = config.position {
-            window
-                .set_position(PhysicalPosition::new(position.x, position.y))
-                .map_err(|err| format!("pet_window_position_failed: {err}"))?;
-        }
-        window
-            .show()
-            .map_err(|err| format!("pet_window_show_failed: {err}"))?;
-        return Ok(());
-    }
+    let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) else {
+        return if config.enabled {
+            Err("pet_window_missing".to_string())
+        } else {
+            Ok(())
+        };
+    };
     if !config.enabled {
+        window
+            .hide()
+            .map_err(|err| format!("pet_window_hide_failed: {err}"))?;
         return Ok(());
     }
 
     let (width, height) = window_size(config.scale);
-    let window = WebviewWindowBuilder::new(
-        &app,
-        PET_WINDOW_LABEL,
-        WebviewUrl::App("index.html?window=desktop-pet".into()),
-    )
-    .title("CLI-Manager Pet")
-    .inner_size(width, height)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .closable(false)
-    .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .always_on_top(config.always_on_top)
-    .skip_taskbar(true)
-    .focused(false)
-    .visible(false)
-    .build()
-    .map_err(|err| format!("pet_window_create_failed: {err}"))?;
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|err| format!("pet_window_resize_failed: {err}"))?;
+    window
+        .set_always_on_top(config.always_on_top)
+        .map_err(|err| format!("pet_window_topmost_failed: {err}"))?;
     if let Some(position) = config.position {
         window
             .set_position(PhysicalPosition::new(position.x, position.y))
@@ -831,7 +803,9 @@ pub fn desktop_pet_window_sync(
     } else {
         place_default(&window);
     }
-    Ok(())
+    window
+        .show()
+        .map_err(|err| format!("pet_window_show_failed: {err}"))
 }
 
 #[tauri::command]
@@ -841,16 +815,6 @@ pub fn desktop_pet_window_reset_position(app: AppHandle) -> Result<(), String> {
     };
     place_default(&window);
     Ok(())
-}
-
-#[tauri::command]
-pub fn desktop_pet_window_ready(app: AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window(PET_WINDOW_LABEL)
-        .ok_or_else(|| "pet_window_missing".to_string())?;
-    window
-        .show()
-        .map_err(|err| format!("pet_window_show_failed: {err}"))
 }
 
 #[tauri::command]

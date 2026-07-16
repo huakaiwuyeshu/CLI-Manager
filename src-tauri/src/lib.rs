@@ -743,7 +743,6 @@ pub fn run() {
             commands::desktop_pet::desktop_pet_import,
             commands::desktop_pet::desktop_pet_uninstall,
             commands::desktop_pet::desktop_pet_window_sync,
-            commands::desktop_pet::desktop_pet_window_ready,
             commands::desktop_pet::desktop_pet_window_hide,
             commands::desktop_pet::desktop_pet_window_reset_position,
             commands::terminal_shell::terminal_shell_scan,

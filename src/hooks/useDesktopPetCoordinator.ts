@@ -26,12 +26,14 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { useTerminalStore } from "../stores/terminalStore";
 
 interface UseDesktopPetCoordinatorOptions {
+  appReady: boolean;
   terminalFullscreen: boolean;
   onOpenSettings: () => void;
   onActivateSession: (sessionId: string) => Promise<void>;
 }
 
 export function useDesktopPetCoordinator({
+  appReady,
   terminalFullscreen,
   onOpenSettings,
   onActivateSession,
@@ -96,7 +98,7 @@ export function useDesktopPetCoordinator({
   }, [configPayload, publicSnapshot]);
 
   useEffect(() => {
-    if (!settingsLoaded || !desktopPet.enabled) {
+    if (!appReady || !settingsLoaded || !desktopPet.enabled) {
       setBackgroundTasks([]);
       return;
     }
@@ -115,10 +117,10 @@ export function useDesktopPetCoordinator({
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [desktopPet.enabled, settingsLoaded]);
+  }, [appReady, desktopPet.enabled, settingsLoaded]);
 
   useEffect(() => {
-    if (!settingsLoaded) return;
+    if (!appReady || !settingsLoaded) return;
     const enabled = desktopPet.enabled && !(desktopPet.autoHideFullscreen && terminalFullscreen);
     void invoke("desktop_pet_window_sync", {
       config: {
@@ -130,12 +132,12 @@ export function useDesktopPetCoordinator({
     })
       .then(() => sendState())
       .catch((err) => logWarn("Failed to synchronize desktop pet window", err));
-  }, [desktopPet, sendState, settingsLoaded, terminalFullscreen]);
+  }, [appReady, desktopPet, sendState, settingsLoaded, terminalFullscreen]);
 
   useEffect(() => {
-    if (!settingsLoaded || !desktopPet.enabled) return;
+    if (!appReady || !settingsLoaded || !desktopPet.enabled) return;
     void sendState();
-  }, [desktopPet.enabled, publicSnapshot, sendState, settingsLoaded]);
+  }, [appReady, desktopPet.enabled, publicSnapshot, sendState, settingsLoaded]);
 
   useEffect(() => {
     const unlistenReady = listen(DESKTOP_PET_READY_EVENT, () => {

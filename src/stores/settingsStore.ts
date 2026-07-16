@@ -5,6 +5,7 @@ import { resolveAutoTerminalThemeId } from "../lib/terminalThemes";
 import { backgroundImageExists } from "../lib/assetUrl";
 import { defaultShellForOs, getOsPlatform, isWindowsOnlyShellKey } from "../lib/shell";
 import { getCliManagerDataPaths } from "../lib/appPaths";
+import { singleFlight } from "../lib/singleFlight";
 import {
   DEFAULT_TERMINAL_INPUT_SUGGESTION_USAGE,
   TERMINAL_INPUT_SUGGESTION_AI_MODEL,
@@ -1023,7 +1024,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   loaded: false,
   terminalBackgroundMissing: false,
 
-  load: async () => {
+  load: singleFlight(async () => {
     const s = await getStore();
     const rawEntries = await s.entries();
     const entries = Object.fromEntries(
@@ -1392,7 +1393,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         })
         .catch(() => {});
     }
-  },
+  }),
 
   syncSystemTheme: () => {
     if (get().theme === "system") {

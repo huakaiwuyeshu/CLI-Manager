@@ -23,6 +23,25 @@
         "backgroundColor": "#1a1b26",
         "visible": true,
         "dragDropEnabled": true
+      },
+      {
+        "label": "desktop-pet",
+        "title": "CLI-Manager Pet",
+        "url": "index.html",
+        "width": 190,
+        "height": 210,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "focus": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
