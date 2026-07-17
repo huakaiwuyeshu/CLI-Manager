@@ -247,6 +247,12 @@ interface TerminalStore {
   discardDaemonSession: (sessionId: string) => Promise<void>;
   /** 合并态（hook+shell）为 running 的真实 PTY 会话 id，供退出拦截判定任务是否在跑（Issue #123 Phase 1）。 */
   getRunningTaskSessionIds: () => string[];
+  /**
+   * 退出拦截用的任务会话 id。
+   * 默认与 getRunningTaskSessionIds 一致；includeFinished=true 时额外纳入
+   * hook 状态为 done/failed 的 Claude/Codex 会话（Issue #142）。
+   */
+  getExitTaskSessionIds: (includeFinished?: boolean) => string[];
   hideBackgroundForSession: (sessionId: string) => void;
   showBackgroundForSession: (sessionId: string) => void;
   /** 收到 CLI SubagentStart：在发起 Tab 所在 pane 分屏出只读转录面板并开始 tail。 */
@@ -2291,6 +2297,26 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           state.sessionStatuses[session.id] === "running" &&
           state.tabNotifications[session.id] === "running"
       )
+      .map((session) => session.id);
+  },
+
+  getExitTaskSessionIds: (includeFinished = false) => {
+    const state = get();
+    return state.sessions
+      .filter((session) => {
+        if (session.kind && session.kind !== "pty") return false;
+        const notification = state.tabNotifications[session.id];
+        const status = state.sessionStatuses[session.id];
+        // 运行中：hook + shell 均为 running（与 getRunningTaskSessionIds 一致）
+        if (status === "running" && notification === "running") return true;
+        // 待确认/需关注：始终纳入，避免权限弹窗中的会话被静默杀掉
+        if (notification === "attention") return true;
+        // 可选：运行完毕 / 失败的 CLI 会话也允许转入后台（Issue #142）
+        if (includeFinished && (notification === "done" || notification === "failed")) {
+          return true;
+        }
+        return false;
+      })
       .map((session) => session.id);
   },
 
