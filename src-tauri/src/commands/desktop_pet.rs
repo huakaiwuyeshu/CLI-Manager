@@ -8,9 +8,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, Runtime,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, Runtime};
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -23,6 +21,15 @@ const MAX_CATALOG_ITEMS: usize = 200;
 const MAX_ARCHIVE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: u64 = 30 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 40;
+const MAX_CODEX_MANIFEST_BYTES: u64 = 64 * 1024;
+const MAX_CODEX_SPRITESHEET_BYTES: u64 = 20 * 1024 * 1024;
+const CODEX_PET_ENGINE: &str = "codex-sprite";
+const CODEX_PET_ID_PREFIX: &str = "codex.";
+const CODEX_SPRITE_CELL_WIDTH: u32 = 192;
+const CODEX_SPRITE_CELL_HEIGHT: u32 = 208;
+const CODEX_SPRITE_COLUMNS: u32 = 8;
+const CODEX_V1_ROWS: u32 = 9;
+const CODEX_V2_ROWS: u32 = 11;
 const CATALOG_CACHE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 const REMOTE_CATALOG_URL: &str =
     "https://raw.githubusercontent.com/GAMPA228/CLI-Manager/master/public/pet-catalog/catalog.json";
@@ -59,6 +66,10 @@ pub struct PetCanvas {
 #[serde(rename_all = "camelCase")]
 pub struct PetStateAsset {
     pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +85,22 @@ pub struct PetManifest {
     pub engine: String,
     pub canvas: PetCanvas,
     pub states: BTreeMap<String, PetStateAsset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite_version_number: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPetManifest {
+    id: String,
+    display_name: String,
+    #[serde(default)]
+    description: String,
+    spritesheet_path: String,
+    #[serde(default)]
+    sprite_version_number: Option<u32>,
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,6 +142,9 @@ pub struct PetCatalogResponse {
 pub struct InstalledPet {
     pub manifest: PetManifest,
     pub base_dir: String,
+    pub source: String,
+    pub format: String,
+    pub removable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -135,6 +165,10 @@ pub struct DesktopPetWindowConfig {
 
 fn pets_root() -> Result<PathBuf, String> {
     app_paths::pets_dir()
+}
+
+fn codex_pets_root() -> Result<PathBuf, String> {
+    app_paths::codex_pets_dir()
 }
 
 fn installed_root(root: &Path) -> PathBuf {
@@ -163,6 +197,37 @@ fn valid_pet_id(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
         })
+}
+
+fn valid_codex_pet_id(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 72 || value.starts_with('-') || value.ends_with('-') {
+        return false;
+    }
+    let mut previous_hyphen = false;
+    for byte in value.bytes() {
+        if byte == b'-' {
+            if previous_hyphen {
+                return false;
+            }
+            previous_hyphen = true;
+        } else if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+            previous_hyphen = false;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn internal_codex_pet_id(value: &str) -> String {
+    format!("{CODEX_PET_ID_PREFIX}{value}")
+}
+
+fn raw_codex_pet_id(value: &str) -> Option<&str> {
+    value
+        .strip_prefix(CODEX_PET_ID_PREFIX)
+        .filter(|raw| valid_codex_pet_id(raw))
 }
 
 fn safe_relative_file(value: &str) -> Option<PathBuf> {
@@ -216,6 +281,191 @@ fn validate_svg(text: &str) -> Result<(), String> {
         return Err("pet_svg_invalid".to_string());
     }
     Ok(())
+}
+
+fn read_u24_le(bytes: &[u8]) -> u32 {
+    bytes[0] as u32 | ((bytes[1] as u32) << 8) | ((bytes[2] as u32) << 16)
+}
+
+fn webp_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 20 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let mut offset = 12usize;
+    while offset.checked_add(8)? <= bytes.len() {
+        let tag = &bytes[offset..offset + 4];
+        let chunk_size =
+            u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().ok()?) as usize;
+        let data_start = offset.checked_add(8)?;
+        let data_end = data_start.checked_add(chunk_size)?;
+        if data_end > bytes.len() {
+            return None;
+        }
+        let data = &bytes[data_start..data_end];
+        match tag {
+            b"VP8X" if data.len() >= 10 => {
+                return Some((read_u24_le(&data[4..7]) + 1, read_u24_le(&data[7..10]) + 1));
+            }
+            b"VP8L" if data.len() >= 5 && data[0] == 0x2f => {
+                let width = 1 + data[1] as u32 + (((data[2] & 0x3f) as u32) << 8);
+                let height = 1
+                    + (((data[2] & 0xc0) as u32) >> 6)
+                    + ((data[3] as u32) << 2)
+                    + (((data[4] & 0x0f) as u32) << 10);
+                return Some((width, height));
+            }
+            b"VP8 " if data.len() >= 10 && data[3..6] == [0x9d, 0x01, 0x2a] => {
+                let width = u16::from_le_bytes([data[6], data[7]]) as u32 & 0x3fff;
+                let height = u16::from_le_bytes([data[8], data[9]]) as u32 & 0x3fff;
+                return Some((width, height));
+            }
+            _ => {}
+        }
+        offset = data_end.checked_add(chunk_size % 2)?;
+    }
+    None
+}
+
+fn codex_sprite_dimensions(sprite_version_number: u32) -> Option<(u32, u32)> {
+    let rows = match sprite_version_number {
+        1 => CODEX_V1_ROWS,
+        2 => CODEX_V2_ROWS,
+        _ => return None,
+    };
+    Some((
+        CODEX_SPRITE_CELL_WIDTH * CODEX_SPRITE_COLUMNS,
+        CODEX_SPRITE_CELL_HEIGHT * rows,
+    ))
+}
+
+fn codex_state_assets(file: &str) -> BTreeMap<String, PetStateAsset> {
+    [
+        ("idle", 0, 6),
+        ("working", 7, 6),
+        ("waiting", 6, 6),
+        ("success", 8, 6),
+        ("error", 5, 8),
+        ("sleeping", 0, 6),
+    ]
+    .into_iter()
+    .map(|(state, row, frames)| {
+        (
+            state.to_string(),
+            PetStateAsset {
+                file: file.to_string(),
+                row: Some(row),
+                frames: Some(frames),
+            },
+        )
+    })
+    .collect()
+}
+
+fn read_codex_pet(
+    pet_dir: &Path,
+    expected_raw_id: Option<&str>,
+    source: &str,
+    removable: bool,
+) -> Result<InstalledPet, String> {
+    let manifest_path = pet_dir.join("pet.json");
+    let manifest_metadata = fs::metadata(&manifest_path)
+        .map_err(|err| format!("pet_codex_manifest_read_failed: {err}"))?;
+    if !manifest_metadata.is_file()
+        || manifest_metadata.len() == 0
+        || manifest_metadata.len() > MAX_CODEX_MANIFEST_BYTES
+    {
+        return Err("pet_codex_manifest_size_invalid".to_string());
+    }
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("pet_codex_manifest_read_failed: {err}"))?;
+    let codex: CodexPetManifest = serde_json::from_str(&manifest_text)
+        .map_err(|err| format!("pet_codex_manifest_parse_failed: {err}"))?;
+    let raw_id = codex.id.trim();
+    if !valid_codex_pet_id(raw_id)
+        || expected_raw_id
+            .map(|expected| expected != raw_id)
+            .unwrap_or(false)
+    {
+        return Err("pet_codex_id_invalid".to_string());
+    }
+    let display_name = codex.display_name.trim();
+    if display_name.is_empty() || display_name.chars().count() > 120 {
+        return Err("pet_codex_name_invalid".to_string());
+    }
+    if codex.description.chars().count() > 1000 {
+        return Err("pet_codex_description_invalid".to_string());
+    }
+    if codex
+        .kind
+        .as_deref()
+        .map(|kind| !matches!(kind, "object" | "animal" | "person" | "creature"))
+        .unwrap_or(false)
+    {
+        return Err("pet_codex_kind_invalid".to_string());
+    }
+    let sprite_version_number = codex.sprite_version_number.unwrap_or(1);
+    let expected_dimensions = codex_sprite_dimensions(sprite_version_number)
+        .ok_or_else(|| "pet_codex_sprite_version_unsupported".to_string())?;
+    let relative = safe_relative_file(codex.spritesheet_path.trim())
+        .ok_or_else(|| "pet_codex_spritesheet_path_invalid".to_string())?;
+    if !relative
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("webp"))
+        .unwrap_or(false)
+    {
+        return Err("pet_codex_spritesheet_type_invalid".to_string());
+    }
+    let spritesheet_path = pet_dir.join(&relative);
+    let spritesheet_metadata = fs::metadata(&spritesheet_path)
+        .map_err(|err| format!("pet_codex_spritesheet_read_failed: {err}"))?;
+    if !spritesheet_metadata.is_file()
+        || spritesheet_metadata.len() == 0
+        || spritesheet_metadata.len() > MAX_CODEX_SPRITESHEET_BYTES
+    {
+        return Err("pet_codex_spritesheet_size_invalid".to_string());
+    }
+    let spritesheet = fs::read(&spritesheet_path)
+        .map_err(|err| format!("pet_codex_spritesheet_read_failed: {err}"))?;
+    if webp_dimensions(&spritesheet) != Some(expected_dimensions) {
+        return Err("pet_codex_spritesheet_dimensions_invalid".to_string());
+    }
+
+    let description = codex.description.trim();
+    let description = if description.is_empty() {
+        display_name
+    } else {
+        description
+    };
+    let relative_string = relative.to_string_lossy().replace('\\', "/");
+    Ok(InstalledPet {
+        manifest: PetManifest {
+            schema_version: PET_SCHEMA_VERSION,
+            id: internal_codex_pet_id(raw_id),
+            version: "1.0.0".to_string(),
+            name: LocalizedText {
+                zh_cn: display_name.to_string(),
+                en_us: display_name.to_string(),
+            },
+            description: LocalizedText {
+                zh_cn: description.to_string(),
+                en_us: description.to_string(),
+            },
+            author: "Codex Pets".to_string(),
+            license: "Unspecified".to_string(),
+            engine: CODEX_PET_ENGINE.to_string(),
+            canvas: PetCanvas {
+                width: CODEX_SPRITE_CELL_WIDTH,
+                height: CODEX_SPRITE_CELL_HEIGHT,
+            },
+            states: codex_state_assets(&relative_string),
+            sprite_version_number: Some(sprite_version_number),
+        },
+        base_dir: path_string(pet_dir),
+        source: source.to_string(),
+        format: "codex".to_string(),
+        removable,
+    })
 }
 
 fn validate_manifest(manifest: &PetManifest, base_dir: &Path) -> Result<(), String> {
@@ -492,6 +742,13 @@ fn path_string(path: &Path) -> String {
 
 fn read_installed_pet(version_dir: &Path) -> Result<InstalledPet, String> {
     let manifest_path = version_dir.join("manifest.json");
+    let codex_manifest_path = version_dir.join("pet.json");
+    if manifest_path.is_file() == codex_manifest_path.is_file() {
+        return Err("pet_manifest_ambiguous_or_missing".to_string());
+    }
+    if codex_manifest_path.is_file() {
+        return read_codex_pet(version_dir, None, "cli-manager", true);
+    }
     let manifest_text = fs::read_to_string(&manifest_path)
         .map_err(|err| format!("pet_manifest_read_failed: {err}"))?;
     let manifest: PetManifest = serde_json::from_str(&manifest_text)
@@ -500,6 +757,9 @@ fn read_installed_pet(version_dir: &Path) -> Result<InstalledPet, String> {
     Ok(InstalledPet {
         manifest,
         base_dir: path_string(version_dir),
+        source: "cli-manager".to_string(),
+        format: "clipet".to_string(),
+        removable: true,
     })
 }
 
@@ -551,7 +811,9 @@ fn install_package_bytes_to_root(
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("");
-            if file_name != "manifest.json" && !allowed_asset_extension(&enclosed) {
+            if !matches!(file_name, "manifest.json" | "pet.json")
+                && !allowed_asset_extension(&enclosed)
+            {
                 return Err("pet_archive_file_type_unsupported".to_string());
             }
             let output_path = stage_dir.join(enclosed);
@@ -648,6 +910,86 @@ fn newest_installed_pet(root: &Path, pet_id: &str) -> Result<Option<InstalledPet
     Ok(candidates.into_iter().next().map(|(_, pet)| pet))
 }
 
+fn list_managed_pets(root: &Path) -> Result<Vec<InstalledPet>, String> {
+    let mut pets = Vec::new();
+    for id_entry in
+        fs::read_dir(installed_root(root)).map_err(|err| format!("pet_list_failed: {err}"))?
+    {
+        let id_entry = id_entry.map_err(|err| format!("pet_list_entry_failed: {err}"))?;
+        let id = id_entry.file_name().to_string_lossy().into_owned();
+        if !id_entry.path().is_dir() || !valid_pet_id(&id) {
+            continue;
+        }
+        if let Some(pet) = newest_installed_pet(root, &id)? {
+            pets.push(pet);
+        }
+    }
+    Ok(pets)
+}
+
+fn list_codex_pets_at(root: &Path) -> Vec<InstalledPet> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) => {
+            log::warn!(
+                "desktop pet Codex directory scan skipped {}: {err}",
+                root.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut pets = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                log::warn!("desktop pet Codex directory entry skipped: {err}");
+                continue;
+            }
+        };
+        let raw_id = entry.file_name().to_string_lossy().into_owned();
+        if !entry.path().is_dir() || !valid_codex_pet_id(&raw_id) {
+            continue;
+        }
+        match read_codex_pet(&entry.path(), Some(&raw_id), "codex", false) {
+            Ok(pet) => pets.push(pet),
+            Err(err) => log::warn!(
+                "desktop pet ignored invalid Codex install {}: {err}",
+                entry.path().display()
+            ),
+        }
+    }
+    pets
+}
+
+fn external_codex_pet(root: &Path, pet_id: &str) -> Result<Option<InstalledPet>, String> {
+    let Some(raw_id) = raw_codex_pet_id(pet_id) else {
+        return Ok(None);
+    };
+    let pet_dir = root.join(raw_id);
+    if !pet_dir.is_dir() {
+        return Ok(None);
+    }
+    read_codex_pet(&pet_dir, Some(raw_id), "codex", false).map(Some)
+}
+
+fn merge_installed_pets(
+    external: Vec<InstalledPet>,
+    managed: Vec<InstalledPet>,
+) -> Vec<InstalledPet> {
+    let mut pets_by_id = BTreeMap::new();
+    for pet in external {
+        pets_by_id.insert(pet.manifest.id.clone(), pet);
+    }
+    for pet in managed {
+        pets_by_id.insert(pet.manifest.id.clone(), pet);
+    }
+    pets_by_id.into_values().collect()
+}
+
 #[tauri::command]
 pub async fn desktop_pet_catalog(refresh: Option<bool>) -> Result<PetCatalogResponse, String> {
     load_catalog(refresh.unwrap_or(false)).await
@@ -657,28 +999,21 @@ pub async fn desktop_pet_catalog(refresh: Option<bool>) -> Result<PetCatalogResp
 pub fn desktop_pet_list_installed() -> Result<Vec<InstalledPet>, String> {
     let root = pets_root()?;
     ensure_pet_dirs(&root)?;
-    let mut pets = Vec::new();
-    for id_entry in
-        fs::read_dir(installed_root(&root)).map_err(|err| format!("pet_list_failed: {err}"))?
-    {
-        let id_entry = id_entry.map_err(|err| format!("pet_list_entry_failed: {err}"))?;
-        let id = id_entry.file_name().to_string_lossy().into_owned();
-        if !id_entry.path().is_dir() || !valid_pet_id(&id) {
-            continue;
-        }
-        if let Some(pet) = newest_installed_pet(&root, &id)? {
-            pets.push(pet);
-        }
-    }
-    pets.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
-    Ok(pets)
+    Ok(merge_installed_pets(
+        list_codex_pets_at(&codex_pets_root()?),
+        list_managed_pets(&root)?,
+    ))
 }
 
 #[tauri::command]
 pub fn desktop_pet_get_installed(pet_id: String) -> Result<Option<InstalledPet>, String> {
     let root = pets_root()?;
     ensure_pet_dirs(&root)?;
-    newest_installed_pet(&root, pet_id.trim())
+    let pet_id = pet_id.trim();
+    if let Some(pet) = newest_installed_pet(&root, pet_id)? {
+        return Ok(Some(pet));
+    }
+    external_codex_pet(&codex_pets_root()?, pet_id)
 }
 
 #[tauri::command]
@@ -739,6 +1074,14 @@ pub fn desktop_pet_uninstall(pet_id: String) -> Result<(), String> {
     let target = installed_root(&root).join(pet_id);
     if target.is_dir() {
         fs::remove_dir_all(&target).map_err(|err| format!("pet_uninstall_failed: {err}"))?;
+        return Ok(());
+    }
+    if raw_codex_pet_id(pet_id)
+        .map(|raw_id| codex_pets_root().map(|root| root.join(raw_id).is_dir()))
+        .transpose()?
+        .unwrap_or(false)
+    {
+        return Err("pet_uninstall_external_unsupported".to_string());
     }
     Ok(())
 }
@@ -830,14 +1173,156 @@ pub fn desktop_pet_window_hide(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    fn fake_vp8x_webp(width: u32, height: u32) -> Vec<u8> {
+        let mut payload = [0u8; 10];
+        let width = width - 1;
+        let height = height - 1;
+        payload[4..7].copy_from_slice(&[width as u8, (width >> 8) as u8, (width >> 16) as u8]);
+        payload[7..10].copy_from_slice(&[height as u8, (height >> 8) as u8, (height >> 16) as u8]);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(4u32 + 8 + payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WEBPVP8X");
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn codex_manifest(id: &str, sprite_version_number: u32) -> Vec<u8> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "id": id,
+            "displayName": "Test Pet",
+            "description": "Codex-compatible test pet",
+            "spritesheetPath": "spritesheet.webp",
+            "spriteVersionNumber": sprite_version_number,
+            "kind": "animal"
+        }))
+        .unwrap()
+    }
+
+    fn write_codex_pet(root: &Path, id: &str, sprite_version_number: u32) -> PathBuf {
+        let pet_dir = root.join(id);
+        fs::create_dir_all(&pet_dir).unwrap();
+        fs::write(
+            pet_dir.join("pet.json"),
+            codex_manifest(id, sprite_version_number),
+        )
+        .unwrap();
+        let dimensions = codex_sprite_dimensions(sprite_version_number).unwrap();
+        fs::write(
+            pet_dir.join("spritesheet.webp"),
+            fake_vp8x_webp(dimensions.0, dimensions.1),
+        )
+        .unwrap();
+        pet_dir
+    }
+
+    fn codex_package(id: &str, sprite_version_number: u32) -> Vec<u8> {
+        let dimensions = codex_sprite_dimensions(sprite_version_number).unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            archive.start_file("pet.json", options).unwrap();
+            archive
+                .write_all(&codex_manifest(id, sprite_version_number))
+                .unwrap();
+            archive.start_file("spritesheet.webp", options).unwrap();
+            archive
+                .write_all(&fake_vp8x_webp(dimensions.0, dimensions.1))
+                .unwrap();
+            archive.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
 
     #[test]
     fn pet_ids_and_paths_reject_unsafe_values() {
         assert!(valid_pet_id("official.pixel-fox"));
         assert!(!valid_pet_id("../pixel-fox"));
+        assert!(valid_codex_pet_id("banana-cat"));
+        assert!(!valid_codex_pet_id("banana--cat"));
         assert!(safe_relative_file("assets/pet.svg").is_some());
         assert!(safe_relative_file("../pet.svg").is_none());
         assert!(safe_relative_file("C:/pet.svg").is_none());
+    }
+
+    #[test]
+    fn codex_webp_dimensions_support_v1_and_v2() {
+        for dimensions in [(1536, 1872), (1536, 2288)] {
+            assert_eq!(
+                webp_dimensions(&fake_vp8x_webp(dimensions.0, dimensions.1)),
+                Some(dimensions)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_directory_scan_namespaces_and_marks_external_pets_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        write_codex_pet(root.path(), "banana-cat", 2);
+
+        let pets = list_codex_pets_at(root.path());
+        assert_eq!(pets.len(), 1);
+        let pet = &pets[0];
+        assert_eq!(pet.manifest.id, "codex.banana-cat");
+        assert_eq!(pet.manifest.engine, CODEX_PET_ENGINE);
+        assert_eq!(pet.manifest.sprite_version_number, Some(2));
+        assert_eq!(pet.manifest.states["working"].row, Some(7));
+        assert_eq!(pet.source, "codex");
+        assert_eq!(pet.format, "codex");
+        assert!(!pet.removable);
+    }
+
+    #[test]
+    fn codex_v1_manifest_without_version_marker_is_supported() {
+        let root = tempfile::tempdir().unwrap();
+        let pet_dir = root.path().join("tiny-dino");
+        fs::create_dir_all(&pet_dir).unwrap();
+        fs::write(
+            pet_dir.join("pet.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "tiny-dino",
+                "displayName": "Tiny Dino",
+                "description": "Legacy V1 pet",
+                "spritesheetPath": "spritesheet.webp",
+                "kind": "creature"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(pet_dir.join("spritesheet.webp"), fake_vp8x_webp(1536, 1872)).unwrap();
+
+        let pet = read_codex_pet(&pet_dir, Some("tiny-dino"), "codex", false).unwrap();
+        assert_eq!(pet.manifest.sprite_version_number, Some(1));
+    }
+
+    #[test]
+    fn codex_zip_import_uses_cli_manager_storage_and_overrides_external_duplicate() {
+        let external_root = tempfile::tempdir().unwrap();
+        write_codex_pet(external_root.path(), "banana-cat", 2);
+        let external = list_codex_pets_at(external_root.path());
+
+        let managed_root = tempfile::tempdir().unwrap();
+        let installed = install_package_bytes_to_root(
+            managed_root.path(),
+            &codex_package("banana-cat", 2),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(installed.manifest.id, "codex.banana-cat");
+        assert_eq!(installed.source, "cli-manager");
+        assert!(installed.removable);
+        assert!(Path::new(&installed.base_dir).join("pet.json").is_file());
+
+        let merged =
+            merge_installed_pets(external, list_managed_pets(managed_root.path()).unwrap());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].source, "cli-manager");
     }
 
     #[test]

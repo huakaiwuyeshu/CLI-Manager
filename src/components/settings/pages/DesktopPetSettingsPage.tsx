@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Alert,
@@ -29,9 +29,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { CliCat } from "../../desktop-pet/CliCat";
+import { PetArtwork } from "../../desktop-pet/PetArtwork";
 import { useAppConfirm } from "../../ui/useAppConfirm";
 import {
-  joinPetAssetPath,
   localizedPetText,
   type InstalledPet,
   type PetCatalogEntry,
@@ -83,12 +83,16 @@ function petErrorMessage(error: unknown, t: Translate): string {
   const raw = String(error);
   if (raw.includes("pet_app_version_too_old")) return t("desktopPet.errors.appTooOld");
   if (raw.includes("pet_download_checksum_mismatch")) return t("desktopPet.errors.checksum");
+  if (raw.includes("pet_uninstall_external_unsupported")) {
+    return t("desktopPet.errors.externalUninstallUnsupported");
+  }
   if (raw.includes("pet_import_size_invalid") || raw.includes("pet_archive_size_invalid")) {
     return t("desktopPet.errors.packageSize");
   }
   if (
     raw.includes("pet_archive_") ||
     raw.includes("pet_manifest_") ||
+    raw.includes("pet_codex_") ||
     raw.includes("pet_svg_") ||
     raw.includes("pet_id_invalid")
   ) {
@@ -105,17 +109,22 @@ function petErrorMessage(error: unknown, t: Translate): string {
   return t("desktopPet.errors.generic", { error: raw });
 }
 
-function installedPreviewUrl(pet: InstalledPet): string {
-  const asset = pet.manifest.states.idle;
-  return convertFileSrc(joinPetAssetPath(pet.baseDir, asset.file));
-}
-
-function PetPreview({ src, alt, builtin = false }: { src?: string | null; alt: string; builtin?: boolean }) {
+function PetPreview({
+  src,
+  pet,
+  alt,
+  builtin = false,
+}: {
+  src?: string | null;
+  pet?: InstalledPet | null;
+  alt: string;
+  builtin?: boolean;
+}) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setFailed(false);
-  }, [src]);
+  }, [pet?.baseDir, src]);
 
   return (
     <Box
@@ -126,12 +135,21 @@ function PetPreview({ src, alt, builtin = false }: { src?: string | null; alt: s
         border: "1px solid color-mix(in srgb, var(--border) 28%, transparent)",
       }}
     >
-      {builtin || !src || failed ? (
+      {builtin || (!src && !pet) || failed ? (
         <CliCat className="h-20 w-28 overflow-visible text-primary" animated={false} ariaLabel={alt} />
+      ) : pet ? (
+        <PetArtwork
+          pet={pet}
+          alt={alt}
+          width={96}
+          height={96}
+          animated={false}
+          onError={() => setFailed(true)}
+        />
       ) : (
         <img
           className="h-24 w-24 object-contain"
-          src={src}
+          src={src ?? undefined}
           alt={alt}
           draggable={false}
           onError={() => setFailed(true)}
@@ -153,11 +171,12 @@ function InstalledPetCard({ pet, selected, busy, onSelect, onUninstall }: Instal
   const { language, t } = useI18n();
   const name = localizedPetText(pet.manifest.name, language);
   const description = localizedPetText(pet.manifest.description, language);
+  const codexFormat = pet.format === "codex";
 
   return (
     <Card withBorder radius="lg" padding="md" className="ui-surface-card">
       <Stack gap="sm">
-        <PetPreview src={installedPreviewUrl(pet)} alt={t("desktopPet.settings.previewAlt", { name })} />
+        <PetPreview pet={pet} alt={t("desktopPet.settings.previewAlt", { name })} />
         <Box>
           <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
             <Text className="truncate" size="sm" fw={600} c="var(--on-surface)">
@@ -174,12 +193,49 @@ function InstalledPetCard({ pet, selected, busy, onSelect, onUninstall }: Instal
           </Text>
         </Box>
         <Group gap={6} wrap="wrap">
-          <Badge size="xs" variant="outline">v{pet.manifest.version}</Badge>
-          <Text size="xs" c="var(--text-muted)">
-            {pet.manifest.author} · {pet.manifest.license}
-          </Text>
+          <Badge size="xs" variant="outline">
+            {codexFormat
+              ? t("desktopPet.settings.codexFormat", {
+                  version: pet.manifest.spriteVersionNumber ?? 1,
+                })
+              : `v${pet.manifest.version}`}
+          </Badge>
+          <Badge size="xs" variant="light" color={pet.source === "codex" ? "blue" : "gray"}>
+            {pet.source === "codex"
+              ? t("desktopPet.settings.sourceCodexDirectory")
+              : t("desktopPet.settings.sourceCliManagerDirectory")}
+          </Badge>
         </Group>
-        <Group gap="xs" grow>
+        <Text size="xs" c="var(--text-muted)">
+          {codexFormat
+            ? pet.source === "codex"
+              ? t("desktopPet.settings.codexManagedDescription")
+              : t("desktopPet.settings.codexImportedDescription")
+            : `${pet.manifest.author} · ${pet.manifest.license}`}
+        </Text>
+        {pet.removable ? (
+          <Group gap="xs" grow>
+            <Button
+              size="xs"
+              variant={selected ? "light" : "filled"}
+              color="cliPrimary"
+              disabled={selected || busy}
+              onClick={onSelect}
+            >
+              {selected ? t("desktopPet.settings.selected") : t("desktopPet.settings.select")}
+            </Button>
+            <Button
+              size="xs"
+              variant="subtle"
+              color="red"
+              disabled={busy}
+              leftSection={<Trash2 size={13} />}
+              onClick={onUninstall}
+            >
+              {t("desktopPet.settings.uninstall")}
+            </Button>
+          </Group>
+        ) : (
           <Button
             size="xs"
             variant={selected ? "light" : "filled"}
@@ -189,17 +245,7 @@ function InstalledPetCard({ pet, selected, busy, onSelect, onUninstall }: Instal
           >
             {selected ? t("desktopPet.settings.selected") : t("desktopPet.settings.select")}
           </Button>
-          <Button
-            size="xs"
-            variant="subtle"
-            color="red"
-            disabled={busy}
-            leftSection={<Trash2 size={13} />}
-            onClick={onUninstall}
-          >
-            {t("desktopPet.settings.uninstall")}
-          </Button>
-        </Group>
+        )}
       </Stack>
     </Card>
   );
@@ -325,6 +371,7 @@ export function DesktopPetSettingsPage() {
   const [installedPets, setInstalledPets] = useState<InstalledPet[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [importing, setImporting] = useState(false);
   const [busyPetId, setBusyPetId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -356,6 +403,22 @@ export function DesktopPetSettingsPage() {
   useEffect(() => {
     void loadPets(false);
   }, [loadPets]);
+
+  const scanInstalledPets = useCallback(async () => {
+    if (scanning) return;
+    setScanning(true);
+    try {
+      const nextInstalled = await invoke<InstalledPet[]>("desktop_pet_list_installed");
+      setInstalledPets(nextInstalled);
+      toast.success(t("desktopPet.settings.scanSuccess", { count: nextInstalled.length }));
+    } catch (error) {
+      toast.error(t("desktopPet.settings.operationFailed"), {
+        description: petErrorMessage(error, t),
+      });
+    } finally {
+      setScanning(false);
+    }
+  }, [scanning, t]);
 
   const installedById = useMemo(
     () => new Map(installedPets.map((pet) => [pet.manifest.id, pet])),
@@ -420,8 +483,15 @@ export function DesktopPetSettingsPage() {
     setBusyPetId(pet.manifest.id);
     try {
       await invoke("desktop_pet_uninstall", { petId: pet.manifest.id });
-      setInstalledPets((pets) => pets.filter((item) => item.manifest.id !== pet.manifest.id));
-      if (useSettingsStore.getState().desktopPet.petId === pet.manifest.id) {
+      const remaining = await invoke<InstalledPet[]>("desktop_pet_list_installed");
+      setInstalledPets(remaining);
+      const replacementAvailable = remaining.some(
+        (item) => item.manifest.id === pet.manifest.id
+      );
+      if (
+        useSettingsStore.getState().desktopPet.petId === pet.manifest.id &&
+        !replacementAvailable
+      ) {
         await patch({ petId: BUILTIN_DESKTOP_PET_ID });
       }
       toast.success(t("desktopPet.settings.uninstallSuccess", { name }));
@@ -441,7 +511,12 @@ export function DesktopPetSettingsPage() {
       selected = await openDialog({
         multiple: false,
         directory: false,
-        filters: [{ name: t("desktopPet.settings.packageFilter"), extensions: ["clipet"] }],
+        filters: [
+          {
+            name: t("desktopPet.settings.packageFilter"),
+            extensions: ["clipet", "zip"],
+          },
+        ],
       });
     } catch (error) {
       toast.error(t("desktopPet.settings.operationFailed"), {
@@ -496,7 +571,7 @@ export function DesktopPetSettingsPage() {
             <Group align="center" gap="md" wrap="nowrap" className="min-w-0">
               <Box className="w-28 shrink-0">
                 <PetPreview
-                  src={selectedInstalledPet ? installedPreviewUrl(selectedInstalledPet) : null}
+                  pet={selectedInstalledPet}
                   builtin={!selectedInstalledPet}
                   alt={t("desktopPet.settings.previewAlt", { name: currentPetName })}
                 />
@@ -642,23 +717,38 @@ export function DesktopPetSettingsPage() {
             title={t("desktopPet.settings.installedTitle")}
             description={t("desktopPet.settings.installedDescription")}
             action={
-              <Button
-                size="xs"
-                variant="light"
-                color="cliPrimary"
-                loading={importing}
-                leftSection={<Upload size={14} />}
-                onClick={() => void handleImport()}
-              >
-                {importing
-                  ? t("desktopPet.settings.importing")
-                  : t("desktopPet.settings.import")}
-              </Button>
+              <Group gap="xs" wrap="nowrap">
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  color="gray"
+                  loading={scanning}
+                  leftSection={<RefreshCw size={14} />}
+                  onClick={() => void scanInstalledPets()}
+                >
+                  {t("desktopPet.settings.rescan")}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="light"
+                  color="cliPrimary"
+                  loading={importing}
+                  leftSection={<Upload size={14} />}
+                  onClick={() => void handleImport()}
+                >
+                  {importing
+                    ? t("desktopPet.settings.importing")
+                    : t("desktopPet.settings.import")}
+                </Button>
+              </Group>
             }
           />
           <Alert color="blue" variant="light" icon={<Archive size={16} />}>
             <Text size="xs">
-              {t("desktopPet.settings.storageDescription", { path: "~/.cli-manager/pets" })}
+              {t("desktopPet.settings.storageDescription", {
+                managedPath: "~/.cli-manager/pets",
+                codexPath: "~/.codex/pets",
+              })}
             </Text>
           </Alert>
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="sm">

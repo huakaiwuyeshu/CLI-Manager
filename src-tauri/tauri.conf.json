@@ -49,7 +49,11 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["$APPLOCALDATA/backgrounds/**", "$HOME/.cli-manager/pets/**"],
+          "allow": [
+            "$APPLOCALDATA/backgrounds/**",
+            "$HOME/.cli-manager/pets/**",
+            "$HOME/.codex/pets/**"
+          ],
           "deny": []
         }
       }

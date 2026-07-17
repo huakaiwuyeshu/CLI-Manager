@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CliCat } from "../components/desktop-pet/CliCat";
+import { PetArtwork } from "../components/desktop-pet/PetArtwork";
 import {
   DESKTOP_PET_CONFIG_EVENT,
   DESKTOP_PET_OPEN_SETTINGS_EVENT,
@@ -14,7 +15,6 @@ import {
   type DesktopPetMood,
   type DesktopPetSnapshot,
   type InstalledPet,
-  joinPetAssetPath,
 } from "../lib/desktopPet";
 import { translate } from "../lib/i18n";
 import { BUILTIN_DESKTOP_PET_ID } from "../stores/settingsStore";
@@ -142,12 +142,6 @@ export default function DesktopPetApp() {
     };
   }, [config.settings.petId]);
 
-  const assetUrl = useMemo(() => {
-    if (!installedPet) return null;
-    const stateAsset = installedPet.manifest.states[displayMood] ?? installedPet.manifest.states.idle;
-    return convertFileSrc(joinPetAssetPath(installedPet.baseDir, stateAsset.file));
-  }, [displayMood, installedPet]);
-
   const detail = config.settings.showSessionName
     ? [snapshot.projectName, snapshot.sessionTitle].filter(Boolean).join(" · ")
     : "";
@@ -202,12 +196,14 @@ export default function DesktopPetApp() {
       ) : null}
 
       <div className="desktop-pet-stage" title={moodLabel(config, displayMood)}>
-        {assetUrl && installedPet ? (
-          <img
-            className="desktop-pet-image"
-            src={assetUrl}
+        {installedPet ? (
+          <PetArtwork
+            pet={installedPet}
+            mood={displayMood}
+            width={132}
+            height={132}
             alt={localPetName(installedPet, config.language)}
-            draggable={false}
+            onError={() => setInstalledPet(null)}
           />
         ) : (
           <CliCat className="desktop-pet-cat" ariaLabel={moodLabel(config, displayMood)} />

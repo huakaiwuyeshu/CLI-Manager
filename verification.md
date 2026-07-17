@@ -97,3 +97,17 @@
 - 自动放置后 desktopPet.position 保持 null；测试结束后用户设置已恢复到测试前 SHA-256 F18933890B0FA134857E70637D5538F5F219C817DA29F157765276B0FF047112。
 - git diff --check：通过，仅输出工作区既有的 LF/CRLF 转换提示。
 - 已刷新 codebase-memory 索引并执行变更影响检测；变更限定在启动编排、三个 Store 加载、桌宠协调/入口/窗口配置和本验证记录。
+
+## Codex Pets 兼容验证（2026-07-17）
+
+- 保留 `.clipet` 导入、在线目录、更新和卸载链路，同时新增 `pet.json + spritesheet.webp` 的 Codex Pets ZIP 解析。
+- V1：支持省略 `spriteVersionNumber` 的 1536×1872、9 行精灵图。
+- V2：支持 `spriteVersionNumber: 2` 的 1536×2288、11 行精灵图；已核对用户提供的 `shinobu-q.codex-pet.zip` 为 VP8L V2 文件头。
+- 启动设置页与“重新扫描”都会读取宿主机 `~/.codex/pets`；外部宠物标为只读，不允许 CLI-Manager 删除。
+- 手动导入的 `.codex-pet.zip` 安装到 `~/.cli-manager/pets/installed`，同 ID 同时存在时自管副本优先，卸载后可回退到外部副本。
+- ZIP 安全边界继续覆盖路径穿越、符号链接、未知文件、条目/压缩包/解压体积上限；Codex WebP 另外校验 20 MiB 上限和 V1/V2 精确尺寸。
+- `cargo test desktop_pet --lib`：9 项通过、0 项失败。
+- `.\\node_modules\\.bin\\tsc.cmd --noEmit`：通过。
+- `npm run build`：通过，Vite 完成 6620 个模块转换；仅有既有的大 chunk 警告。
+- `npm run lint`：项目未定义 lint script，无法执行。
+- 本次未生成安装包；等待用户明确要求打包后再执行。

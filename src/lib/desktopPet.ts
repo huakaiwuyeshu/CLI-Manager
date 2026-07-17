@@ -19,6 +19,8 @@ export interface PetLocalizedText {
 
 export interface PetStateAsset {
   file: string;
+  row?: number;
+  frames?: number;
 }
 
 export interface PetManifest {
@@ -29,9 +31,10 @@ export interface PetManifest {
   description: PetLocalizedText;
   author: string;
   license: string;
-  engine: "image-v1";
+  engine: "image-v1" | "codex-sprite";
   canvas: { width: number; height: number };
   states: Partial<Record<DesktopPetMood, PetStateAsset>> & { idle: PetStateAsset };
+  spriteVersionNumber?: 1 | 2;
 }
 
 export interface PetCatalogEntry {
@@ -58,6 +61,9 @@ export interface PetCatalogResponse {
 export interface InstalledPet {
   manifest: PetManifest;
   baseDir: string;
+  source: "cli-manager" | "codex";
+  format: "clipet" | "codex";
+  removable: boolean;
 }
 
 export interface BackgroundPetTask {

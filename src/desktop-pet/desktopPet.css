@@ -69,14 +69,6 @@
   filter: drop-shadow(0 8px 8px rgb(0 0 0 / 28%));
 }
 
-.desktop-pet-image {
-  display: block;
-  width: 132px;
-  height: 132px;
-  object-fit: contain;
-  pointer-events: none;
-}
-
 .desktop-pet-cat {
   width: 132px;
   height: 96px;
