@@ -11,6 +11,7 @@ import {
   SegmentedControl,
   SimpleGrid,
   Skeleton,
+  Slider,
   Stack,
   Switch,
   Text,
@@ -41,6 +42,8 @@ import { formatFileSize } from "../../../lib/utils";
 import { useI18n, type TranslationKey } from "../../../lib/i18n";
 import {
   BUILTIN_DESKTOP_PET_ID,
+  DESKTOP_PET_WORK_BOUNCE_MAX_PX,
+  DESKTOP_PET_WORK_BOUNCE_MIN_PX,
   useSettingsStore,
   type DesktopPetSettings,
   type DesktopPetSize,
@@ -375,11 +378,27 @@ export function DesktopPetSettingsPage() {
   const [importing, setImporting] = useState(false);
   const [busyPetId, setBusyPetId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [workingBounceDistanceDraft, setWorkingBounceDistanceDraft] = useState(
+    desktopPet.workingBounceDistancePx
+  );
 
   const patch = useCallback(async (delta: Partial<DesktopPetSettings>) => {
     const current = useSettingsStore.getState().desktopPet;
     await updateSetting("desktopPet", { ...current, ...delta });
   }, [updateSetting]);
+
+  useEffect(() => {
+    setWorkingBounceDistanceDraft(desktopPet.workingBounceDistancePx);
+  }, [desktopPet.workingBounceDistancePx]);
+
+  const commitWorkingBounceDistance = useCallback((value: number) => {
+    const next = Math.round(Math.min(
+      DESKTOP_PET_WORK_BOUNCE_MAX_PX,
+      Math.max(DESKTOP_PET_WORK_BOUNCE_MIN_PX, value)
+    ));
+    setWorkingBounceDistanceDraft(next);
+    void patch({ workingBounceDistancePx: next });
+  }, [patch]);
 
   const loadPets = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true);
@@ -667,6 +686,42 @@ export function DesktopPetSettingsPage() {
             ariaLabel={t("desktopPet.settings.alwaysOnTop")}
             onChange={(checked) => void patch({ alwaysOnTop: checked })}
           />
+          <Stack gap={8}>
+            <ToggleRow
+              title={t("desktopPet.settings.workingBounce")}
+              description={t("desktopPet.settings.workingBounceDescription")}
+              checked={desktopPet.workingBounceEnabled}
+              ariaLabel={t("desktopPet.settings.workingBounce")}
+              onChange={(checked) => void patch({ workingBounceEnabled: checked })}
+            />
+            <Stack gap={6} pl="sm">
+              <Group justify="space-between" align="center">
+                <Text size="xs" c="var(--on-surface-variant)">
+                  {t("desktopPet.settings.workingBounceDistance")}
+                </Text>
+                <Text
+                  size="xs"
+                  ff="var(--font-ui-mono)"
+                  c={desktopPet.workingBounceEnabled ? "var(--on-surface)" : "var(--text-muted)"}
+                  className="tabular-nums"
+                >
+                  {workingBounceDistanceDraft}px
+                </Text>
+              </Group>
+              <Slider
+                min={DESKTOP_PET_WORK_BOUNCE_MIN_PX}
+                max={DESKTOP_PET_WORK_BOUNCE_MAX_PX}
+                step={1}
+                value={workingBounceDistanceDraft}
+                disabled={!desktopPet.workingBounceEnabled}
+                onChange={setWorkingBounceDistanceDraft}
+                onChangeEnd={commitWorkingBounceDistance}
+                label={(value) => `${value}px`}
+                color="cliPrimary"
+                aria-label={t("desktopPet.settings.workingBounceDistance")}
+              />
+            </Stack>
+          </Stack>
           <ToggleRow
             title={t("desktopPet.settings.showStatus")}
             description={t("desktopPet.settings.showStatusDescription")}

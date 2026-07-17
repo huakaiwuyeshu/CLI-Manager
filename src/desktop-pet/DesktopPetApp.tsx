@@ -40,6 +40,8 @@ const DEFAULT_CONFIG: DesktopPetConfigPayload = {
     petId: BUILTIN_DESKTOP_PET_ID,
     alwaysOnTop: true,
     size: "medium",
+    workingBounceEnabled: false,
+    workingBounceDistancePx: 5,
     showStatus: true,
     showSessionName: false,
     autoHideFullscreen: true,
@@ -296,6 +298,7 @@ export default function DesktopPetApp() {
     "--pet-stage-size": `${stageSize}px`,
     "--pet-cat-width": `${Math.round(132 * petScale)}px`,
     "--pet-cat-height": `${Math.round(96 * petScale)}px`,
+    "--pet-work-bounce-offset": `${-config.settings.workingBounceDistancePx}px`,
     ...(menuGeometry
       ? {
           "--pet-anchor-width": `${menuGeometry.anchorWidth}px`,
@@ -344,6 +347,11 @@ export default function DesktopPetApp() {
     <main
       className="desktop-pet-root"
       data-mood={displayMood}
+      data-work-bounce={
+        config.settings.workingBounceEnabled && config.settings.workingBounceDistancePx > 0
+          ? "true"
+          : undefined
+      }
       data-menu-open={menuGeometry ? "true" : undefined}
       style={rootStyle}
       onPointerDown={handlePointerDown}

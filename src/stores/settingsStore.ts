@@ -152,6 +152,8 @@ export type FileExplorerIgnoredPaths = Record<string, string[]>;
 export type LanguagePreference = "auto" | "zh-CN" | "en-US";
 export type BatchLaunchPaneDirection = "vertical" | "horizontal";
 export type DesktopPetSize = "small" | "medium" | "large";
+export const DESKTOP_PET_WORK_BOUNCE_MIN_PX = 0;
+export const DESKTOP_PET_WORK_BOUNCE_MAX_PX = 5;
 
 export interface DesktopPetPosition {
   x: number;
@@ -163,6 +165,8 @@ export interface DesktopPetSettings {
   petId: string;
   alwaysOnTop: boolean;
   size: DesktopPetSize;
+  workingBounceEnabled: boolean;
+  workingBounceDistancePx: number;
   showStatus: boolean;
   showSessionName: boolean;
   autoHideFullscreen: boolean;
@@ -542,6 +546,8 @@ const DEFAULTS: Settings = {
     petId: BUILTIN_DESKTOP_PET_ID,
     alwaysOnTop: true,
     size: "medium",
+    workingBounceEnabled: false,
+    workingBounceDistancePx: 5,
     showStatus: true,
     showSessionName: false,
     autoHideFullscreen: true,
@@ -979,11 +985,22 @@ export function migrateDesktopPetSettings(value: unknown): DesktopPetSettings {
   const size: DesktopPetSize = raw.size === "small" || raw.size === "medium" || raw.size === "large"
     ? raw.size
     : defaults.size;
+  const workingBounceDistancePx = Math.round(clampNumber(
+    raw.workingBounceDistancePx,
+    DESKTOP_PET_WORK_BOUNCE_MIN_PX,
+    DESKTOP_PET_WORK_BOUNCE_MAX_PX,
+    defaults.workingBounceDistancePx
+  ));
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : defaults.enabled,
     petId,
     alwaysOnTop: typeof raw.alwaysOnTop === "boolean" ? raw.alwaysOnTop : defaults.alwaysOnTop,
     size,
+    workingBounceEnabled:
+      typeof raw.workingBounceEnabled === "boolean"
+        ? raw.workingBounceEnabled
+        : defaults.workingBounceEnabled,
+    workingBounceDistancePx,
     showStatus: typeof raw.showStatus === "boolean" ? raw.showStatus : defaults.showStatus,
     showSessionName: typeof raw.showSessionName === "boolean" ? raw.showSessionName : defaults.showSessionName,
     autoHideFullscreen:

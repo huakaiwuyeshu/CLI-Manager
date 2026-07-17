@@ -16,6 +16,7 @@
   --pet-stage-size: 144px;
   --pet-cat-width: 132px;
   --pet-cat-height: 96px;
+  --pet-work-bounce-offset: 0px;
   --pet-anchor-width: 100%;
   --pet-anchor-height: 100%;
   --pet-menu-panel-width: 0px;
@@ -160,7 +161,7 @@
 }
 .desktop-pet-cat .ui-cpu-cat-tail { animation: desktop-pet-tail 1.4s ease-in-out infinite; }
 
-.desktop-pet-root[data-mood="working"] .desktop-pet-stage {
+.desktop-pet-root[data-mood="working"][data-work-bounce="true"] .desktop-pet-stage {
   animation: desktop-pet-work .52s steps(2, end) infinite;
 }
 .desktop-pet-root[data-mood="waiting"] .desktop-pet-stage {
@@ -433,7 +434,7 @@
 }
 @keyframes desktop-pet-work {
   0%, 100% { transform: translateY(0) rotate(-1deg); }
-  50% { transform: translateY(-5px) rotate(1deg); }
+  50% { transform: translateY(var(--pet-work-bounce-offset)) rotate(1deg); }
 }
 @keyframes desktop-pet-wait {
   0%, 100% { transform: scale(1); }
