@@ -72,6 +72,7 @@ pub async fn ccusage_install_tools(
 | 读取文件内容 | `File::open` + `BufReader` | **通常可用** | 保持原生方式 |
 | libgit2 打开仓库 | `git2::Repository::open` | **Owner (-36) 错误** | 临时关闭 `set_verify_owner_validation` |
 | 文件存在检查 | `Path::exists()` / `Path::is_dir()` | **基本可用**但可能误报 | 仅作前置检查，不依赖其精确结果 |
+| SQLite 在线读写 | `sqlx` 直接打开 UNC | WAL/SHM 锁不可靠，直写有损坏风险 | 在对应发行版内用 Python `sqlite3` 备份/事务更新 |
 
 ### Batch metadata during WSL history enumeration
 
@@ -136,6 +137,10 @@ exec bun --version
 ```
 
 - 后端不得假设 WSL 的非交互命令会自动加载 `~/.profile` / `~/.bashrc`。
+- Windows 访问 WSL 内 cc-switch SQLite 时必须从 UNC 解析发行版与 Linux 路径，
+  通过 `wsl.exe -d <distro> --exec python3` 执行固定数据库操作；禁止 UNC 直写。
+- WSL SQLite 写入必须使用 `BEGIN IMMEDIATE` 并校验读取时的旧值，检测到并发修改时
+  返回 `db_write_conflict`，不得覆盖 cc-switch 的新值。
 - 对 `bun` / `bunx` 的 WSL 探测与执行，必须显式补上 `BUN_INSTALL` 与 `PATH`。
 - `ccusage_install_tools(target="wsl")` 现在是**手动安装边界**：命令必须直接返回“去设置页按提示手动安装”的错误，不能再代替用户执行 `curl` / `sudo` / `apt` / `bun install`。
 - 前端展示给用户的 WSL 手动安装命令，应优先使用 `~/.bun/bin/bun ...` 形式，避免刚装完 Bun 时因为 PATH 尚未刷新而出现 `bun: command not found`。

@@ -9,6 +9,9 @@
 ### 修复
 - **cc-connect 远程任务排队与 Provider 修复**：启动受管 cc-connect 时通过进程级 Git 配置仅信任当前已登记项目，避免 Codex 的 MCP 服务因项目目录所有权检查卡在 `git rev-parse`；远程 Codex 按项目 `provider_overrides` 生成受校验的 `-c` 配置覆盖并注入仅存在于子进程环境中的 Provider 密钥，兼容不允许 `app-server` 使用 `--profile` 的新版 Codex CLI；启动前会运行同一包装器预检，避免消息阶段才出现 `initialize: EOF`。
 - **cc-connect 可执行文件选择修复**：手动选择或输入 cc-connect 原生程序后立即校验文件、版本与 SHA-256，并允许重新检测尚未保存的路径；Windows `\\?\` 扩展路径在界面显示和 profile 保存时统一转换为普通路径，已有配置自动兼容。
+- **WSL Hook 与 cc-switch 数据库环境兼容**：Claude/Codex Hook 配置目录与 cc-switch 数据库位置不再强制同环境；Windows 版可为 WSL CLI 配置同步 Windows 数据库，也可通过对应 WSL 发行版内的 SQLite 安全读取和事务更新 WSL 数据库，避免 UNC 直写造成锁与 WAL 风险。
+- **历史会话缺失项目恢复修复**：恢复会话未找到匹配项目时不再直接报错，改为展示全部项目和“使用新窗口”；使用新窗口会先进入历史会话工作目录，再执行 Claude/Codex 恢复命令。
+- **WSL Codex 子 Agent 分屏输出修复**：Codex rollout discovery 透传 WSL 发行版与父 transcript 路径，优先沿父会话定位真实 sessions 根，否则在 Linux `$HOME/.codex/sessions` 内通过 `wsl.exe` 查找子会话；兼容 Linux、`\\wsl.localhost`、`\\wsl$` 与 Windows 配置目录转换，修复不同 WSL 用户及并行子任务分屏长期停留在 PENDING 的问题。
 - **Claude 状态栏 Powerline 符号修复**：WebView 直接加载应用内置符号字体，不再依赖 Windows 用户字体缓存，修复实时预览、Powerline 选项和应用内终端中的分隔符与端帽显示为方框的问题。
 - **后台终端恢复输出与图标修复**：daemon attach 将回放快照与实时订阅注册收口为同一临界区，前端在 PTY 输出监听就绪后再恢复并按顺序写入回放与实时帧；恢复后的 Claude/Codex Tab 保留 CLI 启动元数据用于图标识别，但不会重跑启动命令。
 - **终端标签切换焦点修复**：终端仅在 Tab 同时激活且可见后的下一动画帧获取焦点，修复普通 Tab、Workspan 与分屏切换后需要再次点击才能输入的问题，同时避免可见但未激活的分屏抢焦点。
@@ -24,6 +27,10 @@
 - **桌面宠物包与图鉴**：支持 `.clipet` 宠物包（ZIP + `manifest.json` + png/webp/经清洗 svg），内置 CLI 小猫并预置 terminal-robot / pixel-fox / mint-slime；设置页可浏览图鉴、下载安装、本地导入与卸载。安装前校验包大小、校验和、`minAppVersion`、归档结构与资源安全（拒绝 HTML/JS/可执行文件/路径穿越）。
 - **Codex Pets 兼容**：可发现并加载本机 Codex Pets 精灵图包（`codex-sprite` 引擎），与 CLI-Manager 自有宠物一并出现在已安装列表；外部 Codex 宠物不支持应用内卸载。
 - **桌宠工作动画可调**：桌面宠物设置新增工作时上下抖动开关和 0–5 px 幅度滑块，默认关闭；开启后可按偏好叠加位移，关闭或设为 0 时仅保留宠物包自身动画。
+
+### 修复
+- **退出时已完成 CLI 任务判定修复（Issue #142 / PR #154）**：开启“退出时也检测已完成的任务”后，仅将 Claude/Codex Hook 明确标记为已完成或失败的会话纳入退出处理；普通 Shell 命令结束不会被误判为 CLI 任务，关闭开关时继续只检测原有运行中任务。
+- **Worktree 今日项目用量聚合修复（Issue #137 / PR #155）**：主项目与 Worktree Tab 使用一次后端多路径统计请求展示相同的项目合计；父目录与嵌套 Worktree 同时命中时按唯一会话统计，避免 Token、费用和会话数重复累加，并支持当前 checkout 尚无历史会话时显示项目今日用量。
 
 ## [V1.2.8] - 2026-07-14
 

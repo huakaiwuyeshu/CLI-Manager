@@ -32,8 +32,21 @@ pub async fn ccswitch_list_providers(
 - **Open mode**: `SqliteConnectOptions::new().filename(path).read_only(true)` +
   `SqliteConnection::connect_with`. `create_if_missing` stays default (false) so a typo'd
   path can never create an empty db file.
+- **WSL database runtime**: on Windows, a `\\wsl.localhost\<distro>\...` or
+  `\\wsl$\<distro>\...` database is never queried or written directly through Plan 9.
+  Read commands ask Python `sqlite3` inside the named distro to create an online backup
+  snapshot in the Windows temp directory, then keep the existing Rust/sqlx parsing and
+  secret masking path. CLI-Manager deletes the snapshot when the prepared read path drops.
+- **WSL write runtime**: Hook/statusline common-config updates run a fixed Python sqlite3
+  transaction inside the named distro. The request contains only the fixed settings key,
+  expected old value and replacement value; `BEGIN IMMEDIATE` plus the old-value check
+  prevents overwriting a concurrent cc-switch update. Never expose arbitrary SQL through
+  the Tauri boundary and never fall back to UNC writes.
 - **Path resolution**: `None`/blank → default under `app.path().home_dir()`; custom path
   must pass extension allowlist (`.db`) and `is_file()` before any I/O.
+- **WSL path validation**: on Windows, validate WSL UNC database existence with
+  `wsl.exe -d <distro> --exec test -f <linux_path>`; do not trust host `Path::is_file()`
+  as the authority for Plan 9 paths.
 - **Secret masking happens in Rust**: env keys containing
   `token|key|secret|auth|password` (case-insensitive) are masked
   (`first 4 + … + last 4`, or `***` if ≤12 chars) before the payload crosses to the
@@ -48,6 +61,9 @@ pub async fn ccswitch_list_providers(
 | Cannot resolve home dir | `home_dir_unavailable: <err>` |
 | SQLite open failure | `db_open_failed: <err>` |
 | Query/decode failure | `db_query_failed: <err>` |
+| WSL/Python sqlite3 unavailable | `wsl_sqlite_runtime_unavailable` |
+| WSL database operation failure | `wsl_sqlite_failed: <err>` |
+| WSL common config changed concurrently | `db_write_conflict` |
 
 ### 5. Good/Base/Bad Cases
 
@@ -62,6 +78,8 @@ pub async fn ccswitch_list_providers(
   `ANTHROPIC_BASE_URL`).
 - Unit: `mask_secret` keeps only edges, handles short/empty strings.
 - Unit: settings_config parse failure → provider still listed with `configParseError: true`.
+- Windows + WSL integration: online backup reads an in-distro database and fixed transaction
+  writes a setting that can be read back through a fresh snapshot.
 
 ### 7. Wrong vs Correct
 

@@ -9,6 +9,7 @@ interface HistoryResumeProjectDialogProps {
   open: boolean;
   projects: Project[];
   groups: Group[];
+  onUseNewWindow?: () => void;
   onSelect: (project: Project) => void;
   onClose: () => void;
 }
@@ -24,7 +25,7 @@ function ProjectIcon({ project }: { project: Project }) {
   return vendor ? <VendorIcon vendor={vendor} size={15} /> : <Terminal size={15} strokeWidth={1.5} />;
 }
 
-export function HistoryResumeProjectDialog({ open, projects, groups, onSelect, onClose }: HistoryResumeProjectDialogProps) {
+export function HistoryResumeProjectDialog({ open, projects, groups, onUseNewWindow, onSelect, onClose }: HistoryResumeProjectDialogProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -85,7 +86,9 @@ export function HistoryResumeProjectDialog({ open, projects, groups, onSelect, o
               <X size={13} />
             </button>
           </div>
-          <DialogDescription className="text-xs">{t("history.resumeProject.description")}</DialogDescription>
+          <DialogDescription className="text-xs">
+            {t(onUseNewWindow ? "history.resumeProject.noMatchDescription" : "history.resumeProject.description")}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="ui-history-search-shell mb-1 gap-2 px-2 py-2 text-text-secondary">
@@ -112,6 +115,22 @@ export function HistoryResumeProjectDialog({ open, projects, groups, onSelect, o
         </div>
 
         <div className="ui-thin-scroll max-h-72 space-y-1 overflow-y-auto pr-1" role="listbox" aria-label={t("history.resumeProject.listAria")}>
+          {onUseNewWindow && (
+            <button
+              type="button"
+              role="option"
+              aria-selected="false"
+              onClick={onUseNewWindow}
+              className="ui-tree-node ui-tree-project ui-focus-ring flex min-h-9 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs"
+              title={t("history.resumeProject.useNewWindowDescription")}
+            >
+              <span className="ui-tree-leading-icon"><Terminal size={15} strokeWidth={1.5} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-text-primary">{t("history.resumeProject.useNewWindow")}</span>
+                <span className="block truncate text-[10px] text-text-muted">{t("history.resumeProject.useNewWindowDescription")}</span>
+              </span>
+            </button>
+          )}
           {groupedProjects.length > 0 ? groupedProjects.map((group) => (
             <div key={group.id}>
               <div className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary">
