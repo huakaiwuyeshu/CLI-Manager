@@ -3,6 +3,9 @@
 ## [TEMP]
 
 ### 修复
+- **WSL Hook 与 cc-switch 数据库环境兼容**：Claude/Codex Hook 配置目录与 cc-switch 数据库位置不再强制同环境；Windows 版可为 WSL CLI 配置同步 Windows 数据库，也可通过对应 WSL 发行版内的 SQLite 安全读取和事务更新 WSL 数据库，避免 UNC 直写造成锁与 WAL 风险。
+- **历史会话缺失项目恢复修复**：恢复会话未找到匹配项目时不再直接报错，改为展示全部项目和“使用新窗口”；使用新窗口会先进入历史会话工作目录，再执行 Claude/Codex 恢复命令。
+- **WSL Codex 子 Agent 分屏输出修复**：Codex rollout discovery 透传 WSL 发行版与父 transcript 路径，优先沿父会话定位真实 sessions 根，否则在 Linux `$HOME/.codex/sessions` 内通过 `wsl.exe` 查找子会话；兼容 Linux、`\\wsl.localhost`、`\\wsl$` 与 Windows 配置目录转换，修复不同 WSL 用户及并行子任务分屏长期停留在 PENDING 的问题。
 - **Claude 状态栏 Powerline 符号修复**：WebView 直接加载应用内置符号字体，不再依赖 Windows 用户字体缓存，修复实时预览、Powerline 选项和应用内终端中的分隔符与端帽显示为方框的问题。
 - **后台终端恢复输出与图标修复**：daemon attach 将回放快照与实时订阅注册收口为同一临界区，前端在 PTY 输出监听就绪后再恢复并按顺序写入回放与实时帧；恢复后的 Claude/Codex Tab 保留 CLI 启动元数据用于图标识别，但不会重跑启动命令。
 - **终端标签切换焦点修复**：终端仅在 Tab 同时激活且可见后的下一动画帧获取焦点，修复普通 Tab、Workspan 与分屏切换后需要再次点击才能输入的问题，同时避免可见但未激活的分屏抢焦点。

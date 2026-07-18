@@ -2480,6 +2480,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           parentSessionId: payload.sessionId,
           agentId,
           codexConfigDir,
+          wslDistroName: resolvedWslDistroName,
+          parentTranscriptPath: source.parentTranscriptPath ?? null,
         });
         if (!discoveredPath) {
           logInfo("[subagent_transcript] codex rollout transcript not found yet", {

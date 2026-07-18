@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod app_paths;
+mod ccswitch_db;
 mod claude_hook;
 pub mod codex_statusline;
 mod commands;

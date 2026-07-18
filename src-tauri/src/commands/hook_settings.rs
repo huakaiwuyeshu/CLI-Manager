@@ -463,14 +463,13 @@ fn cc_switch_status(
     state: CcSwitchHookProtectionState,
     db_path: Option<&Path>,
     message: Option<String>,
-    claude_dir: &Path,
+    _claude_dir: &Path,
 ) -> CcSwitchHookProtectionStatus {
-    let wsl_mismatch = db_path.is_some_and(|path| is_wsl_db_mismatch(claude_dir, path));
     CcSwitchHookProtectionStatus {
         state,
         db_path: db_path.map(path_to_string),
         message,
-        wsl_mismatch,
+        wsl_mismatch: false,
     }
 }
 
@@ -491,11 +490,6 @@ fn derive_wsl_ccswitch_db_path(claude_dir: &Path) -> Option<PathBuf> {
     )))
 }
 
-fn is_wsl_db_mismatch(claude_dir: &Path, db_path: &Path) -> bool {
-    crate::wsl::is_wsl_config_dir(&path_to_string(claude_dir))
-        && !crate::wsl::is_wsl_config_dir(&path_to_string(db_path))
-}
-
 fn resolve_ccswitch_db_path_for_hook(
     app: &AppHandle,
     db_path: Option<String>,
@@ -511,18 +505,7 @@ fn resolve_ccswitch_db_path_for_hook(
     }
 
     match super::ccswitch::resolve_db_path(app, db_path) {
-        Ok(path) => {
-            if is_wsl_db_mismatch(claude_dir, &path) {
-                Err(cc_switch_status(
-                    CcSwitchHookProtectionState::Unavailable,
-                    Some(&path),
-                    Some("wsl_environment_mismatch".to_string()),
-                    claude_dir,
-                ))
-            } else {
-                Ok(path)
-            }
-        }
+        Ok(path) => Ok(path),
         Err(err) if explicit.is_none() && err == "db_not_found" => Err(cc_switch_not_detected()),
         Err(err) if explicit.is_some() => Err(CcSwitchHookProtectionStatus {
             state: CcSwitchHookProtectionState::InvalidDb,
@@ -549,13 +532,10 @@ async fn open_db_readwrite(path: &Path) -> Result<SqliteConnection, String> {
 }
 
 async fn open_db_readonly(path: &Path) -> Result<SqliteConnection, String> {
-    let mut options = SqliteConnectOptions::new()
+    let options = SqliteConnectOptions::new()
         .filename(path)
         .read_only(true)
         .busy_timeout(Duration::from_secs(15));
-    if crate::wsl::is_wsl_config_dir(&path.to_string_lossy()) {
-        options = options.immutable(true);
-    }
     SqliteConnection::connect_with(&options)
         .await
         .map_err(|err| format!("db_open_failed: {err}"))
@@ -1015,6 +995,38 @@ async fn sync_common_config_at_path(
     mode: CcSwitchSyncMode,
     codex_hook_state_blocks: &[Vec<String>],
 ) -> Result<CcSwitchHookProtectionState, String> {
+    if crate::wsl::is_wsl_config_dir(&path_to_string(db_path)) {
+        let prepared_path = crate::ccswitch_db::prepare_read_path(db_path).await?;
+        let mut conn = open_db_readonly(prepared_path.path()).await?;
+        if !settings_table_exists(&mut conn).await? {
+            return Ok(CcSwitchHookProtectionState::Unavailable);
+        }
+        let key = tool.key();
+        let existing = read_common_config_value(&mut conn, key).await?;
+        drop(conn);
+        let (next, upsert, state) = match mode {
+            CcSwitchSyncMode::Install => (
+                merge_common_config_hooks(existing.as_deref(), exe, tool, codex_hook_state_blocks)?,
+                true,
+                CcSwitchHookProtectionState::Synced,
+            ),
+            CcSwitchSyncMode::Uninstall => {
+                let Some(next) = strip_common_config_hooks(existing.as_deref(), tool)? else {
+                    return Ok(CcSwitchHookProtectionState::NotSynced);
+                };
+                (next, false, CcSwitchHookProtectionState::NotSynced)
+            }
+        };
+        let available =
+            crate::ccswitch_db::write_wsl_setting(db_path, key, existing.as_deref(), &next, upsert)
+                .await?;
+        return Ok(if available {
+            state
+        } else {
+            CcSwitchHookProtectionState::Unavailable
+        });
+    }
+
     let mut conn = open_db_readwrite(db_path).await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut conn)
@@ -1088,6 +1100,42 @@ pub(crate) async fn sync_ccswitch_claude_statusline(
         Err(status) => return status,
     };
     let result = async {
+        if crate::wsl::is_wsl_config_dir(&path_to_string(&path)) {
+            let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+            let mut conn = open_db_readonly(prepared_path.path()).await?;
+            if !settings_table_exists(&mut conn).await? {
+                return Ok(CcSwitchHookProtectionState::Unavailable);
+            }
+            let existing =
+                read_common_config_value(&mut conn, CCSWITCH_COMMON_CONFIG_CLAUDE_KEY).await?;
+            drop(conn);
+            let (next, upsert, state) = if let Some(status_line) = status_line {
+                (
+                    merge_common_config_statusline(existing.as_deref(), status_line)?,
+                    true,
+                    CcSwitchHookProtectionState::Synced,
+                )
+            } else {
+                let Some(next) = strip_common_config_statusline(existing.as_deref())? else {
+                    return Ok(CcSwitchHookProtectionState::NotSynced);
+                };
+                (next, false, CcSwitchHookProtectionState::NotSynced)
+            };
+            let available = crate::ccswitch_db::write_wsl_setting(
+                &path,
+                CCSWITCH_COMMON_CONFIG_CLAUDE_KEY,
+                existing.as_deref(),
+                &next,
+                upsert,
+            )
+            .await?;
+            return Ok(if available {
+                state
+            } else {
+                CcSwitchHookProtectionState::Unavailable
+            });
+        }
+
         let mut conn = open_db_readwrite(&path).await?;
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut conn)
@@ -1301,14 +1349,6 @@ async fn inspect_tool_common_config_at_path(
     config_dir: &Path,
     tool: CommonConfigTool,
 ) -> CcSwitchHookProtectionStatus {
-    if is_wsl_db_mismatch(config_dir, db_path) {
-        return cc_switch_status(
-            CcSwitchHookProtectionState::Unavailable,
-            Some(db_path),
-            Some("wsl_environment_mismatch".to_string()),
-            config_dir,
-        );
-    }
     let exe = match hook_exe_for_dir(config_dir) {
         Ok(exe) => exe,
         Err(err) => {
@@ -1320,7 +1360,18 @@ async fn inspect_tool_common_config_at_path(
             );
         }
     };
-    match inspect_common_config_at_path(db_path, &exe, tool).await {
+    let prepared_path = match crate::ccswitch_db::prepare_read_path(db_path).await {
+        Ok(path) => path,
+        Err(err) => {
+            return cc_switch_status(
+                CcSwitchHookProtectionState::SyncFailed,
+                Some(db_path),
+                Some(err),
+                config_dir,
+            );
+        }
+    };
+    match inspect_common_config_at_path(prepared_path.path(), &exe, tool).await {
         Ok(state) => cc_switch_status(state, Some(db_path), None, config_dir),
         Err(err) => cc_switch_status(
             CcSwitchHookProtectionState::SyncFailed,

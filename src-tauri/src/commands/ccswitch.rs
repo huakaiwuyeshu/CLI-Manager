@@ -337,20 +337,22 @@ pub(crate) fn resolve_db_path(
     if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
         return Err("unsupported_format".to_string());
     }
-    if !path.is_file() {
+    let exists = if crate::wsl::is_wsl_config_dir(&path.to_string_lossy()) {
+        crate::ccswitch_db::wsl_file_exists(&path)?
+    } else {
+        path.is_file()
+    };
+    if !exists {
         return Err("db_not_found".to_string());
     }
     Ok(path)
 }
 
 async fn open_db_readonly(path: &Path) -> Result<SqliteConnection, String> {
-    let mut options = SqliteConnectOptions::new()
+    let options = SqliteConnectOptions::new()
         .filename(path)
         .read_only(true)
         .busy_timeout(Duration::from_secs(15));
-    if crate::wsl::is_wsl_config_dir(&path.to_string_lossy()) {
-        options = options.immutable(true);
-    }
     SqliteConnection::connect_with(&options)
         .await
         .map_err(|err| format!("db_open_failed: {err}"))
@@ -395,7 +397,8 @@ pub async fn ccswitch_list_providers(
 ) -> Result<CcSwitchProvidersResponse, String> {
     let path = resolve_db_path(&app, db_path)?;
 
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
 
     let rows = sqlx::query(
         "SELECT id, app_type, name, settings_config, website_url, category, notes, \
@@ -797,7 +800,8 @@ pub async fn ccswitch_test_provider_model(
     let app_type = app_type.trim().to_ascii_lowercase();
     let provider_id = provider_id.trim();
     let path = resolve_db_path(&app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
     let row =
         sqlx::query("SELECT name, settings_config FROM providers WHERE id = ?1 AND app_type = ?2")
             .bind(provider_id)
@@ -984,7 +988,8 @@ async fn load_merged_provider_settings(
     db_path: Option<String>,
 ) -> Result<(String, Value), String> {
     let path = resolve_db_path(app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
     let row =
         sqlx::query("SELECT name, settings_config FROM providers WHERE id = ?1 AND app_type = ?2")
             .bind(provider_id.trim())
@@ -1081,7 +1086,8 @@ pub async fn ccswitch_get_project_provider(
     let mut matched_provider_id = None;
     if !project_env.is_empty() {
         let path = resolve_db_path(&app, db_path)?;
-        let mut conn = open_db_readonly(&path).await?;
+        let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+        let mut conn = open_db_readonly(prepared_path.path()).await?;
         let rows = sqlx::query(
             "SELECT id, settings_config FROM providers \
              WHERE app_type = 'claude' ORDER BY sort_index, name",
@@ -1127,7 +1133,8 @@ pub async fn ccswitch_apply_provider(
     }
 
     let path = resolve_db_path(&app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
     let row =
         sqlx::query("SELECT settings_config FROM providers WHERE id = ?1 AND app_type = 'claude'")
             .bind(provider_id.trim())
@@ -1983,7 +1990,8 @@ pub async fn ccswitch_probe_projects(
     db_path: Option<String>,
 ) -> Result<Vec<CcSwitchProjectBadge>, String> {
     let path = resolve_db_path(&app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
     let rows = sqlx::query(
         "SELECT name, settings_config FROM providers \
          WHERE app_type = 'claude' ORDER BY sort_index, name",
@@ -2052,7 +2060,8 @@ pub async fn ccswitch_list_common_configs(
     db_path: Option<String>,
 ) -> Result<CcSwitchCommonConfigResponse, String> {
     let path = resolve_db_path(&app, db_path)?;
-    let mut conn = open_db_readonly(&path).await?;
+    let prepared_path = crate::ccswitch_db::prepare_read_path(&path).await?;
+    let mut conn = open_db_readonly(prepared_path.path()).await?;
 
     // Error tolerance: check if settings table exists
     let table_exists =
