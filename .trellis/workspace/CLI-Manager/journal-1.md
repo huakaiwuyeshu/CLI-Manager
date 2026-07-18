@@ -792,3 +792,36 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Reduce default info log noise
+
+**Date**: 2026-07-18
+**Task**: Reduce default info log noise
+**Branch**: `master`
+
+### Summary
+
+将常规扫描、轮询和诊断日志从 INFO 降为 DEBUG，保留关键生命周期日志，并将 daemon 缓冲区淘汰升级为 WARN。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `538a051` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
