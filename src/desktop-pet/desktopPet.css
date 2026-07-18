@@ -206,10 +206,10 @@
 
 .desktop-pet-target-list {
   position: absolute;
-  right: calc(var(--pet-anchor-width) - 24px);
-  bottom: 52px;
+  right: calc(var(--pet-anchor-width) + 164px);
+  bottom: 12px;
   display: flex;
-  width: min(286px, calc(var(--pet-menu-panel-width) + 4px));
+  width: min(286px, max(132px, calc(var(--pet-menu-panel-width) - 186px)));
   height: var(--pet-target-list-height);
   box-sizing: border-box;
   flex-direction: column;
@@ -242,7 +242,7 @@
   gap: 9px;
   overflow: hidden;
   border: 1px solid rgb(212 255 235 / 22%);
-  border-radius: 16px;
+  border-radius: 8px;
   color: #e5f9ef;
   background:
     linear-gradient(118deg, rgb(33 65 67 / 78%), rgb(8 23 30 / 62%) 60%, rgb(4 13 19 / 70%)),
@@ -250,8 +250,8 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 15%),
     inset 0 -1px 0 rgb(0 0 0 / 16%),
-    0 12px 28px rgb(0 0 0 / 30%);
-  margin-top: -15px;
+    0 6px 14px rgb(0 0 0 / 26%);
+  margin-top: -4px;
   padding: 10px 11px;
   transform: translateX(calc(-1 * var(--fan-shift))) rotate(var(--fan-angle));
   transform-origin: 100% 50%;
@@ -296,6 +296,33 @@
   background:
     linear-gradient(118deg, rgb(37 88 76 / 86%), rgb(8 28 34 / 68%) 62%, rgb(4 13 19 / 74%)),
     radial-gradient(circle at 12% 0%, rgb(255 255 255 / 15%), transparent 40%);
+}
+
+.desktop-pet-target[data-handed-off="true"] {
+  border-color: rgb(250 204 21 / 52%);
+  background:
+    linear-gradient(118deg, rgb(73 63 29 / 88%), rgb(24 28 33 / 76%) 62%, rgb(8 15 20 / 82%)),
+    radial-gradient(circle at 12% 0%, rgb(255 255 255 / 14%), transparent 40%);
+}
+
+.desktop-pet-target[data-recovery-failed="true"] {
+  border-color: rgb(251 113 133 / 52%);
+  background:
+    linear-gradient(118deg, rgb(76 37 48 / 88%), rgb(29 25 32 / 76%) 62%, rgb(12 14 20 / 82%)),
+    radial-gradient(circle at 12% 0%, rgb(255 255 255 / 14%), transparent 40%);
+}
+
+.desktop-pet-target-lock {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  color: #facc15;
+  filter: drop-shadow(0 0 7px rgb(250 204 21 / 35%));
+}
+
+.desktop-pet-target[data-recovery-failed="true"] .desktop-pet-target-lock {
+  color: #fb7185;
+  filter: drop-shadow(0 0 7px rgb(251 113 133 / 35%));
 }
 
 .desktop-pet-target-indicator {
@@ -370,31 +397,35 @@
   right: calc(var(--pet-anchor-width) - 20px);
   bottom: 12px;
   display: grid;
-  width: min(280px, calc(var(--pet-menu-panel-width) - 22px));
-  height: 38px;
+  width: min(176px, calc(var(--pet-menu-panel-width) - 22px));
+  max-height: calc(100% - 24px);
   box-sizing: border-box;
-  grid-template-columns: 1.35fr 1fr .78fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
+  overflow-y: auto;
   border: 1px solid rgb(212 255 235 / 19%);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgb(24 52 54 / 76%), rgb(6 17 24 / 64%));
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgb(24 52 54 / 82%), rgb(6 17 24 / 72%));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%), 0 10px 26px rgb(0 0 0 / 28%);
-  padding: 4px;
+  padding: 5px;
   pointer-events: auto;
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
 
 .desktop-pet-menu-actions button {
+  display: flex;
   min-width: 0;
+  min-height: 31px;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   border: 0;
-  border-radius: 10px;
+  border-radius: 6px;
   color: rgb(229 249 239 / 84%);
   background: transparent;
-  padding: 0 7px;
-  text-align: center;
-  text-overflow: ellipsis;
+  padding: 0 9px;
+  text-align: left;
   white-space: nowrap;
   font: inherit;
   font-size: 10px;
@@ -402,22 +433,34 @@
   transition: color .16s ease, background .16s ease, box-shadow .16s ease;
 }
 
+.desktop-pet-menu-actions button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.desktop-pet-menu-actions button:disabled {
+  cursor: default;
+  opacity: .42;
+}
+
+.desktop-pet-menu-actions button[data-active="true"] {
+  color: #f2fffa;
+  background: color-mix(in srgb, #5ac8e0 24%, transparent);
+}
+
+.desktop-pet-menu-actions .desktop-pet-menu-danger {
+  color: #ffd0d6;
+  background: rgb(251 113 133 / 10%);
+}
+
 .desktop-pet-menu-actions button:first-child {
   color: #ecfff5;
   background: color-mix(in srgb, var(--pet-accent) 18%, transparent);
 }
 
-.desktop-pet-menu:not([data-has-targets="true"]) .desktop-pet-menu-actions {
-  height: 70px;
-  grid-template-columns: 1fr 1fr;
-}
-
-.desktop-pet-menu:not([data-has-targets="true"]) .desktop-pet-menu-actions button:first-child {
-  grid-column: 1 / -1;
-}
-
-.desktop-pet-menu-actions button:hover,
-.desktop-pet-menu-actions button:focus-visible {
+.desktop-pet-menu-actions button:not(:disabled):hover,
+.desktop-pet-menu-actions button:not(:disabled):focus-visible {
   outline: none;
   color: #fff;
   background: color-mix(in srgb, var(--pet-accent) 25%, transparent);

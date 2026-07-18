@@ -25,6 +25,8 @@ import { useProjectStore } from "../stores/projectStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTerminalStore } from "../stores/terminalStore";
+import { useWorktreeStore } from "../stores/worktreeStore";
+import { useRemoteHandoffStore } from "../stores/remoteHandoffStore";
 
 interface UseDesktopPetCoordinatorOptions {
   appReady: boolean;
@@ -44,11 +46,22 @@ export function useDesktopPetCoordinator({
   const settingsLoaded = useSettingsStore((state) => state.loaded);
   const updateSetting = useSettingsStore((state) => state.update);
   const projects = useProjectStore((state) => state.projects);
+  const worktrees = useWorktreeStore((state) => state.worktrees);
+  const remoteHandoffStatus = useRemoteHandoffStore((state) => state.status);
+  const remoteHandoffBusy = useRemoteHandoffStore((state) => state.busy);
   const persistedSessions = useSessionStore((state) => state.sessions);
-  const { sessions, activeSessionId, tabNotifications, tabStatusDetails, ptyOutputActivityAt } = useTerminalStore(
+  const {
+    sessions,
+    activeSessionId,
+    sessionStatuses,
+    tabNotifications,
+    tabStatusDetails,
+    ptyOutputActivityAt,
+  } = useTerminalStore(
     useShallow((state) => ({
       sessions: state.sessions,
       activeSessionId: state.activeSessionId,
+      sessionStatuses: state.sessionStatuses,
       tabNotifications: state.tabNotifications,
       tabStatusDetails: state.tabStatusDetails,
       ptyOutputActivityAt: state.ptyOutputActivityAt,
@@ -61,11 +74,15 @@ export function useDesktopPetCoordinator({
       sessions,
       persistedSessions,
       activeSessionId,
+      sessionStatuses,
       tabNotifications,
       tabStatusDetails,
       ptyOutputActivityAt,
       projects,
+      worktrees,
       backgroundTasks,
+      activeHandoff: remoteHandoffStatus.info,
+      handoffBusy: remoteHandoffBusy,
     }),
     [
       activeSessionId,
@@ -73,9 +90,13 @@ export function useDesktopPetCoordinator({
       persistedSessions,
       projects,
       ptyOutputActivityAt,
+      remoteHandoffBusy,
+      remoteHandoffStatus.info,
       sessions,
+      sessionStatuses,
       tabNotifications,
       tabStatusDetails,
+      worktrees,
     ]
   );
 
@@ -96,6 +117,15 @@ export function useDesktopPetCoordinator({
       taskList: t("desktopPet.actions.taskList"),
       currentTask: t("desktopPet.actions.currentTask"),
       unnamedTask: t("desktopPet.actions.unnamedTask"),
+      openCurrent: t("desktopPet.actions.openCurrent"),
+      remoteHandoff: t("desktopPet.actions.remoteHandoff"),
+      cancelHandoff: t("desktopPet.actions.cancelHandoff"),
+      handoffSessions: t("desktopPet.actions.handoffSessions"),
+      handoffPending: t("remoteHandoff.overlay.pending"),
+      handoffCancelling: t("remoteHandoff.overlay.cancelling"),
+      handedOff: t("desktopPet.actions.handedOff"),
+      handoffRecoveryFailed: t("desktopPet.actions.handoffRecoveryFailed"),
+      noHandoffSessions: t("desktopPet.actions.noHandoffSessions"),
     },
   }), [desktopPet, language, t]);
 

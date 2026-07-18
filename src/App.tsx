@@ -36,6 +36,7 @@ import { useHistoryStore } from "./stores/historyStore";
 import { useExternalSessionSyncStore } from "./stores/externalSessionSyncStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDesktopPetCoordinator } from "./hooks/useDesktopPetCoordinator";
+import { useRemoteHandoffCoordinator } from "./hooks/useRemoteHandoffCoordinator";
 import { useUpdateStore } from "./stores/updateStore";
 import { useReplayStore } from "./stores/replayStore";
 import { useTerminalStore, type CliHookPayload } from "./stores/terminalStore";
@@ -714,6 +715,8 @@ function App() {
       await focusMainWindow();
     }
   }, []);
+
+  useRemoteHandoffCoordinator(startupReady);
 
   useDesktopPetCoordinator({
     appReady: startupReady,

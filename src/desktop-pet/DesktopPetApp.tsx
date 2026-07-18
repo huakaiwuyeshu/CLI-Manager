@@ -9,11 +9,22 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize, PhysicalPosition, type PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  AppWindow,
+  EyeOff,
+  LockKeyhole,
+  MonitorUp,
+  PauseCircle,
+  RadioTower,
+  Settings,
+} from "lucide-react";
 import { CliCat } from "../components/desktop-pet/CliCat";
 import { PetArtwork } from "../components/desktop-pet/PetArtwork";
 import {
   DESKTOP_PET_CONFIG_EVENT,
   DESKTOP_PET_CLOSE_MENU_EVENT,
+  DESKTOP_PET_HANDOFF_CANCEL_EVENT,
+  DESKTOP_PET_HANDOFF_START_EVENT,
   DESKTOP_PET_OPEN_SETTINGS_EVENT,
   DESKTOP_PET_OPEN_TARGET_EVENT,
   DESKTOP_PET_POSITION_EVENT,
@@ -62,6 +73,15 @@ const DEFAULT_CONFIG: DesktopPetConfigPayload = {
     taskList: translate("zh-CN", "desktopPet.actions.taskList"),
     currentTask: translate("zh-CN", "desktopPet.actions.currentTask"),
     unnamedTask: translate("zh-CN", "desktopPet.actions.unnamedTask"),
+    openCurrent: translate("zh-CN", "desktopPet.actions.openCurrent"),
+    remoteHandoff: translate("zh-CN", "desktopPet.actions.remoteHandoff"),
+    cancelHandoff: translate("zh-CN", "desktopPet.actions.cancelHandoff"),
+    handoffSessions: translate("zh-CN", "desktopPet.actions.handoffSessions"),
+    handoffPending: translate("zh-CN", "remoteHandoff.overlay.pending"),
+    handoffCancelling: translate("zh-CN", "remoteHandoff.overlay.cancelling"),
+    handedOff: translate("zh-CN", "desktopPet.actions.handedOff"),
+    handoffRecoveryFailed: translate("zh-CN", "desktopPet.actions.handoffRecoveryFailed"),
+    noHandoffSessions: translate("zh-CN", "desktopPet.actions.noHandoffSessions"),
   },
 };
 
@@ -75,6 +95,8 @@ const DEFAULT_SNAPSHOT: DesktopPetSnapshot = {
   attentionCount: 0,
   updatedAt: Date.now(),
   targets: [],
+  handoff: null,
+  handoffBusy: false,
 };
 
 function moodLabel(config: DesktopPetConfigPayload, mood: DesktopPetMood): string {
@@ -86,6 +108,12 @@ function localPetName(pet: InstalledPet, language: DesktopPetConfigPayload["lang
 }
 
 function targetStatusLabel(config: DesktopPetConfigPayload, target: DesktopPetTarget): string {
+  if (target.handoffPhase === "pending") return config.labels.handoffPending;
+  if (target.handoffPhase === "cancelling") return config.labels.handoffCancelling;
+  if (target.handoffPhase === "recovery_failed") {
+    return config.labels.handoffRecoveryFailed;
+  }
+  if (target.handedOff) return config.labels.handedOff;
   const mood: DesktopPetMood =
     target.status === "running"
       ? "working"
@@ -124,7 +152,11 @@ export default function DesktopPetApp() {
   const [displayMood, setDisplayMood] = useState<DesktopPetMood>(DEFAULT_SNAPSHOT.mood);
   const [installedPet, setInstalledPet] = useState<InstalledPet | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [targetMode, setTargetMode] = useState<"open" | "handoff">("open");
   const [menuGeometry, setMenuGeometry] = useState<DesktopPetMenuWindowGeometry | null>(null);
+  const menuTargets = targetMode === "handoff"
+    ? snapshot.targets.filter((target) => target.handoffEligible)
+    : snapshot.targets;
   const moveTimerRef = useRef<number | null>(null);
   const dragResetTimerRef = useRef<number | null>(null);
   const userDraggingRef = useRef(false);
@@ -145,7 +177,10 @@ export default function DesktopPetApp() {
       if (!disposed) setSnapshot(event.payload);
     });
     const unlistenCloseMenu = listen(DESKTOP_PET_CLOSE_MENU_EVENT, () => {
-      if (!disposed) setMenuOpen(false);
+      if (!disposed) {
+        setMenuOpen(false);
+        setTargetMode("open");
+      }
     });
     const appWindow = getCurrentWindow();
     const unlistenMoved = appWindow.onMoved(({ payload }) => {
@@ -198,7 +233,7 @@ export default function DesktopPetApp() {
               height: collapsed.size.height,
             },
             collapsed.scaleFactor,
-            snapshot.targets.length,
+            menuTargets.length,
             monitor
               ? {
                   x: monitor.workArea.position.x,
@@ -220,6 +255,7 @@ export default function DesktopPetApp() {
             collapsedWindowGeometryRef.current = null;
             setMenuGeometry(null);
             setMenuOpen(false);
+            setTargetMode("open");
             throw err;
           }
           return;
@@ -238,20 +274,35 @@ export default function DesktopPetApp() {
     void menuWindowTaskRef.current.catch((err) => {
       logWarn("Failed to resize desktop pet menu window", err);
     });
-  }, [menuOpen, snapshot.targets.length]);
+  }, [menuOpen, menuTargets.length]);
 
   useEffect(() => {
     if (!menuOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setTargetMode("open");
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [menuOpen]);
 
   useEffect(() => {
-    if (!config.settings.enabled) setMenuOpen(false);
+    if (!config.settings.enabled) {
+      setMenuOpen(false);
+      setTargetMode("open");
+    }
   }, [config.settings.enabled]);
+
+  useEffect(() => {
+    if (
+      targetMode === "handoff"
+      && !snapshot.targets.some((target) => target.handoffEligible)
+    ) {
+      setTargetMode("open");
+    }
+  }, [snapshot.targets, targetMode]);
 
   useEffect(() => {
     if (snapshot.mood !== "success") {
@@ -328,16 +379,35 @@ export default function DesktopPetApp() {
     });
   };
 
-  const openTarget = (target?: DesktopPetTarget) => {
+  const closeMenu = () => {
     setMenuOpen(false);
+    setTargetMode("open");
+  };
+
+  const openTarget = (target?: DesktopPetTarget) => {
+    closeMenu();
     void emitTo("main", DESKTOP_PET_OPEN_TARGET_EVENT, {
       sessionId: target?.sessionId ?? snapshot.sessionId,
       daemonOnly: target?.daemonOnly ?? snapshot.daemonOnly,
     }).catch((err) => logWarn("Failed to request desktop pet target activation", err));
   };
 
+  const requestHandoff = (target: DesktopPetTarget) => {
+    closeMenu();
+    void emitTo("main", DESKTOP_PET_HANDOFF_START_EVENT, {
+      sessionId: target.sessionId,
+    }).catch((err) => logWarn("Failed to request remote handoff", err));
+  };
+
+  const cancelHandoff = () => {
+    closeMenu();
+    void emitTo("main", DESKTOP_PET_HANDOFF_CANCEL_EVENT).catch((err) => {
+      logWarn("Failed to request remote handoff cancellation", err);
+    });
+  };
+
   const openMainWindow = () => {
-    setMenuOpen(false);
+    closeMenu();
     void invoke("app_show_main_window").catch((err) => {
       logWarn("Failed to open CLI-Manager from desktop pet", err);
     });
@@ -361,7 +431,12 @@ export default function DesktopPetApp() {
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        setMenuOpen((open) => !open);
+        if (menuOpen) {
+          closeMenu();
+        } else {
+          setTargetMode("open");
+          setMenuOpen(true);
+        }
       }}
       aria-label={moodLabel(config, displayMood)}
     >
@@ -396,12 +471,16 @@ export default function DesktopPetApp() {
       {menuOpen && menuGeometry ? (
         <div
           className="desktop-pet-menu"
-          data-has-targets={snapshot.targets.length > 0 || undefined}
+          data-has-targets={menuTargets.length > 0 || undefined}
           role="menu"
-          aria-label={config.labels.taskList}
+          aria-label={
+            targetMode === "handoff"
+              ? config.labels.handoffSessions
+              : config.labels.taskList
+          }
         >
-          {snapshot.targets.length > 0 ? <div className="desktop-pet-target-list">
-            {snapshot.targets.map((target, index) => {
+          {menuTargets.length > 0 ? <div className="desktop-pet-target-list">
+            {menuTargets.map((target, index) => {
               const primary =
                 target.projectName ||
                 target.sessionTitle ||
@@ -416,12 +495,22 @@ export default function DesktopPetApp() {
                   className="desktop-pet-target"
                   data-status={target.status}
                   data-active={target.active || undefined}
+                  data-handed-off={target.handedOff || undefined}
+                  data-recovery-failed={
+                    target.handoffPhase === "recovery_failed" || undefined
+                  }
                   aria-current={target.active ? "true" : undefined}
-                  style={targetFanStyle(index, snapshot.targets.length)}
-                  onClick={() => openTarget(target)}
+                  style={targetFanStyle(index, menuTargets.length)}
+                  onClick={() => (
+                    targetMode === "handoff" ? requestHandoff(target) : openTarget(target)
+                  )}
                   title={[target.projectName, target.sessionTitle, status].filter(Boolean).join(" · ")}
                 >
-                  <span className="desktop-pet-target-indicator" aria-hidden="true" />
+                  {target.handoffPhase ? (
+                    <LockKeyhole className="desktop-pet-target-lock" size={14} aria-hidden="true" />
+                  ) : (
+                    <span className="desktop-pet-target-indicator" aria-hidden="true" />
+                  )}
                   <span className="desktop-pet-target-copy">
                     <strong>{primary}</strong>
                     <small>
@@ -437,32 +526,70 @@ export default function DesktopPetApp() {
             })}
           </div> : null}
           <div className="desktop-pet-menu-actions">
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!snapshot.sessionId}
+              onClick={() => openTarget()}
+            >
+              <MonitorUp size={14} aria-hidden="true" />
+              <span>{config.labels.openCurrent}</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-active={targetMode === "handoff" || undefined}
+              disabled={
+                snapshot.handoffBusy
+                || Boolean(snapshot.handoff)
+                || !snapshot.targets.some((target) => target.handoffEligible)
+              }
+              onClick={() => setTargetMode((mode) => mode === "handoff" ? "open" : "handoff")}
+            >
+              <RadioTower size={14} aria-hidden="true" />
+              <span>{config.labels.remoteHandoff}</span>
+            </button>
+            {snapshot.handoff ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="desktop-pet-menu-danger"
+                disabled={snapshot.handoffBusy}
+                onClick={cancelHandoff}
+              >
+                <PauseCircle size={14} aria-hidden="true" />
+                <span>{config.labels.cancelHandoff}</span>
+              </button>
+            ) : null}
             <button type="button" role="menuitem" onClick={openMainWindow}>
-              {config.labels.openMain}
+              <AppWindow size={14} aria-hidden="true" />
+              <span>{config.labels.openMain}</span>
             </button>
             <button
               type="button"
               role="menuitem"
               onClick={() => {
-                setMenuOpen(false);
+                closeMenu();
                 void emitTo("main", DESKTOP_PET_OPEN_SETTINGS_EVENT).catch((err) => {
                   logWarn("Failed to request desktop pet settings", err);
                 });
               }}
             >
-              {config.labels.openSettings}
+              <Settings size={14} aria-hidden="true" />
+              <span>{config.labels.openSettings}</span>
             </button>
             <button
               type="button"
               role="menuitem"
               onClick={() => {
-                setMenuOpen(false);
+                closeMenu();
                 void invoke("desktop_pet_window_hide").catch((err) => {
                   logWarn("Failed to hide desktop pet window", err);
                 });
               }}
             >
-              {config.labels.hide}
+              <EyeOff size={14} aria-hidden="true" />
+              <span>{config.labels.hide}</span>
             </button>
           </div>
         </div>

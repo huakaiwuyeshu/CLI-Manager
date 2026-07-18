@@ -15,6 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
+pub(crate) mod handoff;
+mod handoff_session;
+
 const PROFILE_FILE_NAME: &str = "profile.json";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const PROJECT_LIST_FILE_NAME: &str = "cli-manager-projects.txt";
@@ -2982,6 +2985,7 @@ impl CcConnectManager {
     }
 
     fn save_profile_locked(&self, request: CcConnectSaveProfileRequest) -> Result<(), String> {
+        handoff::ensure_handoff_inactive()?;
         self.refresh_process_state();
         {
             let state = self
@@ -3378,6 +3382,7 @@ impl CcConnectManager {
             .operation
             .lock()
             .map_err(|_| "cc-connect operation lock poisoned".to_string())?;
+        handoff::ensure_handoff_inactive()?;
         self.refresh_process_state();
         let mut profile =
             load_profile()?.ok_or_else(|| "cc-connect profile is not configured".to_string())?;
@@ -3672,16 +3677,16 @@ impl CcConnectManager {
     }
 
     fn prepare_process(&self) -> Result<ManagedProcess, String> {
-        let profile =
+        let base_profile =
             load_profile()?.ok_or_else(|| "cc-connect profile is not configured".to_string())?;
-        let issues = profile_issue_codes(&profile);
+        let issues = profile_issue_codes(&base_profile);
         if !issues.is_empty() {
             return Err(format!(
                 "cc-connect profile is invalid: {}",
                 issues.join(", ")
             ));
         }
-        let project = validate_registered_project(&profile)?;
+        let (profile, project) = handoff::effective_target_for_process(base_profile)?;
         if profile.agent == CcConnectAgent::Codex {
             self.check_codex_app_server(true).map_err(|err| {
                 format!("Codex interactive approval backend is unavailable: {err}")

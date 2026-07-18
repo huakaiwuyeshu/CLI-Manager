@@ -2,7 +2,12 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
-import type { SubagentTranscriptSource, TerminalSession, Project } from "../lib/types";
+import type {
+  Project,
+  RemoteHandoffSessionState,
+  SubagentTranscriptSource,
+  TerminalSession,
+} from "../lib/types";
 import { debugConsoleWarn } from "../lib/debugConsole";
 import { sourceTool, type SyncedHistoryGroup } from "../lib/externalSessionGrouping";
 import { logError, logInfo, logWarn } from "../lib/logger";
@@ -11,7 +16,14 @@ import { getTerminalTheme } from "../lib/terminalThemes";
 import { useSettingsStore } from "./settingsStore";
 import { useSessionStore } from "./sessionStore";
 import { defaultShellForOs, getOsPlatform, normalizeShellForOs, normalizeShellKey, type OsPlatform, type ShellKey } from "../lib/shell";
-import { getClaudeProviderOverride, getCodexProviderOverride, getProviderSwitchAppType, isExactCodexProject, parseProjectEnvVars } from "../lib/providerSwitching";
+import {
+  getClaudeProviderOverride,
+  getCodexProviderOverride,
+  getProviderSwitchAppType,
+  isExactCodexProject,
+  parseProjectEnvVars,
+  withCodexProviderOverride,
+} from "../lib/providerSwitching";
 import { useProjectStore } from "./projectStore";
 import { appendSyncedHistoryContextArg } from "../lib/syncedHistoryContext";
 import { translateCurrent } from "../lib/i18n";
@@ -228,6 +240,10 @@ interface TerminalStore {
   mergeWorkspanAtPaneEdge: (sourceId: string, targetId: string, targetPaneId: string, edge: TerminalPaneDropEdge) => void;
   updateSessionCwd: (sessionId: string, cwd: string) => void;
   updateSessionTerminalSnapshot: (sessionId: string, initialTerminalOutput: string) => void;
+  suspendSessionForRemoteHandoff: (sessionId: string, handoff: RemoteHandoffSessionState) => Promise<void>;
+  updateSessionRemoteHandoff: (sessionId: string, handoff: RemoteHandoffSessionState) => Promise<void>;
+  resumeSessionFromRemoteHandoff: (sessionId: string) => Promise<string>;
+  restorePersistedRemoteHandoffSessions: () => void;
   recordPtyOutputActivity: (sessionId: string) => void;
   markAttentionInputHandled: (sessionId: string) => void;
   handleCliHookEvent: (payload: CliHookPayload) => string | null;
@@ -390,7 +406,9 @@ function isPersistableSession(session: TerminalSession | undefined): boolean {
 }
 
 function hasBackendPty(session: TerminalSession): boolean {
-  return session.kind !== "subagent-transcript" && session.kind !== "file-editor";
+  return !session.remoteHandoff
+    && session.kind !== "subagent-transcript"
+    && session.kind !== "file-editor";
 }
 
 function startPtyOrphanReconcileHeartbeat() {
@@ -962,6 +980,12 @@ export interface DetachedPtyLaunchResult {
   startupCmd?: string;
 }
 
+interface CodexProviderProfileResponse {
+  providerId: string;
+  providerName: string;
+  profileName: string;
+}
+
 // hook running 超时回退：Stop/StopFailure 丢失（hook 脚本失败、bridge 不可达）
 // 时 Tab 会永久停留 running，超时后回退为 none（未知）。阈值取宽（Claude 长任务
 // 可合法运行很久），只兜底明显异常的滞留。
@@ -1117,6 +1141,256 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     )),
   })),
 
+  suspendSessionForRemoteHandoff: async (sessionId, handoff) => {
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session || (session.kind ?? "pty") !== "pty") {
+      throw new Error("remote_handoff_session_missing");
+    }
+    if (session.remoteHandoff) {
+      await get().updateSessionRemoteHandoff(sessionId, handoff);
+      return;
+    }
+
+    set((current) => ({
+      sessions: current.sessions.map((item) => (
+        item.id === sessionId ? { ...item, remoteHandoff: handoff } : item
+      )),
+    }));
+    try {
+      await invoke("pty_close", { sessionId });
+    } catch (error) {
+      set((current) => ({
+        sessions: current.sessions.map((item) => (
+          item.id === sessionId && item.remoteHandoff === handoff
+            ? { ...item, remoteHandoff: undefined }
+            : item
+        )),
+      }));
+      throw error;
+    }
+    state.statusListeners[sessionId]?.();
+    clearHookRunningTimeout(sessionId);
+
+    const nextSessions = get().sessions;
+    const sessionStatuses = { ...get().sessionStatuses, [sessionId]: "exited" as SessionStatus };
+    const statusListeners = { ...get().statusListeners };
+    const tabNotifications = { ...get().tabNotifications, [sessionId]: "none" as TabNotificationState };
+    const tabStatuses = { ...get().tabStatuses };
+    const tabStatusDetails = { ...get().tabStatusDetails };
+    const ptyOutputActivityAt = { ...get().ptyOutputActivityAt };
+    delete statusListeners[sessionId];
+    delete tabStatuses[sessionId];
+    delete tabStatusDetails[sessionId];
+    delete ptyOutputActivityAt[sessionId];
+    set({
+      sessions: nextSessions,
+      sessionStatuses,
+      statusListeners,
+      tabNotifications,
+      tabStatuses,
+      tabStatusDetails,
+      ptyOutputActivityAt,
+    });
+    await useSessionStore.getState().saveSessions(nextSessions);
+  },
+
+  updateSessionRemoteHandoff: async (sessionId, handoff) => {
+    const state = get();
+    if (!state.sessions.some((session) => session.id === sessionId)) return;
+    const sessions = state.sessions.map((session) => (
+      session.id === sessionId ? { ...session, remoteHandoff: handoff } : session
+    ));
+    set({ sessions });
+    await useSessionStore.getState().saveSessions(sessions);
+  },
+
+  resumeSessionFromRemoteHandoff: async (sessionId) => {
+    const state = get();
+    const lockedSession = state.sessions.find((session) => session.id === sessionId);
+    if (!lockedSession?.remoteHandoff) {
+      throw new Error("remote_handoff_session_missing");
+    }
+    const projectState = useProjectStore.getState();
+    const project = lockedSession.projectId
+      ? projectState.projects.find((item) => item.id === lockedSession.projectId)
+      : undefined;
+    if (!project) throw new Error("remote_handoff_project_missing");
+    if (
+      lockedSession.worktreeId
+      && !projectState.worktrees.some((worktree) => (
+        worktree.id === lockedSession.worktreeId
+        && worktree.project_id === project.id
+        && worktree.status === "active"
+      ))
+    ) {
+      throw new Error("remote_handoff_worktree_missing");
+    }
+
+    const os = await getOsPlatform();
+    const resolvedShell = resolveShellForPty(lockedSession.shell, true, os);
+    const shellKey = normalizeShellKey(resolvedShell) ?? null;
+    const providerProject = resolveProjectForProviderLaunch(
+      project,
+      projectState.worktrees,
+      lockedSession.worktreeId
+    );
+    const recordedProviderId = lockedSession.remoteHandoff.providerId?.trim() || null;
+    let resumeProject = providerProject;
+    let codexProvider = getCodexProviderLaunchConfig(
+      lockedSession.projectId,
+      lockedSession.startupCmd,
+      lockedSession.worktreeId
+    );
+    if (recordedProviderId) {
+      const settings = useSettingsStore.getState();
+      const prepared = await invoke<CodexProviderProfileResponse>(
+        "ccswitch_prepare_codex_provider",
+        {
+          providerId: recordedProviderId,
+          dbPath: settings.ccSwitchDbPath ?? undefined,
+          codexConfigDir: settings.codexHookConfigDir ?? undefined,
+        }
+      );
+      if (prepared.providerId.trim() !== recordedProviderId) {
+        throw new Error("remote_handoff_provider_mismatch");
+      }
+      resumeProject = {
+        ...providerProject,
+        startup_cmd: "",
+        cli_args: providerProject.startup_cmd.trim() ? "" : providerProject.cli_args,
+        provider_overrides: withCodexProviderOverride(providerProject.provider_overrides, {
+          providerId: prepared.providerId,
+          providerName: prepared.providerName,
+          profileName: prepared.profileName,
+        }),
+      };
+      codexProvider = {
+        providerId: recordedProviderId,
+        dbPath: settings.ccSwitchDbPath ?? undefined,
+        codexConfigDir: settings.codexHookConfigDir ?? undefined,
+      };
+    }
+    const resumeCommand = buildCliResumeStartupCommand(
+      "codex",
+      lockedSession.remoteHandoff.cliSessionId || lockedSession.cliSessionId,
+      resumeProject
+    );
+    const launchStartupCmd = prepareStartupCommandForPty(resumeCommand, shellKey);
+    const newSessionId = await invoke<string>("pty_create", {
+      cwd: lockedSession.remoteHandoff.workDir || lockedSession.cwd || null,
+      envVars: buildPtyEnvVars(lockedSession.envVars ?? null, resolvedShell),
+      shell: resolvedShell,
+      hookEnvEnabled: await shouldEnableHookEnv(),
+      claudeProvider: null,
+      codexProvider,
+    });
+    const replacement: TerminalSession = {
+      ...lockedSession,
+      id: newSessionId,
+      shell: resolvedShell,
+      remoteHandoff: undefined,
+      initialTerminalOutput: undefined,
+      deferStartupUntilInitialOutput: false,
+    };
+    const unlisten = await listen<PtyStatusPayload>("pty-status-" + newSessionId, (event) => {
+      const status = event.payload.status as SessionStatus;
+      logTerminalExitStatus(replacement, event.payload);
+      useTerminalStore.setState((current) => ({
+        sessionStatuses: { ...current.sessionStatuses, [newSessionId]: status },
+      }));
+    }).catch(async (err) => {
+      await invoke("pty_close", { sessionId: newSessionId }).catch(() => {});
+      throw err;
+    });
+
+    const current = get();
+    if (!current.sessions.some((session) => session.id === sessionId && session.remoteHandoff)) {
+      unlisten();
+      await invoke("pty_close", { sessionId: newSessionId }).catch(() => {});
+      throw new Error("remote_handoff_session_changed");
+    }
+    const sessions = current.sessions.map((session) => (
+      session.id === sessionId ? replacement : session
+    ));
+    const sessionIdMap = Object.fromEntries(
+      current.sessions.map((session) => [session.id, session.id === sessionId ? newSessionId : session.id])
+    );
+    const workspans = restoreTerminalWorkspans(current.workspans, sessionIdMap);
+    const mirror = buildWorkspanMirror(workspans, current.activeWorkspanId);
+    const sessionStatuses = { ...current.sessionStatuses };
+    const statusListeners = { ...current.statusListeners };
+    const tabNotifications = { ...current.tabNotifications };
+    const tabStatuses = { ...current.tabStatuses };
+    const tabStatusDetails = { ...current.tabStatusDetails };
+    const ptyOutputActivityAt = { ...current.ptyOutputActivityAt };
+    delete sessionStatuses[sessionId];
+    delete statusListeners[sessionId];
+    delete tabNotifications[sessionId];
+    delete tabStatuses[sessionId];
+    delete tabStatusDetails[sessionId];
+    delete ptyOutputActivityAt[sessionId];
+    sessionStatuses[newSessionId] = "running";
+    statusListeners[newSessionId] = unlisten;
+    set({
+      sessions,
+      ...mirror,
+      sessionStatuses,
+      statusListeners,
+      tabNotifications,
+      tabStatuses,
+      tabStatusDetails,
+      ptyOutputActivityAt,
+    });
+    try {
+      await useSessionStore.getState().saveSessions(sessions);
+      await useSessionStore.getState().saveActiveSessionId(mirror.activeSessionId);
+      await useSessionStore.getState().saveWorkspans(workspans, mirror.activeWorkspanId, sessions);
+    } catch (err) {
+      logError("Failed to persist resumed remote handoff session", { sessionId, newSessionId, err });
+    }
+
+    if (launchStartupCmd) {
+      setTimeout(() => {
+        invoke("pty_write", {
+          sessionId: newSessionId,
+          data: formatStartupInputForPty(launchStartupCmd, shellKey),
+        }).catch((err) => {
+          logError("Failed to resume remotely handed-off Codex session", {
+            sessionId: newSessionId,
+            err,
+          });
+        });
+      }, 500);
+    }
+    return newSessionId;
+  },
+
+  restorePersistedRemoteHandoffSessions: () => {
+    const persisted = useSessionStore
+      .getState()
+      .sessions
+      .filter((session) => Boolean(session.remoteHandoff));
+    if (persisted.length === 0) return;
+    const state = get();
+    const openIds = new Set(state.sessions.map((session) => session.id));
+    const missing = persisted.filter((session) => !openIds.has(session.id));
+    if (missing.length === 0) return;
+
+    const sessions = [...state.sessions, ...missing];
+    let workspans = [...state.workspans];
+    for (const session of missing) {
+      workspans.push(createTerminalWorkspan(createWorkspanId(), createPaneId(), session.id));
+    }
+    const activeWorkspanId = state.activeWorkspanId
+      ?? workspans[workspans.length - 1]?.id
+      ?? null;
+    const mirror = buildWorkspanMirror(workspans, activeWorkspanId);
+    const sessionStatuses = { ...state.sessionStatuses };
+    for (const session of missing) sessionStatuses[session.id] = "exited";
+    set({ sessions, ...mirror, sessionStatuses });
+  },
+
   recordPtyOutputActivity: (sessionId) => {
     const now = Date.now();
     const previous = get().ptyOutputActivityAt[sessionId] ?? 0;
@@ -1234,6 +1508,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const state = get();
     const ptySessionIds = [id];
     const closingSession = state.sessions.find((s) => s.id === id);
+    if (
+      closingSession?.remoteHandoff
+      && closingSession.remoteHandoff.phase !== "recovery_failed"
+    ) {
+      toast.warning(translateCurrent("remoteHandoff.toast.lockedSession"));
+      return;
+    }
     const isTranscript = closingSession?.kind === "subagent-transcript";
     const isFileEditor = closingSession?.kind === "file-editor";
     const closeTimer = subagentCloseTimers.get(id);
@@ -1804,6 +2085,18 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const behavior = useSettingsStore.getState().unsplitBehavior;
     const result = unsplitPaneLeaf(owner.paneTree, pane.id, behavior);
     const closedSessionIds = result.closedSessionIds;
+    if (
+      closedSessionIds.some((closedSessionId) => (
+        state.sessions.some((session) => (
+          session.id === closedSessionId
+          && Boolean(session.remoteHandoff)
+          && session.remoteHandoff?.phase !== "recovery_failed"
+        ))
+      ))
+    ) {
+      toast.warning(translateCurrent("remoteHandoff.toast.lockedSession"));
+      return;
+    }
     const transcriptClosedIds = new Set(
       state.sessions
         .filter((s) => closedSessionIds.includes(s.id) && s.kind === "subagent-transcript")
@@ -1959,6 +2252,21 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       const ps = persistedSessions[i];
       if (isCliManagerSyncArtifactText(ps.title ?? "") || isCliManagerSyncArtifactText(ps.startupCmd ?? "")) {
         skippedSessions.push(ps.title ?? `会话 ${i + 1}`);
+        continue;
+      }
+
+      if (ps.remoteHandoff) {
+        if (ps.projectId && !projectMap.has(ps.projectId)) {
+          skippedSessions.push(ps.title ?? ("会话 " + (i + 1)));
+          continue;
+        }
+        newIdMap[ps.id] = ps.id;
+        restoredSessions.push({
+          ...ps,
+          kind: undefined,
+          deferStartupUntilInitialOutput: false,
+        });
+        restoredStatuses[ps.id] = "exited";
         continue;
       }
 

@@ -1,5 +1,18 @@
-import type { Project, TerminalSession } from "./types";
-import type { TabNotificationState, TabStatusDetails } from "../stores/terminalStore";
+import type {
+  Project,
+  RemoteHandoffPhase,
+  TerminalSession,
+  WorktreeRecord,
+} from "./types";
+import {
+  getRemoteHandoffEligibility,
+  type CcConnectHandoffInfo,
+} from "./remoteHandoff";
+import type {
+  SessionStatus,
+  TabNotificationState,
+  TabStatusDetails,
+} from "../stores/terminalStore";
 import type { DesktopPetSettings, LanguagePreference } from "../stores/settingsStore";
 
 export const DESKTOP_PET_WINDOW_LABEL = "desktop-pet";
@@ -10,6 +23,8 @@ export const DESKTOP_PET_OPEN_TARGET_EVENT = "desktop-pet-open-target";
 export const DESKTOP_PET_OPEN_SETTINGS_EVENT = "desktop-pet-open-settings";
 export const DESKTOP_PET_CLOSE_MENU_EVENT = "desktop-pet-close-menu";
 export const DESKTOP_PET_POSITION_EVENT = "desktop-pet-position";
+export const DESKTOP_PET_HANDOFF_START_EVENT = "remote-handoff-start-request";
+export const DESKTOP_PET_HANDOFF_CANCEL_EVENT = "remote-handoff-cancel-request";
 
 export type DesktopPetMood = "idle" | "working" | "waiting" | "success" | "error" | "sleeping";
 
@@ -84,6 +99,9 @@ export interface DesktopPetTarget {
   status: TabNotificationState;
   active: boolean;
   updatedAt: number;
+  handoffEligible: boolean;
+  handedOff: boolean;
+  handoffPhase: RemoteHandoffPhase | null;
 }
 
 export interface DesktopPetSnapshot {
@@ -96,6 +114,8 @@ export interface DesktopPetSnapshot {
   attentionCount: number;
   updatedAt: number;
   targets: DesktopPetTarget[];
+  handoff: CcConnectHandoffInfo | null;
+  handoffBusy: boolean;
 }
 
 export interface DesktopPetConfigPayload {
@@ -115,6 +135,15 @@ export interface DesktopPetConfigPayload {
     taskList: string;
     currentTask: string;
     unnamedTask: string;
+    openCurrent: string;
+    remoteHandoff: string;
+    cancelHandoff: string;
+    handoffSessions: string;
+    handoffPending: string;
+    handoffCancelling: string;
+    handedOff: string;
+    handoffRecoveryFailed: string;
+    noHandoffSessions: string;
   };
 }
 
@@ -146,12 +175,13 @@ export interface DesktopPetMenuWindowGeometry {
   targetListHeight: number;
 }
 
-const DESKTOP_PET_MENU_TARGET_EXTRA_WIDTH = 306;
+const DESKTOP_PET_MENU_TARGET_EXTRA_WIDTH = 492;
 const DESKTOP_PET_MENU_ACTIONS_EXTRA_WIDTH = 214;
 const DESKTOP_PET_MENU_CARD_HEIGHT = 58;
-const DESKTOP_PET_MENU_CARD_STEP = 43;
+const DESKTOP_PET_MENU_CARD_STEP = 54;
+const DESKTOP_PET_MENU_CARD_BREATHING_ROOM = 12;
 const DESKTOP_PET_MENU_MAX_VISIBLE_TARGETS = 5;
-const DESKTOP_PET_MENU_VERTICAL_CHROME = 64;
+const DESKTOP_PET_MENU_VERTICAL_CHROME = 28;
 export const DESKTOP_PET_OUTPUT_ACTIVITY_TTL_MS = 6000;
 const DESKTOP_PET_OUTPUT_ACTIVITY_FINAL_GRACE_MS = 1200;
 
@@ -173,7 +203,9 @@ export function calculateDesktopPetMenuWindowGeometry(
     DESKTOP_PET_MENU_MAX_VISIBLE_TARGETS
   );
   const requestedTargetListHeight = visibleTargets > 0
-    ? DESKTOP_PET_MENU_CARD_HEIGHT + (visibleTargets - 1) * DESKTOP_PET_MENU_CARD_STEP
+    ? DESKTOP_PET_MENU_CARD_HEIGHT
+      + (visibleTargets - 1) * DESKTOP_PET_MENU_CARD_STEP
+      + DESKTOP_PET_MENU_CARD_BREATHING_ROOM
     : 0;
   const requestedPanelWidth = visibleTargets > 0
     ? DESKTOP_PET_MENU_TARGET_EXTRA_WIDTH
@@ -181,6 +213,7 @@ export function calculateDesktopPetMenuWindowGeometry(
   let logicalWidth = anchorWidth + requestedPanelWidth;
   let logicalHeight = Math.max(
     anchorHeight,
+    224,
     requestedTargetListHeight > 0
       ? requestedTargetListHeight + DESKTOP_PET_MENU_VERTICAL_CHROME
       : anchorHeight
@@ -312,10 +345,14 @@ interface DeriveDesktopPetSnapshotInput {
   persistedSessions: TerminalSession[];
   activeSessionId: string | null;
   tabNotifications: Record<string, TabNotificationState>;
+  sessionStatuses: Record<string, SessionStatus>;
   tabStatusDetails: Record<string, TabStatusDetails>;
   ptyOutputActivityAt: Record<string, number>;
   projects: Project[];
+  worktrees: WorktreeRecord[];
   backgroundTasks: BackgroundPetTask[];
+  activeHandoff: CcConnectHandoffInfo | null;
+  handoffBusy: boolean;
 }
 
 function compareDesktopPetTargets(left: DesktopPetTarget, right: DesktopPetTarget): number {
@@ -325,7 +362,12 @@ function compareDesktopPetTargets(left: DesktopPetTarget, right: DesktopPetTarge
   return right.updatedAt - left.updatedAt;
 }
 
-function snapshotFromTargets(targets: DesktopPetTarget[], now: number): DesktopPetSnapshot {
+function snapshotFromTargets(
+  targets: DesktopPetTarget[],
+  now: number,
+  handoff: CcConnectHandoffInfo | null,
+  handoffBusy: boolean
+): DesktopPetSnapshot {
   if (targets.length === 0) {
     return {
       mood: "sleeping",
@@ -337,6 +379,8 @@ function snapshotFromTargets(targets: DesktopPetTarget[], now: number): DesktopP
       attentionCount: 0,
       updatedAt: now,
       targets: [],
+      handoff,
+      handoffBusy,
     };
   }
 
@@ -352,6 +396,8 @@ function snapshotFromTargets(targets: DesktopPetTarget[], now: number): DesktopP
     attentionCount: candidates.filter((candidate) => candidate.status === "attention").length,
     updatedAt: selected.updatedAt || now,
     targets: candidates,
+    handoff,
+    handoffBusy,
   };
 }
 
@@ -360,6 +406,7 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
   const openPtySessions = input.sessions.filter((session) => !session.kind || session.kind === "pty");
   const openIds = new Set(openPtySessions.map((session) => session.id));
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
+  const worktreeById = new Map(input.worktrees.map((worktree) => [worktree.id, worktree]));
   const persistedById = new Map(input.persistedSessions.map((session) => [session.id, session]));
   const backgroundById = new Map(input.backgroundTasks.map((task) => [task.sessionId, task]));
   const candidates: DesktopPetTarget[] = openPtySessions.map((session) => {
@@ -372,6 +419,17 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
       now
     );
     const project = session.projectId ? projectById.get(session.projectId) : undefined;
+    const handoffPhase = session.remoteHandoff?.phase
+      ?? (input.activeHandoff?.localSessionId === session.id ? "active" : null);
+    const handedOff = handoffPhase !== null && handoffPhase !== "recovery_failed";
+    const eligibility = getRemoteHandoffEligibility({
+      session,
+      project,
+      worktree: session.worktreeId ? worktreeById.get(session.worktreeId) ?? null : null,
+      notification: status,
+      processStatus: input.sessionStatuses[session.id],
+      activeHandoff: input.activeHandoff,
+    });
     return {
       sessionId: session.id,
       daemonOnly: false,
@@ -380,6 +438,9 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
       sessionTitle: session.title || null,
       projectName: project?.name ?? null,
       active: session.id === input.activeSessionId,
+      handoffEligible: eligibility.eligible,
+      handedOff,
+      handoffPhase,
     };
   });
   for (const task of input.backgroundTasks) {
@@ -394,10 +455,30 @@ export function deriveDesktopPetSnapshot(input: DeriveDesktopPetSnapshotInput): 
       sessionTitle: persisted?.title || task.cwd || null,
       projectName: project?.name ?? null,
       active: false,
+      handoffEligible: false,
+      handedOff: false,
+      handoffPhase: null,
+    });
+  }
+  if (
+    input.activeHandoff
+    && !candidates.some((candidate) => candidate.sessionId === input.activeHandoff?.localSessionId)
+  ) {
+    candidates.push({
+      sessionId: input.activeHandoff.localSessionId,
+      daemonOnly: false,
+      status: "none",
+      updatedAt: input.activeHandoff.startedAtMs,
+      sessionTitle: null,
+      projectName: input.activeHandoff.projectName,
+      active: false,
+      handoffEligible: false,
+      handedOff: true,
+      handoffPhase: "active",
     });
   }
 
-  return snapshotFromTargets(candidates, now);
+  return snapshotFromTargets(candidates, now, input.activeHandoff, input.handoffBusy);
 }
 
 export function desktopPetScale(size: DesktopPetSettings["size"]): number {

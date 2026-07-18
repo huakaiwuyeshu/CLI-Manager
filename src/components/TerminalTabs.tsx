@@ -49,6 +49,7 @@ import {
 } from "./terminal/TerminalSidePanel";
 import { SubagentTranscriptView } from "./terminal/SubagentTranscriptView";
 import { SessionReplayPanel } from "./terminal/SessionReplayPanel";
+import { RemoteHandoffOverlay } from "./terminal/RemoteHandoffOverlay";
 import { WorktreeFinishDialog } from "./worktree/WorktreeFinishDialog";
 import { FileEditorPane } from "./files/FileEditorPane";
 import { FileExplorerSidebar } from "./files/FileExplorerSidebar";
@@ -1599,6 +1600,8 @@ function PaneLeafView({
                 title={session.title}
                 isVisible={!historyActive && isLayoutVisible && session.id === effectivePaneActiveSessionId}
               />
+            ) : session.remoteHandoff ? (
+              <RemoteHandoffOverlay session={session} />
             ) : (
               <XTermTerminal
                 sessionId={session.id}
