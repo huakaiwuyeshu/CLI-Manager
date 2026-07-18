@@ -59,7 +59,11 @@ const WEIXIN_TOKEN_ENV: &str = "CLI_MANAGER_CC_WEIXIN_TOKEN";
 const WECOM_BOT_ID_ENV: &str = "CLI_MANAGER_CC_WECOM_BOT_ID";
 const WECOM_BOT_SECRET_ENV: &str = "CLI_MANAGER_CC_WECOM_BOT_SECRET";
 const CODEX_LAUNCHER_ENV: &str = "CLI_MANAGER_CODEX_LAUNCHER";
-const CODEX_PROFILE_ENV: &str = "CLI_MANAGER_CODEX_PROFILE";
+const CODEX_BASE_URL_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_BASE_URL_OVERRIDE";
+const CODEX_ENV_KEY_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_ENV_KEY_OVERRIDE";
+const CODEX_MODEL_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_MODEL_OVERRIDE";
+const CODEX_WIRE_API_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_WIRE_API_OVERRIDE";
+const CODEX_REMOTE_PROVIDER_NAME: &str = "cli_manager_remote";
 // Official v1.4.1 executable digests from the upstream release checksums.txt.
 // Hash before executing --version so an arbitrary PATH candidate cannot run during detection.
 const VERIFIED_V1_4_1_BINARY_SHA256: &[&str] = &[
@@ -1912,7 +1916,10 @@ struct RemoteCodexLaunch {
     wrapper_dir: PathBuf,
     launcher: PathBuf,
     codex_home: PathBuf,
-    profile_name: String,
+    base_url_override: String,
+    env_key_override: String,
+    model_override: Option<String>,
+    wire_api_override: String,
     env_key: String,
     secret: String,
 }
@@ -1953,13 +1960,77 @@ fn resolve_codex_launcher(_wrapper_dir: &Path) -> Result<PathBuf, String> {
 fn codex_profile_wrapper_payload() -> String {
     #[cfg(target_os = "windows")]
     let payload = format!(
-        "@echo off\r\ncall \"%{CODEX_LAUNCHER_ENV}%\" --profile \"%{CODEX_PROFILE_ENV}%\" %*\r\nexit /b %errorlevel%\r\n"
+        "@echo off\r\nsetlocal\r\nif defined {CODEX_MODEL_OVERRIDE_ENV} (\r\n  call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" -c \"%{CODEX_MODEL_OVERRIDE_ENV}%\" %*\r\n) else (\r\n  call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" %*\r\n)\r\nexit /b %errorlevel%\r\n"
     );
     #[cfg(not(target_os = "windows"))]
     let payload = format!(
-        "#!/bin/sh\nexec \"${CODEX_LAUNCHER_ENV}\" --profile \"${CODEX_PROFILE_ENV}\" \"$@\"\n"
+        "#!/bin/sh\nif [ -n \"${{{CODEX_MODEL_OVERRIDE_ENV}:-}}\" ]; then\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" -c \"${CODEX_MODEL_OVERRIDE_ENV}\" \"$@\"\nelse\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" \"$@\"\nfi\n"
     );
     payload
+}
+
+fn codex_wrapper_override(key: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("Codex {key} is empty"));
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '"' | '%' | '!' | '^' | '&' | '|' | '<' | '>'))
+    {
+        return Err(format!(
+            "Codex {key} contains unsupported command characters"
+        ));
+    }
+    Ok(format!("{key}={value}"))
+}
+
+fn codex_base_url_override(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let url =
+        reqwest::Url::parse(value).map_err(|_| "Codex Provider base URL is invalid".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("Codex Provider base URL must use HTTP or HTTPS".to_string());
+    }
+    codex_wrapper_override(
+        &format!("model_providers.{CODEX_REMOTE_PROVIDER_NAME}.base_url"),
+        value,
+    )
+}
+
+fn codex_env_key_override(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let mut chars = value.chars();
+    if !chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        return Err("Codex Provider environment key is invalid".to_string());
+    }
+    codex_wrapper_override(
+        &format!("model_providers.{CODEX_REMOTE_PROVIDER_NAME}.env_key"),
+        value,
+    )
+}
+
+fn codex_wire_api_override(value: Option<&str>) -> Result<String, String> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("responses");
+    codex_wrapper_override(
+        &format!("model_providers.{CODEX_REMOTE_PROVIDER_NAME}.wire_api"),
+        value,
+    )
+}
+
+fn codex_model_override(value: Option<&str>) -> Result<Option<String>, String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| codex_wrapper_override("model", value))
+        .transpose()
 }
 
 fn write_codex_profile_wrapper() -> Result<PathBuf, String> {
@@ -1998,7 +2069,6 @@ fn prepare_remote_codex_launch(
             ),
         )?;
     let codex_home = codex_config_dir(profile)?;
-    crate::commands::ccswitch::write_codex_profile_to_dir(&codex_home, &runtime)?;
     let wrapper_path = write_codex_profile_wrapper()?;
     let wrapper_dir = wrapper_path
         .parent()
@@ -2009,7 +2079,10 @@ fn prepare_remote_codex_launch(
         wrapper_dir,
         launcher,
         codex_home,
-        profile_name: runtime.profile_name,
+        base_url_override: codex_base_url_override(&runtime.base_url)?,
+        env_key_override: codex_env_key_override(&runtime.env_key)?,
+        model_override: codex_model_override(runtime.model.as_deref())?,
+        wire_api_override: codex_wire_api_override(runtime.wire_api.as_deref())?,
         env_key: runtime.env_key,
         secret: runtime.secret_value,
     }))
@@ -2028,9 +2101,53 @@ fn apply_remote_codex_launch_environment(
     command
         .env("PATH", path_value)
         .env(CODEX_LAUNCHER_ENV, &launch.launcher)
-        .env(CODEX_PROFILE_ENV, &launch.profile_name)
+        .env(CODEX_BASE_URL_OVERRIDE_ENV, &launch.base_url_override)
+        .env(CODEX_ENV_KEY_OVERRIDE_ENV, &launch.env_key_override)
+        .env(CODEX_WIRE_API_OVERRIDE_ENV, &launch.wire_api_override)
         .env("CODEX_HOME", &launch.codex_home);
+    match launch.model_override.as_ref() {
+        Some(model_override) => {
+            command.env(CODEX_MODEL_OVERRIDE_ENV, model_override);
+        }
+        None => {
+            command.env_remove(CODEX_MODEL_OVERRIDE_ENV);
+        }
+    }
     Ok(())
+}
+
+fn probe_remote_codex_app_server(launch: &RemoteCodexLaunch) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = silent_command("cmd.exe");
+        command
+            .args(["/d", "/c"])
+            .arg(launch.wrapper_dir.join("codex.cmd"));
+        command
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = silent_command(&path_string(&launch.wrapper_dir.join("codex")));
+    command.args(["app-server", "--listen", "stdio://"]);
+    command.env(&launch.env_key, &launch.secret);
+    apply_remote_codex_launch_environment(&mut command, launch)?;
+    let output = output_with_timeout(command, CODEX_APP_SERVER_PROBE_TIMEOUT)
+        .map_err(|err| format!("Codex Provider app-server probe failed: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = redact_log_line(
+        &output_text(&output.stdout, &output.stderr),
+        std::slice::from_ref(&launch.secret),
+    );
+    Err(format!(
+        "Codex Provider app-server probe exited with {}: {}",
+        output.status,
+        if detail.is_empty() {
+            "no diagnostic output"
+        } else {
+            &detail
+        }
+    ))
 }
 
 async fn load_provider_catalog(database_path: Option<&Path>) -> ProviderCatalog {
@@ -3571,6 +3688,10 @@ impl CcConnectManager {
             })?;
         }
         let codex_launch = prepare_remote_codex_launch(&profile, &project)?;
+        if let Some(launch) = codex_launch.as_ref() {
+            probe_remote_codex_app_server(launch)
+                .map_err(|err| format!("Codex project Provider backend is unavailable: {err}"))?;
+        }
         let binary = self.detect(profile.executable_path.as_deref(), true)?;
         if !binary.compatible {
             return Err(format!(
@@ -4659,11 +4780,15 @@ allow_from = ""
     }
 
     #[test]
-    fn codex_wrapper_forces_the_registered_profile_without_embedding_secrets() {
+    fn codex_wrapper_forces_the_registered_provider_without_embedding_secrets() {
         let payload = codex_profile_wrapper_payload();
-        assert!(payload.contains("--profile"));
+        assert!(!payload.contains("--profile"));
+        assert!(payload.contains("model_provider=cli_manager_remote"));
         assert!(payload.contains(CODEX_LAUNCHER_ENV));
-        assert!(payload.contains(CODEX_PROFILE_ENV));
+        assert!(payload.contains(CODEX_BASE_URL_OVERRIDE_ENV));
+        assert!(payload.contains(CODEX_ENV_KEY_OVERRIDE_ENV));
+        assert!(payload.contains(CODEX_MODEL_OVERRIDE_ENV));
+        assert!(payload.contains(CODEX_WIRE_API_OVERRIDE_ENV));
         assert!(!payload.contains("sk-provider-secret"));
 
         let mut command = Command::new("cc-connect");
@@ -4671,7 +4796,14 @@ allow_from = ""
             wrapper_dir: PathBuf::from(r"C:\Users\test\.cli-manager\remote-manager\bin"),
             launcher: PathBuf::from(r"D:\npm\codex.cmd"),
             codex_home: PathBuf::from(r"C:\Users\test\.codex"),
-            profile_name: "cli-manager-provider-123".to_string(),
+            base_url_override:
+                "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
+                    .to_string(),
+            env_key_override:
+                "model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY"
+                    .to_string(),
+            model_override: Some("model=gpt-5.4".to_string()),
+            wire_api_override: "model_providers.cli_manager_remote.wire_api=responses".to_string(),
             env_key: "CLI_MANAGER_CODEX_PROVIDER_API_KEY".to_string(),
             secret: "sk-provider-secret".to_string(),
         };
@@ -4686,8 +4818,15 @@ allow_from = ""
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            environment.get(CODEX_PROFILE_ENV),
-            Some(&Some("cli-manager-provider-123".to_string()))
+            environment.get(CODEX_BASE_URL_OVERRIDE_ENV),
+            Some(&Some(
+                "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            environment.get(CODEX_MODEL_OVERRIDE_ENV),
+            Some(&Some("model=gpt-5.4".to_string()))
         );
         assert_eq!(
             environment.get("CODEX_HOME"),
@@ -4701,7 +4840,7 @@ allow_from = ""
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn codex_wrapper_places_profile_before_the_app_server_subcommand() {
+    fn codex_wrapper_places_supported_overrides_before_the_app_server_subcommand() {
         let directory = tempfile::tempdir().unwrap();
         let launcher = directory.path().join("real-codex.cmd");
         let wrapper = directory.path().join("codex.cmd");
@@ -4718,7 +4857,19 @@ allow_from = ""
             .arg(&wrapper)
             .args(["app-server", "--listen", "stdio://"])
             .env(CODEX_LAUNCHER_ENV, &launcher)
-            .env(CODEX_PROFILE_ENV, "cli-manager-provider-123")
+            .env(
+                CODEX_BASE_URL_OVERRIDE_ENV,
+                "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1",
+            )
+            .env(
+                CODEX_ENV_KEY_OVERRIDE_ENV,
+                "model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY",
+            )
+            .env(CODEX_MODEL_OVERRIDE_ENV, "model=gpt-5.4")
+            .env(
+                CODEX_WIRE_API_OVERRIDE_ENV,
+                "model_providers.cli_manager_remote.wire_api=responses",
+            )
             .env("CLI_MANAGER_TEST_CODEX_ARGS", &arguments)
             .status()
             .unwrap();
@@ -4726,8 +4877,62 @@ allow_from = ""
         assert!(status.success());
         assert_eq!(
             fs::read_to_string(arguments).unwrap().trim(),
-            "--profile \"cli-manager-provider-123\" app-server --listen stdio://"
+            "-c \"model_provider=cli_manager_remote\" -c \"model_providers.cli_manager_remote.name=CLI-Manager remote\" -c \"model_providers.cli_manager_remote.base_url=https://provider.example.com/v1\" -c \"model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY\" -c \"model_providers.cli_manager_remote.wire_api=responses\" -c \"model=gpt-5.4\" app-server --listen stdio://"
         );
+    }
+
+    #[test]
+    fn codex_app_server_overrides_reject_command_injection_characters() {
+        assert_eq!(
+            codex_base_url_override("https://provider.example.com/v1").unwrap(),
+            "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
+        );
+        assert!(codex_base_url_override("https://provider.example.com/v1?x=1&whoami").is_err());
+        assert!(codex_base_url_override("file:///tmp/provider").is_err());
+        assert!(codex_env_key_override("OPENAI_API_KEY").is_ok());
+        assert!(codex_env_key_override("OPENAI_API_KEY & whoami").is_err());
+        assert_eq!(
+            codex_wire_api_override(None).unwrap(),
+            "model_providers.cli_manager_remote.wire_api=responses"
+        );
+        assert_eq!(codex_model_override(None).unwrap(), None);
+        assert!(codex_model_override(Some("gpt-5.4\" & whoami")).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn codex_provider_probe_reports_startup_errors_without_leaking_secrets() {
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = directory.path().join("real-codex.cmd");
+        let wrapper_dir = directory.path().join("bin");
+        let wrapper = wrapper_dir.join("codex.cmd");
+        fs::create_dir_all(&wrapper_dir).unwrap();
+        fs::write(
+            &launcher,
+            "@echo off\r\n>&2 echo provider startup rejected %CLI_MANAGER_CODEX_PROVIDER_API_KEY%\r\nexit /b 9\r\n",
+        )
+        .unwrap();
+        fs::write(&wrapper, codex_profile_wrapper_payload()).unwrap();
+        let launch = RemoteCodexLaunch {
+            wrapper_dir,
+            launcher,
+            codex_home: directory.path().join("codex-home"),
+            base_url_override:
+                "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
+                    .to_string(),
+            env_key_override:
+                "model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY"
+                    .to_string(),
+            model_override: None,
+            wire_api_override: "model_providers.cli_manager_remote.wire_api=responses".to_string(),
+            env_key: "CLI_MANAGER_CODEX_PROVIDER_API_KEY".to_string(),
+            secret: "sk-provider-secret".to_string(),
+        };
+
+        let error = probe_remote_codex_app_server(&launch).unwrap_err();
+        assert!(error.contains("provider startup rejected"));
+        assert!(!error.contains("sk-provider-secret"));
+        assert!(error.contains("[REDACTED]"));
     }
 
     #[test]

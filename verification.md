@@ -182,3 +182,34 @@
 - `.\\node_modules\\.bin\\tsc.cmd --noEmit` 通过。
 - `npm run build` 通过：Vite 完成 6621 个模块转换；仅保留既有的大 chunk 警告。
 - 尚未使用真实微信账号扫描二维码，避免未经确认操作外部账号；本次未打包、未 push。
+
+## cc-connect 远程 Codex app-server Provider 兼容修复（2026-07-18）
+
+### 根因与发现清单
+
+- 根因位于 CLI-Manager Provider 包装器与 Codex app-server 的进程参数边界：包装器无条件执行 `codex --profile <项目 Provider> app-server`，而本机 Codex CLI 0.144.5 明确拒绝 app-server 使用 `--profile`，进程立即退出，cc-connect 因此只得到 `initialize: EOF`。
+- 运行日志证明微信授权链路正常完成 `ilink ready-for-poll`、`platform ready`、`message received`；失败发生在消息进入 Codex 子进程后的 0.3~1 秒内，与微信 Token、允许用户和项目路径无关。
+- 已修改 `cc_connect.rs`：Provider 包装器、命令字符校验、真实包装器启动预检、Provider 密钥环境注入及对应测试。
+- 已修改 `ccswitch.rs`：仅将已解析的 base URL、model 与 wire API 以 crate 内只读字段提供给远程启动链路，不改变 Provider 解析、数据库或本地终端启动行为。
+- 已确认无需修改：cc-connect 源码/安装、微信扫码授权、四个平台协议配置、项目切换命令、Windows 凭据存储、Git safe.directory 和代理继承。
+
+### 修复与场景覆盖
+
+- app-server 不再使用 `--profile`；包装器改用 Codex CLI 支持的全局 `-c` 覆盖固定的 `cli_manager_remote` Provider，强制传入项目登记的 base URL、env key、wire API 和可选 model。
+- Provider 密钥仍只注入 cc-connect/Codex 子进程环境，不进入包装脚本、托管 TOML、日志或错误消息；包装器动态值拒绝控制字符及 Windows cmd 注入字符。
+- 启动 cc-connect 前使用同一包装器和同一 Provider 环境实际启动 `app-server --listen stdio://`，关闭探测 stdin 后校验退出码；不兼容时在设置启动阶段返回已脱敏的原始 stderr。
+- 平台场景：微信、Telegram、飞书、企业微信共用同一 Agent 启动链路；修复不依赖平台协议。
+- Provider 场景：项目显式 Provider、全局回退 Provider、带/不带 model、默认 responses wire API、切换项目后重启均使用当次数据库解析结果；无 Provider 的既有行为保持不变。
+- 会话场景：首次会话与恢复会话都由 cc-connect 启动同一 app-server；YOLO、代理、窗口焦点、分屏、Worktree 和 hook 状态不改变 Provider 参数生成。
+
+### 验证结果
+
+- 已用本机 Codex CLI 0.144.5 复现旧命令的明确错误：`--profile only applies to runtime commands ...`。
+- 已用同版本 Codex 验证等价的 `-c ... app-server --listen stdio://` 配置可正常启动并在 stdin 关闭后以 0 退出。
+- `cargo check`：通过。
+- `cargo test commands::cc_connect::tests --lib`：32 项通过、0 项失败，覆盖包装器参数顺序、无 model 分支、命令注入字符拒绝、启动错误与密钥脱敏。
+- `cargo test commands::ccswitch::tests --lib`：33 项通过、0 项失败。
+- `.\\node_modules\\.bin\\tsc.cmd --noEmit`：通过。
+- `npm run build`：通过，Vite 完成 6621 个模块转换；仅保留既有的大 chunk 警告。
+- `rustfmt --check --edition 2021 src/commands/cc_connect.rs src/commands/ccswitch.rs` 与 `git diff --check`：通过。
+- 尚未操作真实 Provider 发起模型请求，避免未经确认消耗外部账号额度；本次未打包、未 push。

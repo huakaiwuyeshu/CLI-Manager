@@ -7,7 +7,7 @@
 - **cc-connect 微信扫码授权**：远程连接的微信配置新增应用内扫码授权按钮，直接运行已校验的 cc-connect 原生 `weixin setup` 流程；二维码在应用内显示并自动刷新，手机确认后自动导入 ilink Token 与允许用户，取消、关闭设置或退出应用时会终止授权进程并清理临时敏感文件。
 
 ### 修复
-- **cc-connect 远程任务排队与 Provider 修复**：启动受管 cc-connect 时通过进程级 Git 配置仅信任当前已登记项目，避免 Codex 的 MCP 服务因项目目录所有权检查卡在 `git rev-parse`；远程 Codex 启动前直接按项目 `provider_overrides` 刷新 cc-switch profile，并由 CLI-Manager 托管包装命令强制传入 `--profile`、`CODEX_HOME` 和仅存在于子进程环境中的 Provider 密钥，不再依赖本地终端是否已打开，也不再误用全局 Provider。
+- **cc-connect 远程任务排队与 Provider 修复**：启动受管 cc-connect 时通过进程级 Git 配置仅信任当前已登记项目，避免 Codex 的 MCP 服务因项目目录所有权检查卡在 `git rev-parse`；远程 Codex 按项目 `provider_overrides` 生成受校验的 `-c` 配置覆盖并注入仅存在于子进程环境中的 Provider 密钥，兼容不允许 `app-server` 使用 `--profile` 的新版 Codex CLI；启动前会运行同一包装器预检，避免消息阶段才出现 `initialize: EOF`。
 - **cc-connect 可执行文件选择修复**：手动选择或输入 cc-connect 原生程序后立即校验文件、版本与 SHA-256，并允许重新检测尚未保存的路径；Windows `\\?\` 扩展路径在界面显示和 profile 保存时统一转换为普通路径，已有配置自动兼容。
 - **Claude 状态栏 Powerline 符号修复**：WebView 直接加载应用内置符号字体，不再依赖 Windows 用户字体缓存，修复实时预览、Powerline 选项和应用内终端中的分隔符与端帽显示为方框的问题。
 - **后台终端恢复输出与图标修复**：daemon attach 将回放快照与实时订阅注册收口为同一临界区，前端在 PTY 输出监听就绪后再恢复并按顺序写入回放与实时帧；恢复后的 Claude/Codex Tab 保留 CLI 启动元数据用于图标识别，但不会重跑启动命令。

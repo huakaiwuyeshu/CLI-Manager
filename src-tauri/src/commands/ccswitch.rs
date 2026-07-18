@@ -898,9 +898,9 @@ pub(crate) struct CodexProviderRuntimeConfig {
     pub(crate) profile_name: String,
     pub(crate) env_key: String,
     pub(crate) secret_value: String,
-    base_url: String,
-    model: Option<String>,
-    wire_api: Option<String>,
+    pub(crate) base_url: String,
+    pub(crate) model: Option<String>,
+    pub(crate) wire_api: Option<String>,
     profile_text: String,
 }
 
