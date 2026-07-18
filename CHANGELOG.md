@@ -10,7 +10,7 @@
 - **Claude 状态栏 Powerline 符号修复**：WebView 直接加载应用内置符号字体，不再依赖 Windows 用户字体缓存，修复实时预览、Powerline 选项和应用内终端中的分隔符与端帽显示为方框的问题。
 - **后台终端恢复输出与图标修复**：daemon attach 将回放快照与实时订阅注册收口为同一临界区，前端在 PTY 输出监听就绪后再恢复并按顺序写入回放与实时帧；恢复后的 Claude/Codex Tab 保留 CLI 启动元数据用于图标识别，但不会重跑启动命令。
 - **终端标签切换焦点修复**：终端仅在 Tab 同时激活且可见后的下一动画帧获取焦点，修复普通 Tab、Workspan 与分屏切换后需要再次点击才能输入的问题，同时避免可见但未激活的分屏抢焦点。
-- **终端分屏拖拽与重绘性能修复**：拖动顶层 Workspan Tab 悬停其他 Workspan 500ms 后自动激活目标，恢复继续拖到 Pane 边缘高亮并分屏的路径；隐藏 Tab 切回时先等待 xterm 自然恢复完整 viewport，仅在两帧内没有完整渲染时强制刷新，避免大片空白、等待后续输出或每次切换都从上到下整屏重绘；侧边栏拖动改为 DOM 宽度实时预览、松手后一次提交状态和持久化，同时移除 Pane 几何动画，保留大缓冲区纵向 resize 立即、横向 reflow 100ms 防抖策略。
+- **终端分屏拖拽与重绘性能修复**：拖动顶层 Workspan Tab 悬停其他 Workspan 500ms 后自动激活目标，恢复继续拖到 Pane 边缘高亮并分屏的路径；Tab 拖拽预览改为脱离终端布局的半透明 Portal 图层，直接跟随 dnd-kit 活动状态，减少启动延迟和拖尾，并将 Pane 边缘预选范围扩大到外侧约三分之一，无需贴到边框才识别；隐藏 Tab 切回时先等待 xterm 自然恢复完整 viewport，仅在两帧内没有完整渲染时强制刷新，避免大片空白、等待后续输出或每次切换都从上到下整屏重绘；侧边栏拖动改为 DOM 宽度实时预览、松手后一次提交状态和持久化，同时移除 Pane 几何动画，保留大缓冲区纵向 resize 立即、横向 reflow 100ms 防抖策略。
 
 ### 终端
 - **VS Code 终端架构替换**：终端统一经 `TerminalProcessManager` 管理，WebView 使用鉴权二进制 WebSocket 直连 PtyHost daemon；输出采用 5ms 合并、序列号与 100000/5000 字符 ACK 背压，attach 使用尺寸化 Replay 保证回放与实时输出有序交接。隐藏终端持续解析输出，仅按需释放 WebGL；横向 resize 在大缓冲区下按 100ms 防抖。Windows 底层改为直接 ConPTY API，macOS/Linux 改为 `openpty` 与进程组，移除 `portable-pty` 和 Tauri Base64 输出事件生产路径，同时保留分屏、全屏、Workspan、后台续跑、快照、CLI resume、IME、输入提示、主题、图片和搜索等现有能力。

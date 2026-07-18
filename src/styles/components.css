@@ -4601,6 +4601,12 @@
     inset 0 0 0 1px color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 12%, transparent);
 }
 
+.ui-terminal-drag-overlay {
+  pointer-events: none;
+  opacity: 0.78;
+  will-change: transform;
+}
+
 .ui-terminal-pane-center-drop,
 .ui-terminal-pane-edge-drop,
 .ui-terminal-pane-drop-preview {
@@ -4621,7 +4627,7 @@
 .ui-terminal-pane-edge-drop-right {
   top: 0;
   bottom: 0;
-  width: min(28%, 96px);
+  width: min(32%, 160px);
 }
 
 .ui-terminal-pane-edge-drop-left {
@@ -4636,7 +4642,7 @@
 .ui-terminal-pane-edge-drop-bottom {
   right: 0;
   left: 0;
-  height: min(28%, 96px);
+  height: min(32%, 160px);
 }
 
 .ui-terminal-pane-edge-drop-top {
