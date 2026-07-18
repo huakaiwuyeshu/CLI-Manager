@@ -17,6 +17,10 @@ import { appendSyncedHistoryContextArg } from "../lib/syncedHistoryContext";
 import { translateCurrent } from "../lib/i18n";
 import { findProjectByPath, findWorktreeByPath, resolveProjectForProviderLaunch } from "../lib/terminalProject";
 import {
+  shouldIncludeTerminalExitTask,
+  type TerminalExitNotificationState,
+} from "../lib/terminalExitTask";
+import {
   addSessionToPaneTree,
   findPaneLeaf,
   findPaneLeafBySession,
@@ -65,7 +69,7 @@ export type CliHookEventName =
   | "AgentToolStop"
   | "ToolStart"
   | "ToolStop";
-export type TabNotificationState = "none" | "running" | "attention" | "done" | "failed";
+export type TabNotificationState = TerminalExitNotificationState;
 export type ShellRuntimeEventName = "command_started" | "command_finished" | "prompt_shown";
 
 interface DaemonSessionState {
@@ -2291,32 +2295,24 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   getRunningTaskSessionIds: () => {
     const state = get();
     return state.sessions
-      .filter(
-        (session) =>
-          (!session.kind || session.kind === "pty") &&
-          state.sessionStatuses[session.id] === "running" &&
-          state.tabNotifications[session.id] === "running"
-      )
+      .filter((session) => shouldIncludeTerminalExitTask({
+        kind: session.kind,
+        processStatus: state.sessionStatuses[session.id],
+        mergedStatus: state.tabNotifications[session.id],
+        hookStatus: state.tabStatuses[session.id]?.hook,
+      }))
       .map((session) => session.id);
   },
 
   getExitTaskSessionIds: (includeFinished = false) => {
     const state = get();
     return state.sessions
-      .filter((session) => {
-        if (session.kind && session.kind !== "pty") return false;
-        const notification = state.tabNotifications[session.id];
-        const status = state.sessionStatuses[session.id];
-        // 运行中：hook + shell 均为 running（与 getRunningTaskSessionIds 一致）
-        if (status === "running" && notification === "running") return true;
-        // 待确认/需关注：始终纳入，避免权限弹窗中的会话被静默杀掉
-        if (notification === "attention") return true;
-        // 可选：运行完毕 / 失败的 CLI 会话也允许转入后台（Issue #142）
-        if (includeFinished && (notification === "done" || notification === "failed")) {
-          return true;
-        }
-        return false;
-      })
+      .filter((session) => shouldIncludeTerminalExitTask({
+        kind: session.kind,
+        processStatus: state.sessionStatuses[session.id],
+        mergedStatus: state.tabNotifications[session.id],
+        hookStatus: state.tabStatuses[session.id]?.hook,
+      }, includeFinished))
       .map((session) => session.id);
   },
 
