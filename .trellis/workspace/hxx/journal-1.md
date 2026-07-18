@@ -1147,3 +1147,36 @@ Moved Worktree today-usage aggregation to one backend multi-path query, deduplic
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: Repair PR 156 Gitignore semantics
+
+**Date**: 2026-07-18
+**Task**: Repair PR 156 Gitignore semantics
+**Branch**: `fix-pr-156`
+
+### Summary
+
+Replaced the custom file-tree ignore parser with ignore@7.0.6, reloaded project-root .gitignore rules on watcher changes, added focused regression tests, and updated V1.2.9 documentation and project-file contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c1c21c3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

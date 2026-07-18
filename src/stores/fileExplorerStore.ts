@@ -278,6 +278,14 @@ export const DEFAULT_COLLAPSED_DIRECTORY_NAMES = [
   "log",
   "tmp",
   "temp",
+  ".sass-cache",
+  ".nyc_output",
+  "jspm_packages",
+  "out-tsc",
+  ".gradle-cache",
+  ".kotlin",
+  ".mtj.tmp",
+  ".nx",
 ] as const;
 
 const DEFAULT_COLLAPSED_DIRECTORY_NAME_SET = new Set(

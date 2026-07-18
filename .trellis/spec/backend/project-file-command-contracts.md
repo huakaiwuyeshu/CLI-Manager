@@ -51,6 +51,9 @@ ProjectFilesChangedPayload { project_path: String, changed_paths: Vec<String> }
 - `rootPath` must be absolute, canonicalizable, and a directory.
 - `file_watch_start` / `file_watch_stop` only accept a project root path; Rust owns watcher lifecycle and WSL/network-path fallback signaling.
 - `project-files-changed` emits `projectPath` plus project-relative `changedPaths` using forward slashes; frontend refresh logic must treat an omitted/empty `changedPaths` as a full visible refresh fallback.
+- The frontend file tree reads only the project-root `.gitignore` and applies standard Gitignore matching semantics, including root anchors, nested bare-directory rules, wildcards, negation, and directory-only patterns. A present but empty file is authoritative; missing or unreadable files use the built-in fallback matcher.
+- Gitignore case matching follows the project path environment: local Windows drive paths and regular Windows UNC paths are case-insensitive, while WSL UNC and POSIX paths are case-sensitive. Do not rely on the `ignore` package default because it is unconditionally case-insensitive.
+- When `project-files-changed.changedPaths` includes `.gitignore`, the frontend must reload the active matcher without requiring a project switch. Matcher-hit directories stay accessible through the collapsed group, while matcher-hit files are omitted from the normal tree; user-managed ignored paths and default collapsed directory names remain additive.
 - Relative path fields use forward slashes only; empty string means project root where accepted.
 - `name` / `newName` are single child names only; they must not contain `/` or `\`.
 - `FileEntry.is_symlink` serializes to frontend `isSymlink`; it marks the entry itself as a symlink/reparse-style link, not whether the resolved target is a directory.
@@ -124,6 +127,8 @@ ProjectFilesChangedPayload { project_path: String, changed_paths: Vec<String> }
 - Unit-test project text read/write preserves GBK bytes and leaves the file unchanged when saving unmappable content.
 - Unit-test shared encoding logic covers UTF-8 BOM, UTF-16 LE/BE BOM, legacy encoding detection, binary rejection, and strict encoding failure.
 - Unit-test watcher path filtering keeps project-relative paths stable and ignores generated/noisy directories.
+- Focused frontend tests cover nested bare-directory rules, root-anchored rules, wildcards, negation, directory-only matching, fallback defaults, and `.gitignore` watcher-path detection.
+- Focused frontend tests cover case-distinct directory names for Windows, regular UNC, WSL UNC, and POSIX project paths.
 
 ### 7. Wrong vs Correct
 
