@@ -143,6 +143,7 @@ export type ShortcutAction =
   | "commandPalette"
   | "sessionHistory"
   | "copyAi"
+  | "toggleSidebar"
   | "toggleTerminalFullscreen";
 export type TabSwitchShortcutModifier = "Alt" | "Ctrl" | "Shift";
 export type KeyboardShortcutMap = Record<ShortcutAction, string>;
@@ -192,6 +193,7 @@ const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   "commandPalette",
   "sessionHistory",
   "copyAi",
+  "toggleSidebar",
   "toggleTerminalFullscreen",
 ];
 
@@ -246,6 +248,7 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutMap = {
   commandPalette: "Ctrl+P",
   sessionHistory: "Ctrl+K",
   copyAi: "Alt+P",
+  toggleSidebar: "Ctrl+B",
   toggleTerminalFullscreen: "F11",
 };
 
@@ -314,6 +317,7 @@ export interface Settings {
   terminalThemeMode: TerminalThemeMode;
   terminalThemeName: string;
   sidebarDensity: SidebarDensity;
+  sidebarProjectFilterVisible: boolean;
   viewMode: ViewMode;
   closeBehavior: CloseBehavior;
   exitWithRunningTasksBehavior: ExitWithRunningTasksBehavior;
@@ -429,6 +433,7 @@ const DEFAULTS: Settings = {
   terminalThemeMode: "independent",
   terminalThemeName: "forestNightDark",
   sidebarDensity: "comfortable",
+  sidebarProjectFilterVisible: true,
   viewMode: "standard",
   closeBehavior: "ask",
   exitWithRunningTasksBehavior: "ask",
@@ -1183,6 +1188,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       entries.sidebarDensity === "compact" || entries.sidebarDensity === "comfortable"
         ? entries.sidebarDensity
         : DEFAULTS.sidebarDensity;
+    entries.sidebarProjectFilterVisible =
+      typeof entries.sidebarProjectFilterVisible === "boolean"
+        ? entries.sidebarProjectFilterVisible
+        : DEFAULTS.sidebarProjectFilterVisible;
     entries.viewMode =
       entries.viewMode === "standard" || entries.viewMode === "compact"
         ? entries.viewMode

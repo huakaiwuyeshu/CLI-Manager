@@ -183,6 +183,7 @@ export function SidebarSettingsPage() {
   const { t } = useI18n();
   const viewMode = useSettingsStore((s) => s.viewMode);
   const sidebarDensity = useSettingsStore((s) => s.sidebarDensity);
+  const sidebarProjectFilterVisible = useSettingsStore((s) => s.sidebarProjectFilterVisible);
   const terminalSidePanelMerged = useSettingsStore((s) => s.terminalSidePanelMerged);
   const terminalSidePanelSingleOpen = useSettingsStore((s) => s.terminalSidePanelSingleOpen);
   const terminalSidePanelSkin = useSettingsStore((s) => s.terminalSidePanelSkin);
@@ -333,6 +334,29 @@ export function SidebarSettingsPage() {
               })}
             </SimpleGrid>
           </Stack>
+
+          <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
+            <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+              <Box>
+                <Text size="xs" c="var(--on-surface-variant)">
+                  {t("settings.sidebar.projectFilterVisibility")}
+                </Text>
+                <Text mt={4} size="xs" lh={1.55} c="var(--text-muted)">
+                  {t("settings.sidebar.projectFilterVisibilityDescription")}
+                </Text>
+              </Box>
+              <Switch
+                color="cliPrimary"
+                checked={sidebarProjectFilterVisible}
+                onChange={(event) => void update("sidebarProjectFilterVisible", event.currentTarget.checked)}
+                aria-label={
+                  sidebarProjectFilterVisible
+                    ? t("settings.sidebar.hideProjectFilter")
+                    : t("settings.sidebar.showProjectFilter")
+                }
+              />
+            </Group>
+          </Card>
 
           <Card className="border border-border bg-surface-container-lowest" p="sm" radius="lg">
             <Group justify="space-between" align="center" gap="md" wrap="nowrap">

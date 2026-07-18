@@ -37,6 +37,7 @@ function getMouseTabSwitchDelta(button: number): 1 | -1 | null {
 }
 
 interface KeyboardShortcutOptions {
+  onToggleSidebar?: () => void;
   onToggleTerminalFullscreen?: () => void;
 }
 
@@ -47,9 +48,11 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
   // Refs hold the latest values; the actual handler is bound once.
   const shortcutsRef = useRef(shortcuts);
   const viewModeRef = useRef(viewMode);
+  const onToggleSidebarRef = useRef(options.onToggleSidebar);
   const onToggleTerminalFullscreenRef = useRef(options.onToggleTerminalFullscreen);
   shortcutsRef.current = shortcuts;
   viewModeRef.current = viewMode;
+  onToggleSidebarRef.current = options.onToggleSidebar;
   onToggleTerminalFullscreenRef.current = options.onToggleTerminalFullscreen;
 
   useEffect(() => {
@@ -72,6 +75,12 @@ export function useKeyboardShortcuts(options: KeyboardShortcutOptions = {}) {
       if (isShortcutMatch(combo, shortcuts.toggleTerminalFullscreen)) {
         e.preventDefault();
         onToggleTerminalFullscreenRef.current?.();
+        return;
+      }
+
+      if (isShortcutMatch(combo, shortcuts.toggleSidebar)) {
+        e.preventDefault();
+        onToggleSidebarRef.current?.();
         return;
       }
 

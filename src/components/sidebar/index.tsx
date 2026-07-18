@@ -15,7 +15,7 @@ import {
 } from "../../stores/worktreeStore";
 import { useExternalSessionSyncStore } from "../../stores/externalSessionSyncStore";
 import type { TerminalPaneSplitDirection } from "../../stores/terminalPaneTree";
-import type { HistorySourceFilter, Project, TreeNode as TNode, Group, TerminalScope, WorktreeRecord } from "../../lib/types";
+import type { HistorySourceFilter, Project, TreeNode as TNode, Group, TerminalScope, TerminalSession, WorktreeRecord } from "../../lib/types";
 import { ConfigModal } from "../ConfigModal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { useAppConfirm } from "../ui/useAppConfirm";
@@ -35,7 +35,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { toast } from "sonner";
 import { logError } from "../../lib/logger";
-import { SidebarHeader } from "./SidebarHeader";
+import { SidebarHeader, type ProjectListFilter } from "./SidebarHeader";
 import { ProjectTree } from "./ProjectTree";
 import { BatchShellDialog } from "./BatchShellDialog";
 import { SidebarFooter } from "./SidebarFooter";
@@ -44,6 +44,7 @@ import { FileExplorerSidebar } from "../files/FileExplorerSidebar";
 import {
   ArrowLeftRight,
   Check,
+  CircleStop,
   Copy,
   FileCode,
   FolderOpen,
@@ -63,6 +64,7 @@ import {
 import type { SettingsTab } from "../SettingsModal";
 import { useI18n } from "../../lib/i18n";
 import { getOsPlatform } from "../../lib/shell";
+import { SIDEBAR_TOGGLE_REQUEST_EVENT } from "../../lib/sidebarCommands";
 
 interface SidebarProps {
   onOpenSettings: (tab?: SettingsTab) => void;
@@ -172,6 +174,53 @@ async function buildSyncedAwareProjectSplitOptions(project: Project): Promise<Sp
   };
 }
 
+function filterTreeForOpenTerminals(
+  nodes: TNode[],
+  openProjectIds: Set<string>,
+  openWorktreeIds: Set<string>
+): TNode[] {
+  const filtered: TNode[] = [];
+  for (const node of nodes) {
+    if (node.type === "group") {
+      const children = filterTreeForOpenTerminals(node.children, openProjectIds, openWorktreeIds);
+      if (children.length > 0) filtered.push({ ...node, children });
+      continue;
+    }
+    if (node.type === "worktree") {
+      if (openWorktreeIds.has(node.worktree.id)) filtered.push(node);
+      continue;
+    }
+    if (!openProjectIds.has(node.project.id)) continue;
+    filtered.push({
+      ...node,
+      worktrees: (node.worktrees ?? []).filter((worktree) => openWorktreeIds.has(worktree.id)),
+    });
+  }
+  return filtered;
+}
+
+interface GroupTerminalTargets {
+  terminalSessionIds: string[];
+  closableSessionIds: string[];
+}
+
+function collectGroupTerminalTargets(
+  sessions: TerminalSession[],
+  projectIds: Set<string>
+): GroupTerminalTargets {
+  const terminalSessionIds = sessions
+    .filter((session) => session.projectId && projectIds.has(session.projectId) && (session.kind ?? "pty") === "pty")
+    .map((session) => session.id);
+  const terminalIdSet = new Set(terminalSessionIds);
+  const transcriptSessionIds = sessions
+    .filter((session) => session.kind === "subagent-transcript" && terminalIdSet.has(session.subagent?.parentSessionId ?? ""))
+    .map((session) => session.id);
+  return {
+    terminalSessionIds,
+    closableSessionIds: [...transcriptSessionIds, ...terminalSessionIds],
+  };
+}
+
 export function Sidebar({
   onOpenSettings,
   onOpenStats,
@@ -227,7 +276,9 @@ export function Sidebar({
   const useExternalTerminal = useSettingsStore((s) => s.useExternalTerminal);
   const projectWorktreeConfigEnabled = useSettingsStore((s) => s.projectWorktreeConfigEnabled);
   const sidebarDensity = useSettingsStore((s) => s.sidebarDensity);
+  const sidebarProjectFilterVisible = useSettingsStore((s) => s.sidebarProjectFilterVisible);
   const sidebarToolbarVisibility = useSettingsStore((s) => s.sidebarToolbarVisibility);
+  const confirmBeforeClosingTerminalTab = useSettingsStore((s) => s.confirmBeforeClosingTerminalTab);
   const updateSetting = useSettingsStore((s) => s.update);
   const persistedSidebarWidth = useSettingsStore((s) => s.sidebarWidth);
   const openFileProject = useFileExplorerStore((s) => s.openProject);
@@ -249,6 +300,7 @@ export function Sidebar({
   const liveSidebarWidthRef = useRef(initialSidebarWidth);
   const isResizingRef = useRef(false);
   const resizeFrameRef = useRef<number | null>(null);
+  const sidebarCollapsedRef = useRef(initialSidebarWidth <= SIDEBAR_COLLAPSED_WIDTH);
   const autoCollapsedByViewportRef = useRef(false);
   const lastExpandedWidthRef = useRef(
     initialSidebarWidth <= SIDEBAR_COLLAPSED_WIDTH
@@ -265,6 +317,7 @@ export function Sidebar({
   >(null);
   const [showAdd, setShowAdd] = useState(false);
   const [addToGroupId, setAddToGroupId] = useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = useState<ProjectListFilter>("all");
   // 批量修改 Shell 弹窗：null=关闭，Set=打开时预勾选的项目 id
   const [batchShellPreselected, setBatchShellPreselected] = useState<Set<string> | null>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
@@ -298,6 +351,7 @@ export function Sidebar({
     command: string;
   } | null>(null);
   const depsPromptingWorktreeIdsRef = useRef(new Set<string>());
+  const stoppingGroupIdsRef = useRef(new Set<string>());
   const [finishTarget, setFinishTarget] = useState<{ project: Project; worktree: WorktreeRecord } | null>(null);
   const [discardTarget, setDiscardTarget] = useState<{ project: Project; worktree: WorktreeRecord } | null>(null);
   const [discardTargets, setDiscardTargets] = useState<{ project: Project; worktree: WorktreeRecord }[] | null>(null);
@@ -386,6 +440,39 @@ export function Sidebar({
     if (!fileProject) setShowFileExplorer(false);
   }, [fileProject]);
 
+  const projectTerminalCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const session of sessions) {
+      if (!session.projectId || (session.kind ?? "pty") !== "pty") continue;
+      map.set(session.projectId, (map.get(session.projectId) ?? 0) + 1);
+    }
+    return map;
+  }, [sessions]);
+
+  const openProjectIds = useMemo(
+    () => new Set(projects.filter((project) => projectTerminalCountMap.has(project.id)).map((project) => project.id)),
+    [projectTerminalCountMap, projects]
+  );
+
+  const openWorktreeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const session of sessions) {
+      if ((session.kind ?? "pty") === "pty" && session.worktreeId) ids.add(session.worktreeId);
+    }
+    return ids;
+  }, [sessions]);
+
+  const displayedTree = useMemo(
+    () => projectFilter === "open" ? filterTreeForOpenTerminals(tree, openProjectIds, openWorktreeIds) : tree,
+    [openProjectIds, openWorktreeIds, projectFilter, tree]
+  );
+
+  useEffect(() => {
+    if (!sidebarProjectFilterVisible && projectFilter !== "all") {
+      setProjectFilter("all");
+    }
+  }, [projectFilter, sidebarProjectFilterVisible]);
+
   // 可见项目的扁平顺序（跳过已折叠分组的子项），供 Shift 范围多选取区间
   const visibleProjectIds = useMemo(() => {
     const ids: string[] = [];
@@ -398,9 +485,9 @@ export function Sidebar({
         }
       }
     };
-    walk(tree);
+    walk(displayedTree);
     return ids;
-  }, [tree, collapsedIds]);
+  }, [displayedTree, collapsedIds]);
   // 可见分组的扁平顺序（折叠时跳过隐藏的子分组），供文件夹 Shift 范围多选取区间
   const visibleGroupIds = useMemo(() => {
     const ids: string[] = [];
@@ -412,9 +499,9 @@ export function Sidebar({
         }
       }
     };
-    walk(tree);
+    walk(displayedTree);
     return ids;
-  }, [tree, collapsedIds]);
+  }, [displayedTree, collapsedIds]);
   // 可见 worktree 的扁平顺序（跳过已折叠分组/项目下隐藏的 worktree），供 Shift 范围多选取区间
   const visibleWorktreeIds = useMemo(() => {
     const ids: string[] = [];
@@ -429,9 +516,9 @@ export function Sidebar({
         }
       }
     };
-    walk(tree);
+    walk(displayedTree);
     return ids;
-  }, [tree, collapsedIds]);
+  }, [displayedTree, collapsedIds]);
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
 
   const activateFirstProjectSession = useCallback(
@@ -507,6 +594,7 @@ export function Sidebar({
     const normalized = normalizePersistedSidebarWidth(persistedSidebarWidth);
     setSidebarWidth(normalized);
     setSidebarCollapsed(normalized <= SIDEBAR_COLLAPSED_WIDTH);
+    sidebarCollapsedRef.current = normalized <= SIDEBAR_COLLAPSED_WIDTH;
     liveSidebarWidthRef.current = normalized;
     if (normalized > SIDEBAR_COLLAPSED_WIDTH) {
       lastExpandedWidthRef.current = normalized;
@@ -537,6 +625,7 @@ export function Sidebar({
       : clampExpandedSidebarWidth(clampedRaw);
 
     setSidebarCollapsed(shouldCollapse);
+    sidebarCollapsedRef.current = shouldCollapse;
     setSidebarWidth(nextWidth);
     liveSidebarWidthRef.current = nextWidth;
     if (!shouldCollapse) {
@@ -546,9 +635,11 @@ export function Sidebar({
 
   const collapseSidebar = useCallback((persist = true) => {
     setSidebarCollapsed(true);
+    sidebarCollapsedRef.current = true;
     setSidebarWidth(SIDEBAR_COLLAPSED_WIDTH);
     liveSidebarWidthRef.current = SIDEBAR_COLLAPSED_WIDTH;
     if (persist) {
+      autoCollapsedByViewportRef.current = false;
       persistSidebarWidth(SIDEBAR_COLLAPSED_WIDTH);
     }
   }, [persistSidebarWidth]);
@@ -557,10 +648,12 @@ export function Sidebar({
     const fallbackWidth = lastExpandedWidthRef.current;
     const nextWidth = clampExpandedSidebarWidth(fallbackWidth);
     setSidebarCollapsed(false);
+    sidebarCollapsedRef.current = false;
     setSidebarWidth(nextWidth);
     liveSidebarWidthRef.current = nextWidth;
     lastExpandedWidthRef.current = nextWidth;
     if (persist) {
+      autoCollapsedByViewportRef.current = false;
       persistSidebarWidth(nextWidth);
     }
   }, [persistSidebarWidth]);
@@ -580,10 +673,17 @@ export function Sidebar({
   }, [sidebarCollapsed, expandSidebar]);
 
   useEffect(() => {
+    if (compactMode) return;
+    const handleToggleRequest = () => toggleSidebarCollapsed();
+    window.addEventListener(SIDEBAR_TOGGLE_REQUEST_EVENT, handleToggleRequest);
+    return () => window.removeEventListener(SIDEBAR_TOGGLE_REQUEST_EVENT, handleToggleRequest);
+  }, [compactMode, toggleSidebarCollapsed]);
+
+  useEffect(() => {
     if (compactMode || isMacOs) return;
     const syncViewportCollapse = () => {
       if (window.innerWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT) {
-        if (!sidebarCollapsed) {
+        if (!sidebarCollapsedRef.current) {
           autoCollapsedByViewportRef.current = true;
           collapseSidebar(false);
         }
@@ -592,7 +692,7 @@ export function Sidebar({
 
       if (autoCollapsedByViewportRef.current) {
         autoCollapsedByViewportRef.current = false;
-        if (sidebarCollapsed) {
+        if (sidebarCollapsedRef.current) {
           expandSidebar(false);
         }
       }
@@ -603,7 +703,7 @@ export function Sidebar({
     return () => {
       window.removeEventListener("resize", syncViewportCollapse);
     };
-  }, [compactMode, isMacOs, sidebarCollapsed, collapseSidebar, expandSidebar]);
+  }, [compactMode, isMacOs, collapseSidebar, expandSidebar]);
 
   const startResize = useCallback(
     (e: ReactMouseEvent) => {
@@ -827,15 +927,6 @@ export function Sidebar({
     (projectId: string): SessionStatus | null => projectStatusMap.get(projectId) ?? null,
     [projectStatusMap]
   );
-
-  const projectTerminalCountMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const session of sessions) {
-      if (!session.projectId || (session.kind && session.kind !== "pty")) continue;
-      map.set(session.projectId, (map.get(session.projectId) ?? 0) + 1);
-    }
-    return map;
-  }, [sessions]);
 
   const getProjectTerminalCount = useCallback(
     (projectId: string): number => projectTerminalCountMap.get(projectId) ?? 0,
@@ -1612,6 +1703,55 @@ export function Sidebar({
     [groups, projects]  // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  const handleStopGroup = useCallback(
+    async (groupId: string) => {
+      if (stoppingGroupIdsRef.current.has(groupId)) return;
+      const projectIds = collectProjectIdsForGroup(groups, projects, groupId);
+      const targets = collectGroupTerminalTargets(useTerminalStore.getState().sessions, projectIds);
+      if (targets.terminalSessionIds.length === 0) return;
+
+      if (confirmBeforeClosingTerminalTab) {
+        const confirmed = await confirm({
+          title: t("sidebar.confirm.stopGroupTitle", { count: targets.terminalSessionIds.length }),
+          message: t("sidebar.confirm.stopGroupMessage"),
+          confirmText: t("common.close"),
+          danger: true,
+        });
+        if (!confirmed) return;
+      }
+
+      stoppingGroupIdsRef.current.add(groupId);
+      const primaryIds = new Set(targets.terminalSessionIds);
+      let closedTerminalCount = 0;
+      let failedTerminalCount = 0;
+      try {
+        for (const sessionId of targets.closableSessionIds) {
+          try {
+            await closeSession(sessionId);
+            if (primaryIds.has(sessionId)) closedTerminalCount += 1;
+          } catch (err) {
+            logError("Failed to stop directory terminal session", { groupId, sessionId, err });
+            if (primaryIds.has(sessionId)) failedTerminalCount += 1;
+          }
+        }
+
+        if (failedTerminalCount === 0) {
+          toast.success(t("sidebar.toast.stopGroupSuccess", { count: closedTerminalCount }));
+        } else if (closedTerminalCount > 0) {
+          toast.warning(t("sidebar.toast.stopGroupPartial", {
+            closed: closedTerminalCount,
+            failed: failedTerminalCount,
+          }));
+        } else {
+          toast.error(t("sidebar.toast.stopGroupFailed"));
+        }
+      } finally {
+        stoppingGroupIdsRef.current.delete(groupId);
+      }
+    },
+    [closeSession, confirm, confirmBeforeClosingTerminalTab, groups, projects, t]
+  );
+
   const selectedProjects = useMemo(
     () => projects.filter((p) => selectedProjectIds.has(p.id)),
     [projects, selectedProjectIds]
@@ -1621,6 +1761,12 @@ export function Sidebar({
   const contextMenuGroupProjectIds = useMemo(
     () => (contextMenu?.kind === "group" ? collectProjectIdsForGroup(groups, projects, contextMenu.groupId) : null),
     [contextMenu, groups, projects]
+  );
+  const contextMenuGroupTerminalTargets = useMemo(
+    () => contextMenuGroupProjectIds
+      ? collectGroupTerminalTargets(sessions, contextMenuGroupProjectIds)
+      : { terminalSessionIds: [], closableSessionIds: [] },
+    [contextMenuGroupProjectIds, sessions]
   );
 
   const treeActions = useMemo<TreeActions>(
@@ -1885,7 +2031,12 @@ export function Sidebar({
         <SidebarHeader
           collapsed={compactMode ? false : sidebarCollapsed}
           density={sidebarDensity}
+          projectFilter={projectFilter}
+          showProjectFilter={sidebarProjectFilterVisible}
+          totalProjectCount={projects.length}
+          openProjectCount={openProjectIds.size}
           onToggleCollapse={toggleSidebarCollapsed}
+          onProjectFilterChange={setProjectFilter}
           onCreateGroup={() => {
             ensureSidebarExpanded();
             setNewGroupParentId("__root__");
@@ -1905,7 +2056,7 @@ export function Sidebar({
           <TreeContext.Provider value={treeActions}>
             <div className="ui-sidebar-combined-list h-full min-h-0 overflow-y-auto overflow-x-hidden">
               <ProjectTree
-                tree={tree}
+                tree={displayedTree}
                 initialLoading={initialLoading}
                 loadError={loadError}
                 collapsed={compactMode ? false : sidebarCollapsed}
@@ -1926,6 +2077,8 @@ export function Sidebar({
                   void loadProjects();
                 }}
                 onExpandSidebar={expandSidebar}
+                projectFilterActive={projectFilter === "open"}
+                onClearProjectFilter={() => setProjectFilter("all")}
               />
             </div>
           </TreeContext.Provider>
@@ -2302,6 +2455,18 @@ export function Sidebar({
                 >
                   <Play size={14} strokeWidth={1.5} />
                   {compactMode ? t("sidebar.menu.openGroupExternal") : t("sidebar.menu.startGroup")}
+                </button>
+                <button
+                  className="context-menu-item danger"
+                  role="menuitem"
+                  disabled={contextMenuGroupTerminalTargets.terminalSessionIds.length === 0}
+                  onClick={() => {
+                    void handleStopGroup(contextMenu.groupId);
+                    setContextMenu(null);
+                  }}
+                >
+                  <CircleStop size={14} strokeWidth={1.5} />
+                  {t("sidebar.menu.stopGroup", { count: contextMenuGroupTerminalTargets.terminalSessionIds.length })}
                 </button>
                 {projectScopedTerminalViewEnabled && (
                   <button

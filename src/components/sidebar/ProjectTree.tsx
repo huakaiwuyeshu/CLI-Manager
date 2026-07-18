@@ -29,6 +29,8 @@ interface ProjectTreeProps {
   onQuickAddProject: () => void;
   onRetry: () => void;
   onExpandSidebar: () => void;
+  projectFilterActive?: boolean;
+  onClearProjectFilter?: () => void;
   suppressEmptyState?: boolean;
   embedded?: boolean;
 }
@@ -254,6 +256,8 @@ export function ProjectTree({
   onQuickAddProject,
   onRetry,
   onExpandSidebar,
+  projectFilterActive = false,
+  onClearProjectFilter,
   suppressEmptyState = false,
   embedded = false,
 }: ProjectTreeProps) {
@@ -580,8 +584,12 @@ export function ProjectTree({
     () => filteredTree.map((node) => (node.type === "group" ? node.group.id : node.type === "project" ? node.project.id : `wt:${node.worktree.id}`)),
     [filteredTree]
   );
-  const showWelcomeEmptyState = tree.length === 0 && !loadError && !searchActive && !suppressEmptyState;
-  const shouldFillTreeArea = filteredTree.length > 0 || projectScopedTerminalViewEnabled || newGroupParentId === "__root__";
+  const showWelcomeEmptyState = tree.length === 0 && !projectFilterActive && !loadError && !searchActive && !suppressEmptyState;
+  const showOpenFilterEmptyState = tree.length === 0 && projectFilterActive && !loadError && !searchActive;
+  const hasFilteredEmptyState = filteredTree.length === 0 && (searchActive || projectFilterActive);
+  const shouldFillTreeArea = !hasFilteredEmptyState && (
+    filteredTree.length > 0 || projectScopedTerminalViewEnabled || newGroupParentId === "__root__"
+  );
 
   if (initialLoading) {
     return (
@@ -767,7 +775,7 @@ export function ProjectTree({
                 focusedNodeKey={focusedNodeKey}
                 onFocusNode={setFocusedNodeKey}
                 forceExpanded={searchActive}
-                sortableEnabled={!searchActive}
+                sortableEnabled={!searchActive && !projectFilterActive}
               />
             ))}
           </div>
@@ -782,6 +790,15 @@ export function ProjectTree({
           icon={<Terminal size={40} strokeWidth={1} />}
           title={t("sidebar.tree.searchEmptyTitle")}
           description={t("sidebar.tree.searchEmptyDescription")}
+        />
+      )}
+
+      {showOpenFilterEmptyState && (
+        <EmptyState
+          icon={<Terminal size={40} strokeWidth={1} />}
+          title={t("sidebar.tree.openFilterEmptyTitle")}
+          description={t("sidebar.tree.openFilterEmptyDescription")}
+          action={onClearProjectFilter ? { label: t("sidebar.tree.openFilterShowAll"), onClick: onClearProjectFilter } : undefined}
         />
       )}
 

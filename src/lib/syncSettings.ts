@@ -21,6 +21,7 @@ export const SYNCABLE_SETTING_KEYS = [
   "terminalThemeMode",
   "terminalThemeName",
   "sidebarDensity",
+  "sidebarProjectFilterVisible",
   "viewMode",
   "closeBehavior",
   "exitWithRunningTasksBehavior",
