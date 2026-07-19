@@ -1,5 +1,10 @@
 # Changelog
 
+## [TEMP]
+
+### 修复
+- 内置终端文件地址识别兼容 `/D:/path/to/file` 格式，点击时会按 Windows 绝对路径 `D:/path/to/file` 打开。
+
 ## [V1.3.0] - 2026-07-17
 
 - 修复新建 SSH 远程项目时，SSH 主机选择框的空占位选项被转换成非法 Radix Select Item，导致弹窗运行时报错的问题。
