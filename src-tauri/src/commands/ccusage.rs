@@ -222,7 +222,7 @@ fn detect_default_wsl_context() -> Result<Option<DefaultWslContext>, String> {
         r#"printf '%s\n%s' "$WSL_DISTRO_NAME" "$HOME""#,
     ]);
     let started = Instant::now();
-    log::info!("[ccusage:wsl] 开始探测默认 WSL 发行版");
+    log::debug!("[ccusage:wsl] 开始探测默认 WSL 发行版");
     let output = output_with_timeout(command, WSL_DETECT_TIMEOUT).map_err(|err| {
         log::warn!(
             "[ccusage:wsl] 默认 WSL 发行版探测启动失败: elapsed_ms={} error={}",
@@ -254,7 +254,7 @@ fn detect_default_wsl_context() -> Result<Option<DefaultWslContext>, String> {
         return Ok(None);
     }
 
-    log::info!(
+    log::debug!(
         "[ccusage:wsl] 默认 WSL 发行版探测成功: distro={} home={} elapsed_ms={}",
         distro,
         home,
@@ -289,7 +289,7 @@ fn fallback_default_wsl_context(
         log::debug!("[ccusage:wsl] 跳过默认 WSL fallback: 已显式配置 Claude/Codex 目录");
         return Ok(None);
     }
-    log::info!("[ccusage:wsl] Claude/Codex 配置目录为空，尝试使用默认 WSL fallback");
+    log::debug!("[ccusage:wsl] Claude/Codex 配置目录为空，尝试使用默认 WSL fallback");
     detect_default_wsl_context()
 }
 
@@ -315,7 +315,7 @@ fn wsl_command_with_bun_path_output(
     command.extend(args.iter().map(|arg| shell_escape(arg)));
     script_parts.push(format!("exec {}", command.join(" ")));
     let script = script_parts.join("; ");
-    log::info!(
+    log::debug!(
         "[ccusage:wsl] 准备执行 Bun 命令: distro={} command={} envs={}",
         distro,
         format_command_for_log(program, args),
@@ -472,7 +472,7 @@ fn resolve_config_dir_for_runtime(
                 return Err(format!("无法解析 {label} 的 WSL 配置目录"));
             }
         };
-        log::info!(
+        log::debug!(
             "[ccusage:wsl] {label} 配置目录解析为 WSL: distro={} linux_path={}",
             distro,
             linux_path
@@ -483,7 +483,7 @@ fn resolve_config_dir_for_runtime(
         }));
     }
     if use_wsl {
-        log::info!("[ccusage:wsl] {label} 配置目录按 host 处理: path={raw}");
+        log::debug!("[ccusage:wsl] {label} 配置目录按 host 处理: path={raw}");
     }
     Ok(Some(ConfigDir {
         runtime: RuntimeTarget::Host,
@@ -498,7 +498,7 @@ fn resolve_runtime_for_source(
     use_wsl: bool,
 ) -> Result<(RuntimeTarget, Vec<(&'static str, String)>), String> {
     if use_wsl {
-        log::info!("[ccusage:wsl] 开始解析 ccusage runtime: source={source}");
+        log::debug!("[ccusage:wsl] 开始解析 ccusage runtime: source={source}");
     }
     let default_wsl = fallback_default_wsl_context(
         claude_config_dir.as_ref(),
@@ -586,7 +586,7 @@ fn resolve_runtime_for_source(
     };
 
     if should_log_wsl_flow(use_wsl, &target) {
-        log::info!(
+        log::debug!(
             "[ccusage:wsl] ccusage runtime 解析完成: source={} target={} envs={}",
             source,
             target_label(&target),
@@ -608,7 +608,7 @@ fn ccusage_report_payload(
     let should_log = matches!(target, RuntimeTarget::Wsl { .. });
     let started = Instant::now();
     if should_log {
-        log::info!(
+        log::debug!(
             "[ccusage:wsl] 开始执行 ccusage report: source={} report={} target={} command={} breakdown={} envs={}",
             source,
             report_kind,
@@ -636,7 +636,7 @@ fn ccusage_report_payload(
     }
 
     if should_log {
-        log::info!(
+        log::debug!(
             "[ccusage:wsl] ccusage report 执行成功: source={} report={} target={} elapsed_ms={} stdout_bytes={}",
             source,
             report_kind,
@@ -746,7 +746,7 @@ pub async fn ccusage_refresh_report(
             }
         };
         if use_wsl {
-            log::info!(
+            log::debug!(
                 "[ccusage:wsl] 开始刷新 ccusage 报告: source={} use_wsl=true",
                 source
             );
@@ -755,7 +755,7 @@ pub async fn ccusage_refresh_report(
             resolve_runtime_for_source(&source, claude_config_dir, codex_config_dir, use_wsl)?;
         let should_log = should_log_wsl_flow(use_wsl, &target);
         if should_log {
-            log::info!(
+            log::debug!(
                 "[ccusage:wsl] 刷新目标已确定: source={} target={} envs={}",
                 source,
                 target_label(&target),
@@ -773,7 +773,7 @@ pub async fn ccusage_refresh_report(
         };
 
         if should_log {
-            log::info!(
+            log::debug!(
                 "[ccusage:wsl] ccusage 报告刷新完成: source={} target={} elapsed_ms={}",
                 source,
                 target_label(&target),

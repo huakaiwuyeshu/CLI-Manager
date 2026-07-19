@@ -12,6 +12,9 @@ export interface BackgroundTaskMeta {
   sessionId: string;
   cwd?: string | null;
   shell?: string | null;
+  environmentType?: string | null;
+  sshHostId?: string | null;
+  remotePath?: string | null;
   alive: boolean;
   taskStatus?: TabNotificationState | null;
   taskUpdatedAtMs?: number | null;
@@ -57,8 +60,11 @@ export function BackgroundTasksPanel({ tasks, onRefresh, showText, popoverStyle 
     return {
       ...task,
       status: resolveTaskStatus(task),
-      title: session?.title || project?.name || task.cwd || t("terminal.backgroundTasks.untitled"),
+      title: session?.title || project?.name || task.remotePath || task.cwd || t("terminal.backgroundTasks.untitled"),
       projectName: project?.name,
+      location: task.environmentType === "ssh"
+        ? `SSH · ${task.remotePath || task.sshHostId || "-"}`
+        : task.cwd,
     };
   }), [persistedSessions, projects, t, tasks]);
 
@@ -127,9 +133,12 @@ export function BackgroundTasksPanel({ tasks, onRefresh, showText, popoverStyle 
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="truncate text-xs font-medium text-text-primary">{task.title}</div>
-                    {task.projectName && (
-                      <div className="truncate text-[10px] text-text-muted">{task.projectName}</div>
-                    )}
+                  {task.projectName && (
+                    <div className="truncate text-[10px] text-text-muted">{task.projectName}</div>
+                  )}
+                  {task.location && (
+                    <div className="truncate text-[10px] text-text-muted">{task.location}</div>
+                  )}
                   </div>
                   <span
                     className="background-tasks-panel__status flex shrink-0 items-center gap-1 text-[10px]"

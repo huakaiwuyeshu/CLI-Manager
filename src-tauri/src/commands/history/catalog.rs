@@ -1,5 +1,5 @@
 use super::*;
-use log::{info, warn};
+use log::{debug, warn};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{Connection, QueryBuilder, Row, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet};
@@ -341,7 +341,7 @@ async fn seed_from_legacy_if_empty(
         .map_err(|err| err.to_string())?;
     }
     tx.commit().await.map_err(|err| err.to_string())?;
-    info!("history catalog seeded from legacy cache: roots={roots_key}");
+    debug!("history catalog seeded from legacy cache: roots={roots_key}");
     Ok(())
 }
 
@@ -880,7 +880,7 @@ async fn refresh_catalog(
     persist_status(&mut conn, &status).await?;
     emit_status(app, &status);
     CATALOG_DIRTY.store(false, Ordering::Release);
-    info!("history catalog refresh completed: roots={roots_key}, files={total_files}");
+    debug!("history catalog refresh completed: roots={roots_key}, files={total_files}");
     Ok(status)
 }
 

@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import * as terminalVisibility from "../src/lib/terminalVisibility.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import ts from "typescript";
+
+const tempDir = mkdtempSync(join(tmpdir(), "cli-manager-terminal-visibility-"));
+process.on("exit", () => rmSync(tempDir, { recursive: true, force: true }));
+const source = readFileSync(new URL("../src/lib/terminalVisibility.ts", import.meta.url), "utf8");
+const output = ts.transpileModule(source, {
+  compilerOptions: {
+    module: ts.ModuleKind.ES2022,
+    target: ts.ScriptTarget.ES2022,
+  },
+  fileName: "terminalVisibility.ts",
+}).outputText;
+const outputPath = join(tempDir, "terminalVisibility.mjs");
+writeFileSync(outputPath, output, "utf8");
+const terminalVisibility = await import(pathToFileURL(outputPath).href);
 
 test("refreshTerminalViewport repaints the full visible terminal grid", () => {
   const calls = [];
@@ -52,36 +70,4 @@ test("didRenderFullTerminalViewport rejects partial or empty viewport renders", 
     terminalVisibility.didRenderFullTerminalViewport({ start: 0, end: 0 }, 0),
     false,
   );
-});
-
-test("planTerminalVisibilityRestore resumes queued active writes when a hidden terminal becomes visible again", () => {
-  const plan = terminalVisibility.planTerminalVisibilityRestore({
-    wasVisible: false,
-    isVisible: true,
-    inactiveBufferLength: 0,
-    activeWriteQueueLength: 128,
-    activeWriteRafScheduled: false,
-  });
-
-  assert.deepEqual(plan, {
-    shouldFlushInactiveBuffer: false,
-    shouldRefreshViewport: true,
-    shouldResumeActiveWriteQueue: true,
-  });
-});
-
-test("planTerminalVisibilityRestore does not reschedule writes when the terminal never became visible", () => {
-  const plan = terminalVisibility.planTerminalVisibilityRestore({
-    wasVisible: true,
-    isVisible: true,
-    inactiveBufferLength: 64,
-    activeWriteQueueLength: 128,
-    activeWriteRafScheduled: false,
-  });
-
-  assert.deepEqual(plan, {
-    shouldFlushInactiveBuffer: false,
-    shouldRefreshViewport: false,
-    shouldResumeActiveWriteQueue: false,
-  });
 });

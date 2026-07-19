@@ -9,6 +9,13 @@ use cli_manager_lib::daemon::server::{DaemonServer, DaemonServerConfig};
 use cli_manager_lib::daemon::setup_process_governance;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if cli_manager_lib::ssh_proxy::is_helper_request(&args) {
+        cli_manager_lib::ssh_proxy::run_helper_and_exit(&args);
+    }
+    if std::env::var_os("CLI_MANAGER_SSH_ASKPASS").is_some() {
+        cli_manager_lib::ssh_askpass::run_helper_and_exit();
+    }
     // 极简 stderr 日志：daemon 无窗口，detached 模式下 stderr 通常被丢弃，
     // 增量 2 接入文件日志（LogDir/cli-manager-daemon.log）。
     let _ = simple_stderr_logger::init();

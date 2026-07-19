@@ -1,10 +1,17 @@
-import { ChevronRight, FolderPlus, Plus } from "../icons";
+import { ChevronRight, Filter, FolderPlus, Plus } from "../icons";
 import { useI18n } from "../../lib/i18n";
+
+export type ProjectListFilter = "all" | "open";
 
 interface SidebarHeaderProps {
   collapsed: boolean;
   density: "compact" | "comfortable";
+  projectFilter: ProjectListFilter;
+  showProjectFilter: boolean;
+  totalProjectCount: number;
+  openProjectCount: number;
   onToggleCollapse: () => void;
+  onProjectFilterChange: (filter: ProjectListFilter) => void;
   onCreateGroup: () => void;
   onCreateProject: () => void;
 }
@@ -12,7 +19,12 @@ interface SidebarHeaderProps {
 export function SidebarHeader({
   collapsed,
   density,
+  projectFilter,
+  showProjectFilter,
+  totalProjectCount,
+  openProjectCount,
   onToggleCollapse,
+  onProjectFilterChange,
   onCreateGroup,
   onCreateProject,
 }: SidebarHeaderProps) {
@@ -29,6 +41,19 @@ export function SidebarHeader({
         >
           <ChevronRight size={14} strokeWidth={1.8} />
         </button>
+        {showProjectFilter && (
+          <button
+            onClick={() => onProjectFilterChange(projectFilter === "open" ? "all" : "open")}
+            className={`ui-flat-action ui-toolbar-button-compact px-0 ${compact ? "h-7 w-7" : "h-8 w-8"} ${
+              projectFilter === "open" ? "text-primary" : ""
+            }`}
+            title={projectFilter === "open" ? t("sidebar.filter.showAll") : t("sidebar.filter.showOpen")}
+            aria-label={projectFilter === "open" ? t("sidebar.filter.showAll") : t("sidebar.filter.showOpen")}
+            aria-pressed={projectFilter === "open"}
+          >
+            <Filter size={14} strokeWidth={1.7} />
+          </button>
+        )}
         <button
           onClick={onCreateGroup}
           className={`ui-flat-action ui-toolbar-button-compact px-0 ${compact ? "h-7 w-7" : "h-8 w-8"}`}
@@ -50,33 +75,65 @@ export function SidebarHeader({
   }
 
   return (
-    <div className={`flex items-center justify-between ${compact ? "px-2.5 pb-1.5 pt-2.5" : "px-3 pb-2 pt-3"}`}>
-      <span className="text-[12px] font-semibold tracking-[0.03em] text-primary">{t("sidebar.projects")}</span>
-      <div className={`flex items-center ${compact ? "gap-0.5" : "gap-1"}`}>
-        <button
-          onClick={onToggleCollapse}
-          className={`ui-flat-action ui-toolbar-button-compact px-0 ${compact ? "h-7 w-7" : "h-8 w-8"}`}
-          title={t("sidebar.collapse")}
-          aria-label={t("sidebar.collapse")}
-        >
-          <ChevronRight size={14} strokeWidth={1.8} className="rotate-180" />
-        </button>
-        <button
-          onClick={onCreateGroup}
-          className={`ui-flat-action ui-toolbar-button-compact ${compact ? "h-7 w-7 px-0" : "px-2.5 text-xs"}`}
-          title={t("sidebar.newGroup")}
-          aria-label={t("sidebar.newGroup")}
-        >
-          <FolderPlus size={14} strokeWidth={1.5} />
-        </button>
-        <button
-          onClick={onCreateProject}
-          className={`ui-flat-action ui-primary-action ui-toolbar-button-compact ${compact ? "h-7 px-2 text-[12px]" : "px-2.5 text-[12px]"}`}
-          aria-label={t("sidebar.newTerminal")}
-        >
-          {t("sidebar.new")}
-        </button>
+    <div className={compact ? "pb-1.5 pt-2.5" : "pb-2 pt-3"}>
+      <div className={`flex items-center justify-between ${compact ? "px-2.5" : "px-3"}`}>
+        <span className="text-[12px] font-semibold tracking-[0.03em] text-primary">{t("sidebar.projects")}</span>
+        <div className={`flex items-center ${compact ? "gap-0.5" : "gap-1"}`}>
+          <button
+            onClick={onToggleCollapse}
+            className={`ui-flat-action ui-toolbar-button-compact px-0 ${compact ? "h-7 w-7" : "h-8 w-8"}`}
+            title={t("sidebar.collapse")}
+            aria-label={t("sidebar.collapse")}
+          >
+            <ChevronRight size={14} strokeWidth={1.8} className="rotate-180" />
+          </button>
+          <button
+            onClick={onCreateGroup}
+            className={`ui-flat-action ui-toolbar-button-compact ${compact ? "h-7 w-7 px-0" : "px-2.5 text-xs"}`}
+            title={t("sidebar.newGroup")}
+            aria-label={t("sidebar.newGroup")}
+          >
+            <FolderPlus size={14} strokeWidth={1.5} />
+          </button>
+          <button
+            onClick={onCreateProject}
+            className={`ui-flat-action ui-primary-action ui-toolbar-button-compact ${compact ? "h-7 px-2 text-[12px]" : "px-2.5 text-[12px]"}`}
+            aria-label={t("sidebar.newTerminal")}
+          >
+            {t("sidebar.new")}
+          </button>
+        </div>
       </div>
+
+      {showProjectFilter && (
+        <div
+          className={`mt-1 flex bg-transparent ${compact ? "mx-2" : "mx-2.5"}`}
+          role="group"
+          aria-label={t("sidebar.projects")}
+        >
+          {(["all", "open"] as const).map((filter) => {
+            const active = projectFilter === filter;
+            const label = filter === "all"
+              ? t("sidebar.filter.all", { count: totalProjectCount })
+              : t("sidebar.filter.open", { count: openProjectCount });
+            return (
+              <button
+                key={filter}
+                type="button"
+                className={`ui-focus-ring h-7 min-w-0 flex-1 rounded-lg px-2 text-[11px] font-medium transition-colors ${
+                  active
+                    ? "bg-surface-container-high text-primary"
+                    : "text-text-muted hover:bg-surface-container-high hover:text-on-surface"
+                }`}
+                aria-pressed={active}
+                onClick={() => onProjectFilterChange(filter)}
+              >
+                <span className="block truncate">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{debug, warn};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
@@ -50,7 +50,7 @@ fn log_transcript_oom_diagnostic(
             reset
         );
     } else {
-        info!(
+        debug!(
             "[oom-diagnostics:backend] area=subagent_transcript phase={phase} key={} path={} append_bytes={} offset={} reset={} threshold_exceeded=false",
             key,
             path,
@@ -137,7 +137,7 @@ impl SubagentTranscriptBridge {
                 stop,
             )
         });
-        info!("[subagent_transcript] subscribe: key={key} path={path}");
+        debug!("[subagent_transcript] subscribe: key={key} path={path}");
         Ok(SubscribeResult {
             path,
             initial_content,
@@ -149,7 +149,7 @@ impl SubagentTranscriptBridge {
         if let Ok(mut guard) = self.entries.lock() {
             if let Some(stop) = guard.remove(key) {
                 stop.store(true, Ordering::Relaxed);
-                info!("[subagent_transcript] unsubscribe: {key}");
+                debug!("[subagent_transcript] unsubscribe: {key}");
             }
         }
     }
@@ -168,7 +168,7 @@ fn tail_loop(
     let mut offset = initial_offset;
     let mut started = initial_started;
     let mut missing_logged = false;
-    info!(
+    debug!(
         "[subagent_transcript] tail started: key={key} path={}",
         path.to_string_lossy()
     );
@@ -188,7 +188,7 @@ fn tail_loop(
             if content.is_empty() {
                 continue;
             }
-            info!(
+            debug!(
                 "[subagent_transcript] tail read lines: key={key} bytes={} offset={} reset={reset}",
                 content.len(),
                 offset
@@ -296,7 +296,7 @@ fn normalize_explicit_transcript_path(path: String, wsl_distro_name: Option<&str
     if is_linux_absolute_path(&path) {
         if let Some(distro) = wsl_distro_name.map(str::trim).filter(|v| !v.is_empty()) {
             let unc = crate::wsl::linux_to_unc_wsl_path(&path, distro);
-            info!(
+            debug!(
                 "[subagent_transcript] explicit linux path resolved via WSL: distro={distro} linux={path} unc={unc}"
             );
             return unc;
@@ -474,7 +474,7 @@ fn run_wsl_command(
 }
 
 fn wsl_home_dir(distro: &str) -> Result<String, String> {
-    info!("[subagent_transcript:wsl] resolving HOME: distro={distro}");
+    debug!("[subagent_transcript:wsl] resolving HOME: distro={distro}");
     let (stdout, _stderr) = wsl_command_text(distro, &["sh", "-lc", "printf %s \"$HOME\""])?;
     let home = stdout.trim();
     if home.is_empty() {
@@ -492,7 +492,7 @@ fn resolve_wsl_transcript_path(
     let linux_home = wsl_home_dir(&distro)?;
     let resolved =
         derive_wsl_unc_transcript_path(&linux_home, &cwd, &session_id, &agent_id, &distro);
-    info!(
+    debug!(
         "[subagent_transcript:wsl] derived transcript path: distro={distro} cwd={cwd} sessionId={session_id} agentId={agent_id} path={resolved}"
     );
     Ok(resolved)
@@ -645,7 +645,7 @@ fn list_native_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<Path
         }
     }
 
-    info!(
+    debug!(
         "[subagent_transcript:codex] native scan result: root={} agentId={} suffix={} dirs={} files={} matched={}",
         root.to_string_lossy(),
         agent_id,
@@ -673,7 +673,7 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
         "-printf",
         "%p\n",
     ];
-    info!(
+    debug!(
         "[subagent_transcript:codex] wsl scan start: root={} distro={} linuxRoot={} pattern={}",
         root_str, distro, linux_root, pattern
     );
@@ -691,7 +691,7 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
                 .filter(|line| !line.is_empty())
                 .map(|line| PathBuf::from(crate::wsl::linux_to_unc_wsl_path(line, &distro)))
                 .collect();
-            info!(
+            debug!(
                 "[subagent_transcript:codex] wsl scan result: root={} agentId={} count={} files={:?}",
                 root_str,
                 agent_id,
@@ -717,13 +717,13 @@ fn list_wsl_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf
 fn list_codex_rollout_candidates(root: &Path, agent_id: &str) -> Vec<PathBuf> {
     let root_str = root.to_string_lossy().to_string();
     if crate::wsl::is_wsl_config_dir(&root_str) {
-        info!(
+        debug!(
             "[subagent_transcript:codex] rollout scan mode=wsl root={} agentId={}",
             root_str, agent_id
         );
         return list_wsl_codex_rollout_candidates(root, agent_id);
     }
-    info!(
+    debug!(
         "[subagent_transcript:codex] rollout scan mode=native root={} agentId={}",
         root_str, agent_id
     );
@@ -773,7 +773,7 @@ fn codex_rollout_parent_thread_id(path: &Path) -> Option<String> {
     };
     let event_type = json.get("type").and_then(Value::as_str);
     if event_type != Some("session_meta") {
-        info!(
+        debug!(
             "[subagent_transcript:codex] inspect rollout first line is not session_meta: path={} type={:?}",
             path_text, event_type
         );
@@ -787,7 +787,7 @@ fn codex_rollout_parent_thread_id(path: &Path) -> Option<String> {
         return None;
     };
     let parent_thread_id = trimmed_str(payload.get("parent_thread_id").and_then(Value::as_str));
-    info!(
+    debug!(
         "[subagent_transcript:codex] inspect rollout session_meta: path={} payloadId={:?} parentThreadId={:?} threadId={:?}",
         path_text,
         payload.get("id").and_then(Value::as_str),
@@ -808,7 +808,7 @@ fn resolve_transcript_path(
     if let Some(explicit) = trimmed(transcript_path) {
         if is_linux_absolute_path(&explicit) {
             if let Some(distro) = trimmed(wsl_distro_name) {
-                info!(
+                debug!(
                     "[subagent_transcript] resolving explicit linux transcript path with distro={distro}"
                 );
                 let resolved = normalize_explicit_transcript_path(explicit, Some(&distro));
@@ -819,7 +819,7 @@ fn resolve_transcript_path(
             validate_explicit_transcript_path(&resolved)?;
             return Ok(resolved);
         }
-        info!(
+        debug!(
             "[subagent_transcript] resolving explicit transcript path: hasWslDistro={} isLinuxPath={}",
             wsl_distro_name.as_deref().is_some_and(|v| !v.trim().is_empty()),
             is_linux_absolute_path(&explicit)
@@ -834,14 +834,14 @@ fn resolve_transcript_path(
     let agent_id = trimmed(agent_id).ok_or_else(|| "missing_agent_id".to_string())?;
     let resolved_wsl_distro = resolve_wsl_distro_name(Some(&cwd), wsl_distro_name);
     if let Some(distro) = resolved_wsl_distro {
-        info!(
+        debug!(
             "[subagent_transcript] resolving derived WSL transcript path: distro={distro} cwd={cwd} sessionId={session_id} agentId={agent_id}"
         );
         return resolve_wsl_transcript_path(cwd, session_id, agent_id, distro);
     }
 
     let home = home_dir().ok_or_else(|| "no_home_dir".to_string())?;
-    info!(
+    debug!(
         "[subagent_transcript] resolving derived native transcript path: cwd={cwd} sessionId={session_id} agentId={agent_id}"
     );
     Ok(derive_transcript_path(&home, &cwd, &session_id, &agent_id))
@@ -864,7 +864,7 @@ pub async fn subagent_transcript_subscribe(
     }
     let path =
         resolve_transcript_path(transcript_path, cwd, session_id, agent_id, wsl_distro_name)?;
-    info!("[subagent_transcript] subscribe resolved path: key={key} path={path}");
+    debug!("[subagent_transcript] subscribe resolved path: key={key} path={path}");
     bridge.subscribe(app_handle, key, path)
 }
 
@@ -888,7 +888,7 @@ pub async fn subagent_transcript_discover(
 ) -> Result<Vec<String>, String> {
     let resolved_wsl_distro = resolve_wsl_distro_name(Some(&cwd), wsl_distro_name);
     if let Some(distro) = resolved_wsl_distro {
-        info!(
+        debug!(
             "[subagent_transcript:wsl] discover requested: distro={distro} cwd={cwd} sessionId={session_id}"
         );
         return discover_wsl_subagent_files(&cwd, &session_id, &distro);
@@ -903,14 +903,14 @@ pub async fn subagent_transcript_discover(
         .join("subagents");
 
     if !subagents_dir.exists() {
-        info!(
+        debug!(
             "[subagent_transcript] discover native dir missing: {}",
             subagents_dir.to_string_lossy()
         );
         return Ok(Vec::new());
     }
 
-    info!(
+    debug!(
         "[subagent_transcript] discover native dir: {}",
         subagents_dir.to_string_lossy()
     );
@@ -928,7 +928,7 @@ pub async fn subagent_transcript_discover(
         }
     }
 
-    info!(
+    debug!(
         "[subagent_transcript] discover native result: count={}",
         agent_files.len()
     );
@@ -958,7 +958,7 @@ pub async fn codex_subagent_transcript_discover(
     } else {
         resolve_codex_sessions_root(codex_config_dir)
     };
-    info!(
+    debug!(
         "[subagent_transcript:codex] discover requested: root={} parentSessionId={} agentId={} wslDistro={:?}",
         sessions_root.to_string_lossy(),
         parent_session_id,
@@ -966,7 +966,7 @@ pub async fn codex_subagent_transcript_discover(
         resolved_wsl_distro
     );
     if resolved_wsl_distro.is_none() && !sessions_root.exists() {
-        info!(
+        debug!(
             "[subagent_transcript:codex] sessions root missing: {}",
             sessions_root.to_string_lossy()
         );
@@ -974,7 +974,7 @@ pub async fn codex_subagent_transcript_discover(
     }
 
     let candidates = list_codex_rollout_candidates(&sessions_root, &agent_id);
-    info!(
+    debug!(
         "[subagent_transcript:codex] rollout candidates: root={} agentId={} count={}",
         sessions_root.to_string_lossy(),
         agent_id,
@@ -982,14 +982,14 @@ pub async fn codex_subagent_transcript_discover(
     );
     for candidate in candidates {
         let parent_thread_id = codex_rollout_parent_thread_id(&candidate);
-        info!(
+        debug!(
             "[subagent_transcript:codex] inspect rollout candidate: agentId={} path={} parentThreadId={:?}",
             agent_id,
             candidate.to_string_lossy(),
             parent_thread_id
         );
         if parent_thread_id.as_deref() == Some(parent_session_id.as_str()) {
-            info!(
+            debug!(
                 "[subagent_transcript:codex] rollout matched: agentId={} path={}",
                 agent_id,
                 candidate.to_string_lossy()
@@ -998,7 +998,7 @@ pub async fn codex_subagent_transcript_discover(
         }
     }
 
-    info!(
+    debug!(
         "[subagent_transcript:codex] rollout not found: root={} parentSessionId={} agentId={}",
         sessions_root.to_string_lossy(),
         parent_session_id,
@@ -1034,7 +1034,7 @@ fn discover_wsl_subagent_files(
         "-printf",
         "%f\n",
     ];
-    info!("[subagent_transcript:wsl] discover dir: distro={distro} dir={subagents_dir}");
+    debug!("[subagent_transcript:wsl] discover dir: distro={distro} dir={subagents_dir}");
 
     match wsl_command_text(distro, &args) {
         Ok((stdout, stderr)) => {
@@ -1050,7 +1050,7 @@ fn discover_wsl_subagent_files(
                 .filter(|name| name.starts_with("agent-") && name.ends_with(".jsonl"))
                 .map(ToString::to_string)
                 .collect();
-            info!(
+            debug!(
                 "[subagent_transcript:wsl] discover result: distro={distro} count={} files={:?}",
                 files.len(),
                 files

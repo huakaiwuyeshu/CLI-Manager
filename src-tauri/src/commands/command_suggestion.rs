@@ -21,7 +21,7 @@ const PATH_SUGGESTION_MAX_LIMIT: usize = 64;
 macro_rules! command_suggestion_debug {
     ($($arg:tt)*) => {{
         if command_suggestion_debug_enabled() {
-            log::info!(
+            log::debug!(
                 target: "cli_manager::command_suggestion",
                 "[debug] {}",
                 format_args!($($arg)*)

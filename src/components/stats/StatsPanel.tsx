@@ -56,6 +56,7 @@ import {
 import { useI18n, type AppLanguage, type TranslationKey } from "../../lib/i18n";
 import { VendorIcon, inferVendor } from "../VendorIcon";
 import { RequestLogsView } from "./RequestLogsView";
+import { projectSupportsCapability } from "../../lib/projectCapabilities";
 
 interface StatsPanelProps {
   open: boolean;
@@ -1213,6 +1214,10 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
   const { language, t } = useI18n();
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
   const projects = useProjectStore((s) => s.projects);
+  const statisticsProjects = useMemo(
+    () => projects.filter((project) => projectSupportsCapability(project, "statistics")),
+    [projects]
+  );
   const groups = useProjectStore((s) => s.groups);
   const projectsLoaded = useProjectStore((s) => s.loaded);
   const fetchProjects = useProjectStore((s) => s.fetchAll);
@@ -1404,7 +1409,7 @@ export function StatsPanel({ open, onClose, onOpenSession }: StatsPanelProps) {
         {activeTab === "overview" && (
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2">
             <StatsProjectFilterDropdown
-              projects={projects}
+              projects={statisticsProjects}
               groups={groups}
               selectedProjectPath={projectPath}
               rawProjectKey={projectKey}

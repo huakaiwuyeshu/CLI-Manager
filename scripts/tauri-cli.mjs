@@ -55,12 +55,28 @@ function resolveConfigPaths(argsToRun) {
   return resolvedArgs;
 }
 
+function devSpawnEnv(argsToRun) {
+  if (process.platform !== "win32" || argsToRun[0] !== "dev" || !process.env.LOCALAPPDATA) {
+    return process.env;
+  }
+
+  return {
+    ...process.env,
+    WEBVIEW2_USER_DATA_FOLDER:
+      process.env.WEBVIEW2_USER_DATA_FOLDER ??
+      path.join(process.env.LOCALAPPDATA, "com.cli-manager.app", "EBWebView-dev"),
+  };
+}
+
+const tauriArgs = resolveConfigPaths(withDevConfig(args));
+
 let child;
 try {
-  child = spawn("tauri", resolveConfigPaths(withDevConfig(args)), {
+  child = spawn("tauri", tauriArgs, {
     cwd: tauriRoot,
     stdio: "inherit",
     shell: process.platform === "win32",
+    env: devSpawnEnv(tauriArgs),
   });
 } catch (error) {
   console.error(`Failed to start Tauri CLI: ${error.message}`);

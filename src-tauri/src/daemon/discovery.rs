@@ -15,12 +15,21 @@ const DEV_DAEMON_INFO_FILE_NAME: &str = "daemon.dev.json";
 #[serde(rename_all = "camelCase")]
 pub struct DaemonInfo {
     pub port: u16,
+    /// WebView 直连 PtyHost 的本机 WebSocket 端口。
+    #[serde(default)]
+    pub ws_port: u16,
     /// hook 上报转发端口（稳定端口，PTY 子进程环境变量指向它，app 重启不失效）。
     #[serde(default)]
     pub hook_port: u16,
     pub token: String,
     pub pid: u32,
     pub version: String,
+    #[serde(default)]
+    pub protocol_version: u16,
+    #[serde(default)]
+    pub binary_protocol_version: u8,
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// dev 与安装版使用不同发现文件，互不 attach（对齐 sessions.dev.json 隔离规则）。
@@ -92,10 +101,14 @@ mod tests {
     fn sample() -> DaemonInfo {
         DaemonInfo {
             port: 12345,
+            ws_port: 12347,
             hook_port: 12346,
             token: "tok".into(),
             pid: 42,
             version: "1.2.7".into(),
+            protocol_version: crate::daemon::protocol::CONTROL_PROTOCOL_VERSION,
+            binary_protocol_version: crate::daemon::protocol::BINARY_PROTOCOL_VERSION,
+            features: crate::daemon::protocol::supported_features(),
         }
     }
 
@@ -126,6 +139,17 @@ mod tests {
             read_daemon_info(&daemon_info_path(dir.path(), true)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn legacy_info_defaults_protocol_capabilities() {
+        let info: DaemonInfo = serde_json::from_str(
+            r#"{"port":1,"token":"tok","pid":2,"version":"old"}"#,
+        )
+        .unwrap();
+        assert_eq!(info.protocol_version, 0);
+        assert_eq!(info.binary_protocol_version, 0);
+        assert!(info.features.is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{debug, error};
 #[cfg(target_os = "windows")]
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -205,7 +205,7 @@ fn open_platform_terminal(tabs: &[ExternalTab]) -> Result<(), String> {
         })?;
     }
 
-    info!("open_windows_terminal: tabs={}", tabs.len());
+    debug!("open_windows_terminal: tabs={}", tabs.len());
 
     spawn_windows_terminal(&args).map_err(|e| {
         error!("Failed to open Windows Terminal: {}", e);
@@ -249,7 +249,7 @@ fn open_platform_terminal(tabs: &[ExternalTab]) -> Result<(), String> {
         }
     }
 
-    info!("open_external_terminal: Terminal.app tabs={}", tabs.len());
+    debug!("open_external_terminal: Terminal.app tabs={}", tabs.len());
     Ok(())
 }
 
@@ -305,7 +305,7 @@ fn open_platform_terminal(tabs: &[ExternalTab]) -> Result<(), String> {
         }
     }
 
-    info!("open_external_terminal: linux tabs={}", tabs.len());
+    debug!("open_external_terminal: linux tabs={}", tabs.len());
     Ok(())
 }
 
@@ -333,7 +333,7 @@ pub async fn open_folder_in_explorer(
             error!("Failed to open file with default application: {}", e);
             format!("无法打开文件: {}", e)
         })?;
-        info!("Opened file with default application: {}", path);
+        debug!("Opened file with default application: {}", path);
         return Ok(());
     }
 
@@ -353,7 +353,7 @@ pub async fn open_folder_in_explorer(
             format!("无法打开文件夹: {}", e)
         })?;
 
-        info!("Opened folder in explorer: {}", path);
+        debug!("Opened folder in explorer: {}", path);
         Ok(())
     }
 
@@ -370,7 +370,7 @@ pub async fn open_folder_in_explorer(
             format!("无法打开文件夹: {}", e)
         })?;
 
-        info!("Opened path in Finder: {}", path);
+        debug!("Opened path in Finder: {}", path);
         Ok(())
     }
 
@@ -386,7 +386,7 @@ pub async fn open_folder_in_explorer(
             format!("无法打开文件夹: {}", e)
         })?;
 
-        info!("Opened path with xdg-open: {}", target.to_string_lossy());
+        debug!("Opened path with xdg-open: {}", target.to_string_lossy());
         Ok(())
     }
 }

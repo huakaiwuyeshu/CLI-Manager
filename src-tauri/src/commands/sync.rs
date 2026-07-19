@@ -1,10 +1,14 @@
 use crate::sync::{
-    default_device_name, detect_conflict, download, list_device_snapshots, local_export,
-    local_import, test_connection, upload, ConflictInfo, DeviceSnapshotInfo, SyncData,
+    backup_local_export as export_backup_zip, backup_local_import as import_backup_zip,
+    clear_restore_safety, default_device_name, delete_backup, detect_conflict, download,
+    download_backup, list_backups, list_device_snapshots, list_outbox, load_restore_safety,
+    local_export, local_import, remove_outbox, save_outbox, save_restore_safety, test_connection,
+    upload, upload_backup, BackupSnapshotInfo, BackupSnapshotV3, ConflictInfo, DeviceSnapshotInfo,
+    SyncData,
 };
 use crate::webdav::WebDavConfig;
 use chrono::{DateTime, Utc};
-use log::{error, info};
+use log::{debug, error, info};
 
 #[derive(serde::Deserialize)]
 pub struct SyncConfigInput {
@@ -91,7 +95,7 @@ pub async fn sync_upload(
     data: SyncData,
     remote_dir: Option<String>,
 ) -> Result<SyncUploadResult, String> {
-    info!("Starting sync_upload to {}", config.url);
+    debug!("Starting sync_upload to {}", config.url);
 
     let webdav_config = WebDavConfig {
         url: config.url,
@@ -100,7 +104,7 @@ pub async fn sync_upload(
     };
 
     let timestamp = data.last_modified.clone();
-    info!(
+    debug!(
         "Sync data: {} projects, {} groups, {} templates",
         data.data.projects.len(),
         data.data.groups.len(),
@@ -175,7 +179,7 @@ pub struct LocalExportResult {
 
 #[tauri::command]
 pub async fn sync_local_export(dir: String, data: SyncData) -> Result<LocalExportResult, String> {
-    info!("Starting sync_local_export to {}", dir);
+    debug!("Starting sync_local_export to {}", dir);
     let path = tokio::task::spawn_blocking(move || local_export(&dir, &data))
         .await
         .map_err(|e| format!("内部错误: {}", e))??;
@@ -188,52 +192,125 @@ pub async fn sync_local_export(dir: String, data: SyncData) -> Result<LocalExpor
 
 #[tauri::command]
 pub async fn sync_local_import(zip_path: String) -> Result<SyncData, String> {
-    info!("Starting sync_local_import from {}", zip_path);
+    debug!("Starting sync_local_import from {}", zip_path);
     let data = tokio::task::spawn_blocking(move || local_import(&zip_path))
         .await
         .map_err(|e| format!("内部错误: {}", e))??;
     Ok(data)
 }
 
-// WebDAV 密码存系统原生凭据存储，固定条目（service=CLI-Manager, user=webdav），不落明文配置文件
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-fn webdav_password_entry() -> Result<keyring_core::Entry, String> {
-    use std::sync::OnceLock;
-    static STORE_INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    STORE_INIT
-        .get_or_init(|| {
-            #[cfg(target_os = "windows")]
-            let store = windows_native_keyring_store::Store::new()
-                .map_err(|e| format!("初始化 Windows 凭据存储失败: {}", e))?;
-            #[cfg(target_os = "macos")]
-            let store = apple_native_keyring_store::keychain::Store::new()
-                .map_err(|e| format!("初始化 macOS 钥匙串失败: {}", e))?;
-            #[cfg(target_os = "linux")]
-            let store =
-                zbus_secret_service_keyring_store::Store::new().map_err(|e| e.to_string())?;
-            keyring_core::set_default_store(store);
-            Ok(())
-        })
-        .clone()?;
-
-    #[cfg(target_os = "linux")]
-    let entry = {
-        let modifiers = std::collections::HashMap::from([("target", "CLI-Manager")]);
-        keyring_core::Entry::new_with_modifiers("CLI-Manager", "webdav", &modifiers)
-    };
-    #[cfg(not(target_os = "linux"))]
-    let entry = keyring_core::Entry::new("CLI-Manager", "webdav");
-
-    entry.map_err(|e| format!("创建凭据条目失败: {}", e))
+fn webdav_config(config: SyncConfigInput) -> WebDavConfig {
+    WebDavConfig {
+        url: config.url,
+        username: config.username,
+        password: config.password,
+    }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-fn delete_webdav_password_blocking() -> Result<(), String> {
-    let entry = webdav_password_entry()?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("删除 WebDAV 密码失败: {}", e)),
-    }
+#[tauri::command]
+pub async fn backup_upload(
+    config: SyncConfigInput,
+    snapshot: BackupSnapshotV3,
+    remote_dir: Option<String>,
+) -> Result<String, String> {
+    upload_backup(webdav_config(config), snapshot, remote_dir).await
+}
+
+#[tauri::command]
+pub async fn backup_list(
+    config: SyncConfigInput,
+    remote_dir: Option<String>,
+) -> Result<Vec<BackupSnapshotInfo>, String> {
+    list_backups(webdav_config(config), remote_dir).await
+}
+
+#[tauri::command]
+pub async fn backup_download(
+    config: SyncConfigInput,
+    remote_path: String,
+    remote_dir: Option<String>,
+) -> Result<BackupSnapshotV3, String> {
+    download_backup(webdav_config(config), remote_path, remote_dir).await
+}
+
+#[tauri::command]
+pub async fn backup_delete(
+    config: SyncConfigInput,
+    remote_path: String,
+    remote_dir: Option<String>,
+) -> Result<(), String> {
+    delete_backup(webdav_config(config), remote_path, remote_dir).await
+}
+
+#[tauri::command]
+pub async fn backup_import_legacy_cloud(
+    config: SyncConfigInput,
+    device_name: Option<String>,
+    remote_dir: Option<String>,
+) -> Result<SyncData, String> {
+    download(webdav_config(config), device_name, true, remote_dir).await
+}
+
+#[tauri::command]
+pub async fn backup_local_export(
+    dir: String,
+    snapshot: serde_json::Value,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || export_backup_zip(&dir, snapshot))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_local_import(zip_path: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || import_backup_zip(&zip_path))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_outbox_save(
+    target_hash: String,
+    snapshot: serde_json::Value,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || save_outbox(&target_hash, &snapshot))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_outbox_list(target_hash: String) -> Result<Vec<serde_json::Value>, String> {
+    tokio::task::spawn_blocking(move || list_outbox(&target_hash))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_outbox_remove(target_hash: String, snapshot_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || remove_outbox(&target_hash, &snapshot_id))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_restore_safety_save(snapshot: serde_json::Value) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || save_restore_safety(&snapshot))
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_restore_safety_load() -> Result<Option<serde_json::Value>, String> {
+    tokio::task::spawn_blocking(load_restore_safety)
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
+}
+
+#[tauri::command]
+pub async fn backup_restore_safety_clear() -> Result<(), String> {
+    tokio::task::spawn_blocking(clear_restore_safety)
+        .await
+        .map_err(|error| format!("内部错误: {error}"))?
 }
 
 #[tauri::command]
@@ -242,12 +319,9 @@ pub async fn sync_save_password(password: String) -> Result<(), String> {
     {
         tokio::task::spawn_blocking(move || {
             if password.is_empty() {
-                return delete_webdav_password_blocking();
+                return crate::credential_store::delete("webdav");
             }
-            let entry = webdav_password_entry()?;
-            entry
-                .set_password(&password)
-                .map_err(|e| format!("保存 WebDAV 密码失败: {}", e))
+            crate::credential_store::set("webdav", &password)
         })
         .await
         .map_err(|e| format!("内部错误: {}", e))?
@@ -264,12 +338,7 @@ pub async fn sync_load_password() -> Result<Option<String>, String> {
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     {
         tokio::task::spawn_blocking(|| {
-            let entry = webdav_password_entry()?;
-            match entry.get_password() {
-                Ok(password) => Ok(Some(password)),
-                Err(keyring_core::Error::NoEntry) => Ok(None),
-                Err(e) => Err(format!("读取 WebDAV 密码失败: {}", e)),
-            }
+            crate::credential_store::get("webdav")
         })
         .await
         .map_err(|e| format!("内部错误: {}", e))?
@@ -282,7 +351,7 @@ pub async fn sync_load_password() -> Result<Option<String>, String> {
 pub async fn sync_delete_password() -> Result<(), String> {
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     {
-        tokio::task::spawn_blocking(delete_webdav_password_blocking)
+        tokio::task::spawn_blocking(|| crate::credential_store::delete("webdav"))
             .await
             .map_err(|e| format!("内部错误: {}", e))?
     }

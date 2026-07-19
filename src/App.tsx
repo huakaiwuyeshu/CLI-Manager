@@ -51,8 +51,10 @@ import { getOsPlatform } from "./lib/shell";
 import { normalizeFontFamilyStack } from "./lib/systemFonts";
 import { ALL_TERMINALS_SCOPE } from "./lib/terminalScope";
 import { shouldIncludeDaemonExitTask } from "./lib/terminalExitTask";
+import { requestSidebarToggle } from "./lib/sidebarCommands";
 import { getTerminalTheme, isLightTerminalTheme } from "./lib/terminalThemes";
 import { resolveProjectForSession } from "./lib/terminalProject";
+import { terminalProcessManager } from "./terminal/core/TerminalProcessManager";
 import type { TerminalScope } from "./lib/types";
 import "./App.css";
 
@@ -404,16 +406,8 @@ function runDeferredStartupTasks(openSettings?: (tab?: SettingsTab) => void): vo
         logWarn("Failed to refresh deferred project diagnostics", err);
       });
 
-      const result = await useSyncStore.getState().runAutoSync("startup");
-      if (result === "conflict") {
-        toast.warning(translateCurrent("notifications.autoSync.startConflict"), {
-          description: translateCurrent("notifications.autoSync.conflictDescription"),
-        });
-      } else if (result === "error") {
-        toast.error(translateCurrent("notifications.autoSync.startFailed"), {
-          description: translateCurrent("notifications.autoSync.failedDescription"),
-        });
-      }
+      await useSyncStore.getState().load();
+      await useSyncStore.getState().retryOutbox();
     })();
 
     if (!startupUpdateChecked) {
@@ -586,8 +580,7 @@ function App() {
     return () => window.removeEventListener("keydown", handleF12, true);
   }, [debugMode]);
 
-  // 关闭期自动同步：8s 封顶避免网络慢时退出无限等待；conflict/error 不再 toast
-  // （窗口即将销毁看不到），改为退出遮罩上短暂提示后继续退出，并记录日志。
+  // 关闭期自动备份：先落本地 outbox，再在 8s 内尝试上传；超时后下次启动重试。
   const runCloseAutoSync = useCallback(async () => {
     const showExitNotice = async (message: string) => {
       setExitNotice(message);
@@ -599,15 +592,16 @@ function App() {
       timeoutId = setTimeout(() => resolve("timeout"), CLOSE_SYNC_TIMEOUT_MS);
     });
     try {
-      const result = await Promise.race([useSyncStore.getState().runAutoSync("close"), timeoutPromise]);
+      await useSyncStore.getState().load();
+      const result = await Promise.race([useSyncStore.getState().runCloseAutoBackup(), timeoutPromise]);
       if (result === "timeout") {
         logWarn("Close auto sync timed out, continuing exit", { timeoutMs: CLOSE_SYNC_TIMEOUT_MS });
         await showExitNotice(t("app.exitProgress.syncTimeout"));
         return;
       }
-      if (result === "conflict" || result === "error") {
-        logWarn(`Close auto sync ended with ${result}, continuing exit`);
-        await showExitNotice(result === "conflict" ? t("app.exitProgress.syncConflict") : t("app.exitProgress.syncFailed"));
+      if (result === "error") {
+        logWarn("Close auto backup failed, continuing exit");
+        await showExitNotice(t("app.exitProgress.syncFailed"));
       }
     } catch (err) {
       logWarn("Close auto sync threw, continuing exit", err);
@@ -679,6 +673,14 @@ function App() {
     })();
   }, [terminalFullscreen, t]);
 
+  const handleToggleSidebarShortcut = useCallback(() => {
+    if (terminalFullscreen) {
+      handleToggleTerminalFullscreen();
+      return;
+    }
+    requestSidebarToggle();
+  }, [handleToggleTerminalFullscreen, terminalFullscreen]);
+
   const handleActivateHookNotificationTarget = useCallback(async (tabId: string) => {
     const terminalStore = useTerminalStore.getState();
     const targetSession = terminalStore.sessions.find((session) => session.id === tabId);
@@ -725,7 +727,10 @@ function App() {
     onActivateSession: handleActivateHookNotificationTarget,
   });
 
-  useKeyboardShortcuts({ onToggleTerminalFullscreen: handleToggleTerminalFullscreen });
+  useKeyboardShortcuts({
+    onToggleSidebar: handleToggleSidebarShortcut,
+    onToggleTerminalFullscreen: handleToggleTerminalFullscreen,
+  });
 
   useEffect(() => {
     if (!IN_TAURI) return;
@@ -939,7 +944,7 @@ function App() {
     });
     // Phase 2：拒绝恢复 = 不要这批旧标签。daemon 中对应会话若还在跑，
     // 必须一并关闭，否则成为无人认领的后台任务且阻止 daemon 空闲自灭。
-    void invoke("pty_close_all").catch((err) => {
+    void terminalProcessManager.closeAll().catch((err) => {
       logWarn("Failed to close daemon sessions after user rejected restore", err);
     });
   }, []);
@@ -1191,7 +1196,7 @@ function App() {
       await runCloseAutoSync();
       setExitPhase("closing");
       // Issue #123：正常退出前把各终端最终画面强制落盘，供下次启动问询式恢复。
-      // 必须在 pty_close_all 之前，避免关闭 PTY 触发的重绘/清屏影响 serialize 结果；
+      // 必须在 PtyHost closeAll 之前，避免关闭 PTY 触发的重绘/清屏影响 serialize 结果；
       // 此处不再 clear() 工作区快照——那会让"关闭后恢复"永远拿不到数据。
       if (!discardSessions) {
         await flushTerminalSnapshotsNow();
@@ -1202,7 +1207,7 @@ function App() {
         if (discardSessions) {
           logInfo("exit: closing all PTY sessions", { source });
           try {
-            await invoke("pty_close_all");
+            await terminalProcessManager.closeAll();
             logInfo("exit: close_all completed", { source });
           } catch (err) {
             logWarn("Failed to close all PTY sessions before exit", { source, err });
@@ -1211,7 +1216,7 @@ function App() {
           let closedCount = 0;
           for (const sessionId of ptySessionIds) {
             try {
-              await invoke("pty_close", { sessionId });
+              await terminalProcessManager.close(sessionId);
               closedCount += 1;
             } catch (err) {
               logWarn("Failed to close foreground PTY session before exit", { source, sessionId, err });
@@ -1239,7 +1244,7 @@ function App() {
   // Issue #123 Phase 1/2：转入后台。
   // daemon 可用 → 真退出应用，任务由守护进程续跑（下次启动 attach 回放）；
   // daemon 不可用 → 托盘常驻降级：仅隐藏窗口，严禁触碰退出链路
-  // （runExitCleanup / pty_close_all）——PTY、hook server、快照节流全部存活。
+  // （runExitCleanup / PtyHost closeAll）——PTY、hook server、快照节流全部存活。
   const minimizeToTray = useCallback(async () => {
     try {
       await getCurrentWindow().hide();

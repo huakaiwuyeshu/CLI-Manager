@@ -6,6 +6,7 @@ import { useSettingsStore } from "./settingsStore";
 import { logWarn } from "../lib/logger";
 import { getClaudeProviderOverride, getCodexProviderOverride, getProviderSwitchAppType } from "../lib/providerSwitching";
 import { defaultShellForOs, getOsPlatform, normalizeShellForOs, normalizeShellKey } from "../lib/shell";
+import { projectSupportsCapability } from "../lib/projectCapabilities";
 import type {
   Project, CreateProjectInput, UpdateProjectInput,
   Group, CreateGroupInput, TreeNode, WorktreeRecord,
@@ -213,10 +214,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         let projectHealth = get().projectHealth;
         if (policy.includePathHealth && projects.length > 0) {
           try {
-            const paths = projects.map((p) => p.path);
+            const localProjects = projects.filter((project) => project.environment_type !== "ssh");
+            const paths = localProjects.map((project) => project.path);
             const results = await invoke<boolean[]>("check_paths_exist", { paths });
             const health: Record<string, boolean> = {};
-            projects.forEach((p, i) => { health[p.id] = results[i]; });
+            localProjects.forEach((project, index) => { health[project.id] = results[index]; });
             projectHealth = health;
           } catch { /* ignore */ }
         }
@@ -238,10 +240,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const projects = get().projects;
     if (projects.length > 0) {
       try {
-        const paths = projects.map((project) => project.path);
+        const localProjects = projects.filter((project) => project.environment_type !== "ssh");
+        const paths = localProjects.map((project) => project.path);
         const results = await invoke<boolean[]>("check_paths_exist", { paths });
         const projectHealth: Record<string, boolean> = {};
-        projects.forEach((project, index) => {
+        localProjects.forEach((project, index) => {
           projectHealth[project.id] = results[index];
         });
         set({ projectHealth });
@@ -256,9 +259,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   refreshProviderBadges: async () => {
     const refreshSeq = ++providerBadgeRefreshSeq;
     const projects = get().projects;
+    const providerProjects = projects.filter((project) => projectSupportsCapability(project, "providerSwitch"));
     const worktrees = get().worktrees;
-    const claudeProjects = projects.filter((p) => getProviderSwitchAppType(p) === "claude");
-    const codexProjects = projects.filter((p) => getProviderSwitchAppType(p) === "codex");
+    const claudeProjects = providerProjects.filter((p) => getProviderSwitchAppType(p) === "claude");
+    const codexProjects = providerProjects.filter((p) => getProviderSwitchAppType(p) === "codex");
     const projectsById = new Map(projects.map((project) => [project.id, project]));
     const providerBadges: Record<string, ProviderBadge> = {};
 
@@ -351,8 +355,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const id = crypto.randomUUID();
     const ts = Date.now().toString();
     const os = await getOsPlatform();
+    const isSshProject = input.environment_type === "ssh";
+    if (isSshProject && (!input.ssh_host_id || !input.remote_path?.trim())) {
+      throw new Error("ssh_project_location_required");
+    }
     const rawShell = input.shell?.trim() ?? "";
-    const shell =
+    const shell = isSshProject ? "" :
       normalizeShellForOs(rawShell, os) ??
       (rawShell && !normalizeShellKey(rawShell)
         ? rawShell
@@ -360,7 +368,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     const project: Project = {
       id,
       name: input.name,
-      path: input.path,
+      path: isSshProject ? "" : input.path,
       group_name: input.group_name ?? "",
       group_id: input.group_id ?? null,
       sort_order: 0,
@@ -370,9 +378,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       env_vars: input.env_vars ?? "{}",
       shell,
       provider_overrides: input.provider_overrides ?? "{}",
-      worktree_strategy: input.worktree_strategy ?? "disabled",
-      worktree_root: input.worktree_root ?? "",
-      worktree_deps_prompt_enabled: input.worktree_deps_prompt_enabled ?? 0,
+      worktree_strategy: isSshProject ? "disabled" : input.worktree_strategy ?? "disabled",
+      worktree_root: isSshProject ? "" : input.worktree_root ?? "",
+      worktree_deps_prompt_enabled: isSshProject ? 0 : input.worktree_deps_prompt_enabled ?? 0,
+      environment_type: input.environment_type ?? "local",
+      ssh_host_id: isSshProject ? input.ssh_host_id ?? null : null,
+      remote_path: isSshProject ? input.remote_path?.trim() ?? "" : "",
       created_at: ts,
       updated_at: ts,
     };
@@ -380,9 +391,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       `INSERT INTO projects (
          id, name, path, group_name, group_id, sort_order,
          cli_tool, cli_args, startup_cmd, env_vars, shell, provider_overrides,
-         worktree_strategy, worktree_root, worktree_deps_prompt_enabled, created_at, updated_at
+         worktree_strategy, worktree_root, worktree_deps_prompt_enabled,
+         environment_type, ssh_host_id, remote_path, created_at, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         project.id,
         project.name,
@@ -399,6 +411,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         project.worktree_strategy,
         project.worktree_root,
         project.worktree_deps_prompt_enabled,
+        project.environment_type,
+        project.ssh_host_id,
+        project.remote_path,
         project.created_at,
         project.updated_at,
       ]

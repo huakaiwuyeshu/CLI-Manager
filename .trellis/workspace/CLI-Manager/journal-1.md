@@ -693,3 +693,201 @@ Claude 启动阶段提前订阅子任务 transcript，Codex rollout 增加有界
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: 合并 VS Code 终端正确性分支
+
+**Date**: 2026-07-18
+**Task**: 合并 VS Code 终端正确性分支
+**Branch**: `master`
+
+### Summary
+
+将 feat/vscode-terminal-correctness-completion 合并到最新 master，语义解决 6 个冲突，补齐测试桩并通过前端、Node 与 Rust 验证。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7fd0c4a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 22: 修复终端 OSC 颜色响应泄漏
+
+**Date**: 2026-07-18
+**Task**: 修复终端 OSC 颜色响应泄漏
+**Branch**: `master`
+
+### Summary
+
+区分 live 与 replay 的 OSC 10/11 处理，合并实时颜色回复并补充回归测试与前端契约。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5c5d55f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 23: 精简项目多选右键菜单
+
+**Date**: 2026-07-18
+**Task**: 精简项目多选右键菜单
+**Branch**: `master`
+
+### Summary
+
+项目多选后右键已选项目仅保留取消选择、启动已选、批量修改 Shell 和删除已选；同步更新 TEMP 变更记录与功能清单，并通过 TypeScript 类型检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `41885d7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 24: Reduce default info log noise
+
+**Date**: 2026-07-18
+**Task**: Reduce default info log noise
+**Branch**: `master`
+
+### Summary
+
+将常规扫描、轮询和诊断日志从 INFO 降为 DEBUG，保留关键生命周期日志，并将 daemon 缓冲区淘汰升级为 WARN。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `538a051` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 25: 版本化备份恢复
+
+**Date**: 2026-07-18
+**Task**: 版本化备份恢复
+**Branch**: `master`
+
+### Summary
+
+将覆盖式同步重构为 V3 WebDAV 版本快照与本地 ZIP 备份，支持五域恢复、Outbox 重试、安全快照回滚和旧格式导入，并提交当前工作区全部改动。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `13f6d3d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 26: 合并远程代码并解决冲突
+
+**Date**: 2026-07-18
+**Task**: 合并远程代码并解决冲突
+**Branch**: `master`
+
+### Summary
+
+合并 origin/master 的 6 个远端提交，解决 Cargo.lock 与同步设置分类冲突，保留版本化备份并纳入远端崩溃报告和侧栏增强。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `41c1275` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

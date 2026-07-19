@@ -25,6 +25,13 @@ import {
   getTerminalFileDropZoneIdAtPoint,
   updateTerminalFileDragPointFromEvent,
 } from "../../lib/terminalFileDrag";
+import {
+  createDefaultIgnoreMatcher,
+  createIgnoreMatcher,
+  includesProjectGitIgnoreChange,
+  isFileExplorerIgnoreCaseInsensitive,
+  type FileExplorerIgnoreMatcher,
+} from "../../lib/fileExplorerIgnore";
 import type { GitFileChange, ProjectFileContentMatch, ProjectFileEntry, ProjectFileSearchMode } from "../../lib/types";
 import { isDefaultCollapsedDirectoryName, useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -68,6 +75,8 @@ const FILE_WATCH_REFRESH_DEBOUNCE_MS = 600;
 interface AutoCollapseGroupState {
   expandedGroupPaths: Set<string>;
   ignoredPaths: Set<string>;
+  /** Project .gitignore matcher, or the built-in fallback matcher. */
+  ignoreMatcher: FileExplorerIgnoreMatcher;
   toggleGroup: (parentPath: string) => void;
   ignorePath: (path: string) => void;
   unignorePath: (path: string) => void;
@@ -189,7 +198,11 @@ function collectCompactDirectoryChain(entry: ProjectFileEntry): {
   return { suffixParts, leaf, chainPaths };
 }
 
-function splitAutoCollapsedEntries(entries: ProjectFileEntry[], ignoredPaths: Set<string>): {
+function splitAutoCollapsedEntries(
+  entries: ProjectFileEntry[],
+  ignoredPaths: Set<string>,
+  ignoreMatcher: FileExplorerIgnoreMatcher
+): {
   normalEntries: ProjectFileEntry[];
   collapsedEntries: ProjectFileEntry[];
 } {
@@ -197,13 +210,21 @@ function splitAutoCollapsedEntries(entries: ProjectFileEntry[], ignoredPaths: Se
   const collapsedEntries: ProjectFileEntry[] = [];
 
   for (const entry of entries) {
-    if (entry.kind === "directory" && (isDefaultCollapsedDirectoryName(entry.name) || ignoredPaths.has(entry.path))) {
+    const ruleIgnored = ignoreMatcher.ignores(entry.path, entry.kind === "directory");
+    // Issue #147：ignore 命中的文件直接隐藏；目录进入「已折叠」分组
+    if (entry.kind === "file" && ruleIgnored) {
+      continue;
+    }
+    if (
+      entry.kind === "directory"
+      && (isDefaultCollapsedDirectoryName(entry.name) || ignoredPaths.has(entry.path) || ruleIgnored)
+    ) {
       collapsedEntries.push(entry);
       continue;
     }
 
     if (entry.kind === "directory" && entry.children) {
-      const nested = splitAutoCollapsedEntries(entry.children, ignoredPaths);
+      const nested = splitAutoCollapsedEntries(entry.children, ignoredPaths, ignoreMatcher);
       collapsedEntries.push(...nested.collapsedEntries);
       normalEntries.push(
         nested.collapsedEntries.length > 0
@@ -690,7 +711,7 @@ function FileTreeRows({
   renderAutoCollapsedGroup: boolean;
 }) {
   const { normalEntries, collapsedEntries } = renderAutoCollapsedGroup
-    ? splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths)
+    ? splitAutoCollapsedEntries(entries, autoCollapseGroups.ignoredPaths, autoCollapseGroups.ignoreMatcher)
     : { normalEntries: entries, collapsedEntries: [] };
   const groupOpen = autoCollapseGroups.expandedGroupPaths.has(parentPath);
 
@@ -802,6 +823,14 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   const [renamingAction, setRenamingAction] = useState<RenameAction | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [expandedAutoCollapseGroups, setExpandedAutoCollapseGroups] = useState<Set<string>>(new Set());
+  /** null = not loaded or unavailable; fallback rules remain active. */
+  const [projectGitIgnoreMatcher, setProjectGitIgnoreMatcher] = useState<FileExplorerIgnoreMatcher | null>(null);
+  const [gitIgnoreLoadState, setGitIgnoreLoadState] = useState<"idle" | "loaded" | "missing">("idle");
+  const [gitIgnoreRefreshSeq, setGitIgnoreRefreshSeq] = useState(0);
+  const gitIgnoreCaseInsensitive = useMemo(
+    () => isFileExplorerIgnoreCaseInsensitive(project?.path ?? ""),
+    [project?.path]
+  );
   const [searchControlsVisible, setSearchControlsVisible] = useState(false);
   const [dragPreview, setDragPreview] = useState<FileDragPreviewState | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -821,7 +850,37 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
   useEffect(() => {
     setExpandedAutoCollapseGroups(new Set());
     setSearchControlsVisible(false);
+    setProjectGitIgnoreMatcher(null);
+    setGitIgnoreLoadState("idle");
   }, [project?.id]);
+
+  // Issue #147：优先读取项目根 .gitignore；不存在则回退内置默认规则
+  useEffect(() => {
+    if (!project?.path) {
+      setProjectGitIgnoreMatcher(null);
+      setGitIgnoreLoadState("missing");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = await invoke<{ content: string }>("file_read_project_text", {
+          rootPath: project.path,
+          relativePath: ".gitignore",
+        });
+        if (cancelled) return;
+        setProjectGitIgnoreMatcher(createIgnoreMatcher(payload.content ?? "", gitIgnoreCaseInsensitive));
+        setGitIgnoreLoadState("loaded");
+      } catch {
+        if (cancelled) return;
+        setProjectGitIgnoreMatcher(null);
+        setGitIgnoreLoadState("missing");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.path, gitIgnoreCaseInsensitive, gitIgnoreRefreshSeq]);
 
   useEffect(() => {
     if (searchQuery.trim()) setSearchControlsVisible(true);
@@ -874,7 +933,11 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
 
     void listen<{ projectPath: string; changedPaths?: string[] }>("project-files-changed", (event) => {
       if (disposed) return;
-      if (event.payload.projectPath === project.path) scheduleRefreshIfActive(event.payload.changedPaths);
+      if (event.payload.projectPath !== project.path) return;
+      if (includesProjectGitIgnoreChange(event.payload.changedPaths)) {
+        setGitIgnoreRefreshSeq((current) => current + 1);
+      }
+      scheduleRefreshIfActive(event.payload.changedPaths);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -957,13 +1020,22 @@ export function FileExplorerSidebar({ mode = "sidebar", onClosePanel, onBackToPr
     void updateSetting("fileExplorerIgnoredPaths", next);
   }, [project, updateSetting]);
 
+  // 优先使用项目 .gitignore；缺失或尚未成功加载时使用内置默认规则
+  const ignoreMatcher = useMemo<FileExplorerIgnoreMatcher>(() => {
+    if (gitIgnoreLoadState === "loaded" && projectGitIgnoreMatcher) {
+      return projectGitIgnoreMatcher;
+    }
+    return createDefaultIgnoreMatcher(gitIgnoreCaseInsensitive);
+  }, [gitIgnoreCaseInsensitive, gitIgnoreLoadState, projectGitIgnoreMatcher]);
+
   const autoCollapseGroups = useMemo<AutoCollapseGroupState>(() => ({
     expandedGroupPaths: expandedAutoCollapseGroups,
     ignoredPaths,
+    ignoreMatcher,
     toggleGroup: toggleAutoCollapseGroup,
     ignorePath,
     unignorePath,
-  }), [expandedAutoCollapseGroups, ignoredPaths, toggleAutoCollapseGroup, ignorePath, unignorePath]);
+  }), [expandedAutoCollapseGroups, ignoredPaths, ignoreMatcher, toggleAutoCollapseGroup, ignorePath, unignorePath]);
 
   const getDisplayStatus = useCallback((entry: ProjectFileEntry): FileDisplayStatus | null => {
     if (dirtyFilePaths.has(entry.path)) {

@@ -11,9 +11,10 @@ import type {
   ProjectImageFilePayload,
   ProjectTextFilePayload,
 } from "../lib/types";
-import { logError } from "../lib/logger";
+import { logError, recordCrashActivity } from "../lib/logger";
 import { translateCurrent } from "../lib/i18n";
 import { isSameProjectFileContext } from "../lib/terminalProject";
+import { projectSupportsCapability } from "../lib/projectCapabilities";
 
 type ClipboardMode = "copy" | "move";
 type FileEntryKind = "file" | "directory";
@@ -278,6 +279,14 @@ export const DEFAULT_COLLAPSED_DIRECTORY_NAMES = [
   "log",
   "tmp",
   "temp",
+  ".sass-cache",
+  ".nyc_output",
+  "jspm_packages",
+  "out-tsc",
+  ".gradle-cache",
+  ".kotlin",
+  ".mtj.tmp",
+  ".nx",
 ] as const;
 
 const DEFAULT_COLLAPSED_DIRECTORY_NAME_SET = new Set(
@@ -579,6 +588,9 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
   clipboard: null,
 
   openProject: async (project) => {
+    if (!projectSupportsCapability(project, "files")) {
+      throw new Error("remote_project_capability_unsupported:files");
+    }
     const current = get().project;
     const keepCurrentProject = isSameProjectFileContext(current, project);
     set({
@@ -911,6 +923,14 @@ export const useFileExplorerStore = create<FileExplorerStore>((set, get) => ({
   openFile: async (entry) => {
     const project = get().project;
     if (!project || entry.kind !== "file") return;
+    recordCrashActivity("file.preview_open", {
+      projectId: project.id,
+      projectPath: project.path,
+      filePath: entry.path,
+      sizeBytes: entry.sizeBytes,
+      extension: extension(entry.path),
+      previewKind: isImage(entry.path) ? "image" : isMarkdown(entry.path) ? "markdown" : "text",
+    });
     const existing = get().openFiles.find((file) => file.path === entry.path);
     if (existing) {
       set({ activeFilePath: existing.path, activeFile: existing, activeDiffPath: null, activeDiff: null });

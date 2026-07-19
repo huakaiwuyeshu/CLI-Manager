@@ -213,3 +213,38 @@
 - `npm run build`：通过，Vite 完成 6621 个模块转换；仅保留既有的大 chunk 警告。
 - `rustfmt --check --edition 2021 src/commands/cc_connect.rs src/commands/ccswitch.rs` 与 `git diff --check`：通过。
 - 尚未操作真实 Provider 发起模型请求，避免未经确认消耗外部账号额度；本次未打包、未 push。
+
+## Codex 会话远程托管验证（2026-07-19）
+
+### 功能与边界
+
+- 后端定向测试覆盖托管标识校验、通知身份字段、cc-connect 会话注入/清理、复用 ID 拒绝、Windows 项目哈希和四平台会话选择。
+- 前端候选会话只接受本地 Codex、有效 `cliSessionId`、登记项目与可信停止状态；托管锁会阻止关闭 Tab 和取消分屏，恢复失败会保留可重试蒙层。
+- 已确认 Telegram、飞书、微信、企业微信配置和授权入口在上游合并后仍存在；没有修改 cc-connect 源码。
+- 上游终端架构合并后，托管暂停/恢复已接入 `TerminalProcessManager`，源码扫描确认不存在旧 `pty_create`、`pty_close`、`pty_write` 或 PTY status event 监听残留。
+
+### 自动验证
+
+- `cargo test commands::cc_connect --lib`：38 项通过、0 项失败，覆盖 6 项托管测试以及微信/企业微信、Provider、代理、项目切换和可执行文件检测回归。
+- `cargo test commands::ccswitch --lib`：33 项通过、0 项失败。
+- `cargo check`：通过。
+- `.\node_modules\.bin\tsc.cmd --noEmit`：通过。
+- `npm run build`：通过，Vite 完成 6642 个模块转换；仅有既有的大 chunk 警告。
+- `node scripts/terminalProcessManager.test.mjs`：2 项通过。
+- `node scripts/ptyHostSocket.test.mjs`：7 项通过。
+- `node scripts/terminalReplay.test.mjs`：8 项通过。
+- `node scripts/fileExplorerIgnore.test.mjs`：9 项通过。
+- `git diff --check`：通过，仅有工作区既有的 LF/CRLF 转换提示。
+
+### 界面与入口回归
+
+- 通过浏览器 Tauri mock 验证中文桌宠纵向菜单、四会话向左扇形卡片、仅显示可托管会话的选择模式、活动托管锁标识及“暂停并取消托管”操作；长项目/会话名未与相邻控件重叠。
+- 点击桌宠候选卡片实际发出 `remote-handoff-start-request`，payload 为所选 `sessionId`；终端蒙层按钮实际发出 `remote-handoff-cancel-request`，确认不是无调用方的静态 UI。
+- 中文活动托管蒙层在 900×600 下无溢出；480×300 短 Pane 可滚动到底并完整显示取消按钮。
+- 英文 `recovery_failed` 蒙层正确显示恢复说明、长项目/工作目录/Provider 和“Retry Local Resume”，无控件重叠。
+- 上述桌宠与蒙层场景浏览器控制台均无 error/warn。
+
+### 未执行
+
+- 未通过真实 Telegram、飞书、微信或企业微信账号发送托管/取消通知；该操作会重启当前受管 cc-connect 并影响真实外部账号，需要单独的账号级冒烟确认。
+- 本次未生成安装包，也未 push。

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/shallow";
-import { invoke } from "@tauri-apps/api/core";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTerminalStore } from "../stores/terminalStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -13,14 +12,16 @@ import { Skeleton } from "./ui/Skeleton";
 import { toast } from "sonner";
 import { logError } from "../lib/logger";
 import { useI18n } from "../lib/i18n";
+import { terminalProcessManager } from "../terminal/core/TerminalProcessManager";
 
 type TemplateScope = "global" | "project" | "session";
 type ScopeFilter = "all" | TemplateScope;
 
 function resolveCommand(command: string, project?: Project): string {
   if (!project) return command;
+  const projectPath = project.environment_type === "ssh" ? project.remote_path : project.path;
   return command
-    .replace(/\$\{projectPath\}/g, project.path)
+    .replace(/\$\{projectPath\}/g, projectPath)
     .replace(/\$\{projectName\}/g, project.name);
 }
 
@@ -275,7 +276,7 @@ export function CommandTemplatePanel({
     if (!activeSessionId) return;
     const resolved = resolveCommand(template.command, activeProject);
     try {
-      await invoke("pty_write", { sessionId: activeSessionId, data: resolved + "\r" });
+      await terminalProcessManager.write(activeSessionId, resolved + "\r");
       setOpen(false);
     } catch (err) {
       toast.error(t("commandTemplate.toast.runFailed"), { description: String(err) });

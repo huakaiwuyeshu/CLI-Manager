@@ -1,6 +1,31 @@
 import { attachConsole, error, info, warn } from "@tauri-apps/plugin-log";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 let initialized = false;
+let crashHandlersInstalled = false;
+let currentActivity = "app.bootstrap";
+let currentActivityData: unknown;
+const CRASH_BREADCRUMB_LIMIT = 50;
+
+interface CrashBreadcrumb {
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  data?: unknown;
+}
+
+interface FrontendCrashDetails {
+  kind: string;
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  url?: string;
+  line?: number;
+  column?: number;
+}
+
+const crashBreadcrumbs: CrashBreadcrumb[] = [];
 
 export type PerfMetric =
   | "app.first_screen"
@@ -74,6 +99,131 @@ function formatArg(arg: unknown): string {
   }
 }
 
+function redactSensitive(value: string): string {
+  return value
+    .replace(/(["']?(?:token|password|passwd|secret|api[_-]?key)["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, "$1<redacted>")
+    .replace(/(--(?:token|password|passwd|secret|api[_-]?key)\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1<redacted>");
+}
+
+function crashData(data: unknown): unknown {
+  if (data === undefined) return undefined;
+  const formatted = redactSensitive(formatArg(data));
+  return formatted.length > 8_192 ? `${formatted.slice(0, 8_192)}…<truncated>` : formatted;
+}
+
+function addCrashBreadcrumb(level: CrashBreadcrumb["level"], message: string, data?: unknown) {
+  crashBreadcrumbs.push({
+    timestamp: new Date().toISOString(),
+    level,
+    message: message.slice(0, 1_024),
+    data: crashData(data),
+  });
+  if (crashBreadcrumbs.length > CRASH_BREADCRUMB_LIMIT) {
+    crashBreadcrumbs.splice(0, crashBreadcrumbs.length - CRASH_BREADCRUMB_LIMIT);
+  }
+}
+
+function runtimeContext() {
+  return {
+    activity: currentActivity,
+    data: crashData(currentActivityData),
+    windowLabel: (() => {
+      try {
+        return getCurrentWindow().label;
+      } catch {
+        return undefined;
+      }
+    })(),
+    visibility: typeof document === "undefined" ? undefined : document.visibilityState,
+    focused: typeof document === "undefined" ? undefined : document.hasFocus(),
+    breadcrumbs: [...crashBreadcrumbs],
+  };
+}
+
+function persistCrashContext() {
+  void invoke("crash_context_update", { payload: runtimeContext() }).catch(() => undefined);
+}
+
+export function recordCrashActivity(activity: string, data?: unknown) {
+  currentActivity = activity;
+  currentActivityData = data;
+  addCrashBreadcrumb("info", activity, data);
+  persistCrashContext();
+}
+
+export function reportFrontendCrash(details: FrontendCrashDetails) {
+  addCrashBreadcrumb("error", details.kind, {
+    message: details.message,
+    url: details.url,
+    line: details.line,
+    column: details.column,
+  });
+  void invoke("frontend_crash_report", {
+    payload: {
+      ...details,
+      message: redactSensitive(details.message),
+      stack: details.stack ? redactSensitive(details.stack) : undefined,
+      componentStack: details.componentStack ? redactSensitive(details.componentStack) : undefined,
+      context: runtimeContext(),
+    },
+  }).catch(() => undefined);
+}
+
+function errorDetails(value: unknown): { message: string; stack?: string } {
+  if (value instanceof Error) {
+    return { message: value.message || value.name, stack: value.stack };
+  }
+  return { message: formatArg(value) };
+}
+
+export function installGlobalCrashHandlers() {
+  if (crashHandlersInstalled || typeof window === "undefined") return;
+  crashHandlersInstalled = true;
+
+  window.addEventListener("error", (event) => {
+    const details = errorDetails(event.error ?? event.message);
+    reportFrontendCrash({
+      kind: "window_error",
+      message: details.message,
+      stack: details.stack,
+      url: event.filename || window.location.href,
+      line: event.lineno || undefined,
+      column: event.colno || undefined,
+    });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const details = errorDetails(event.reason);
+    reportFrontendCrash({
+      kind: "unhandled_promise_rejection",
+      message: details.message,
+      stack: details.stack,
+      url: window.location.href,
+    });
+  });
+  document.addEventListener("webglcontextlost", (event) => {
+    const target = event.target as HTMLCanvasElement | null;
+    reportFrontendCrash({
+      kind: "webgl_context_lost",
+      message: "A WebGL rendering context was lost",
+      url: window.location.href,
+      componentStack: target?.className || undefined,
+    });
+  }, true);
+  window.addEventListener("focus", () => {
+    addCrashBreadcrumb("info", "window.focus");
+    persistCrashContext();
+  });
+  window.addEventListener("blur", () => {
+    addCrashBreadcrumb("info", "window.blur");
+    persistCrashContext();
+  });
+  document.addEventListener("visibilitychange", () => {
+    addCrashBreadcrumb("info", "window.visibility_changed", { visibility: document.visibilityState });
+    persistCrashContext();
+  });
+  persistCrashContext();
+}
+
 export async function initLogging() {
   if (initialized) return;
   initialized = true;
@@ -89,14 +239,20 @@ export async function initLogging() {
 }
 
 export function logInfo(message: string, data?: unknown) {
+  addCrashBreadcrumb("info", message, data);
   void info(data ? `${message} ${formatArg(data)}` : message);
 }
 
 export function logWarn(message: string, data?: unknown) {
+  addCrashBreadcrumb("warn", message, data);
   void warn(data ? `${message} ${formatArg(data)}` : message);
 }
 
 export function logError(message: string, data?: unknown) {
+  currentActivity = "logged_error";
+  currentActivityData = { message, data: crashData(data) };
+  addCrashBreadcrumb("error", message, data);
+  persistCrashContext();
   void error(data ? `${message} ${formatArg(data)}` : message);
 }
 

@@ -84,6 +84,8 @@ export function Select({
     collectOptions(children, list);
     return list;
   }, [children]);
+  const emptyOptionLabel = options.find((option) => option.value === "")?.label;
+  const selectableOptions = options.filter((option) => option.value !== "");
 
   const handleValueChange = (next: string) => {
     if (!onChange) return;
@@ -113,7 +115,7 @@ export function Select({
         )}
       >
         <span data-slot="value" className="flex-1 truncate text-left">
-          <SelectPrimitive.Value placeholder={placeholder ?? "请选择"} />
+          <SelectPrimitive.Value placeholder={placeholder ?? emptyOptionLabel ?? "请选择"} />
         </span>
         <SelectPrimitive.Icon asChild>
           <ChevronDown
@@ -137,10 +139,10 @@ export function Select({
           }}
         >
           <SelectPrimitive.Viewport className="overflow-auto p-0">
-            {options.length === 0 && (
+            {selectableOptions.length === 0 && (
               <div className="px-3 py-2 text-on-surface-variant">无选项</div>
             )}
-            {options.map((opt) => (
+            {selectableOptions.map((opt) => (
               <SelectPrimitive.Item
                 key={opt.value}
                 value={opt.value}

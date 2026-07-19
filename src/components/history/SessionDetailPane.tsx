@@ -295,6 +295,7 @@ function HistoryMessageCard({
   const cardRef = useRef<HTMLDivElement | null>(null);
   const messageEditable =
     canEdit && message.editable === true && message.line_index !== null && message.line_index !== undefined;
+  const selectable = selectionMode && messageEditable;
 
   useEffect(() => {
     if (forceOpen) setOpen(true);
@@ -331,16 +332,36 @@ function HistoryMessageCard({
     }
   };
 
+  const handleSelectionKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    onToggleSelect();
+  };
+
   return (
     <div
       data-index={index}
       data-role={roleKind}
       data-editing={isEditing ? "true" : undefined}
       data-inserting={isInserting ? "true" : undefined}
+      data-selection-mode={selectable ? "true" : undefined}
+      data-selected={selectable && isSelected ? "true" : undefined}
       ref={setCardRef}
       className="ui-history-message-card absolute left-0 top-0 w-full px-2.5 py-2"
+      role={selectable ? "checkbox" : undefined}
+      aria-checked={selectable ? isSelected : undefined}
+      aria-label={selectable ? t("history.edit.selectMessage") : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      onClick={selectable ? onToggleSelect : undefined}
+      onKeyDown={selectable ? handleSelectionKeyDown : undefined}
       style={{
-        borderColor: isFocused ? "var(--warning)" : isMatched ? "var(--accent)" : "transparent",
+        borderColor: isSelected && selectable
+          ? "var(--accent)"
+          : isFocused
+            ? "var(--warning)"
+            : isMatched
+              ? "var(--accent)"
+              : "transparent",
       }}
     >
       {roleKind !== "user" && (
@@ -351,17 +372,14 @@ function HistoryMessageCard({
       <div className="ui-history-message-stack">
         <div className="ui-history-message-header">
           {selectionMode && messageEditable && (
-            <button
-              type="button"
+            <span
               className="ui-history-message-select"
               data-selected={isSelected ? "true" : undefined}
-              onClick={onToggleSelect}
               title={t("history.edit.selectMessage")}
-              aria-label={t("history.edit.selectMessage")}
-              aria-pressed={isSelected}
+              aria-hidden="true"
             >
               {isSelected ? <CheckSquare size={13} /> : <Square size={13} />}
-            </button>
+            </span>
           )}
           {messageMeta && (
             <div className="ui-history-message-meta" title={messageMeta}>

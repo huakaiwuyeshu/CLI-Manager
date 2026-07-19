@@ -66,7 +66,7 @@ export function withCodexLightTuiTheme(command?: string): string | undefined {
 function appendProviderOverrideArgs(
   baseCommand: string,
   project: Pick<Project, "cli_tool" | "provider_overrides" | "shell">,
-  options: { includeCodexProviderProfile?: boolean } = {}
+  options: { includeCodexProviderProfile?: boolean; includeProviderOverrides?: boolean } = {}
 ): string {
   let command = baseCommand;
   if (options.includeCodexProviderProfile !== false && isExactCodexProject(project)) {
@@ -86,7 +86,7 @@ function appendProviderOverrideArgs(
 
 export function resolveProjectStartupCommand(
   project: Pick<Project, "cli_tool" | "cli_args" | "startup_cmd" | "provider_overrides" | "shell">,
-  options: { includeCodexProviderProfile?: boolean } = {}
+  options: { includeCodexProviderProfile?: boolean; includeProviderOverrides?: boolean } = {}
 ): string | undefined {
   const startupCmd = project.startup_cmd.trim();
   if (startupCmd) return normalizeDirectCodexStartupCommand(startupCmd);
@@ -97,7 +97,10 @@ export function resolveProjectStartupCommand(
   // 先拼用户维护的 CLI 附加参数，再做供应商覆盖追加：
   // hasProfileArg / hasClaudeSettingsArg 对整条 command 检测，用户手写过的参数天然去重。
   const cliArgs = project.cli_args.trim();
-  return appendProviderOverrideArgs(cliArgs ? `${cliTool} ${cliArgs}` : cliTool, project, options);
+  const command = cliArgs ? `${cliTool} ${cliArgs}` : cliTool;
+  return options.includeProviderOverrides === false
+    ? command
+    : appendProviderOverrideArgs(command, project, options);
 }
 
 // 历史会话 resume 命令继承项目启动参数：仅当项目走 cli_tool 分支且工具类型与会话来源一致时追加；

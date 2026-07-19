@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{debug, warn};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use serde::Serialize;
@@ -99,7 +99,7 @@ impl GitWatcherBridge {
             project_path: project_path.clone(),
             _debouncer: debouncer,
         });
-        info!("[git_watcher] 开始监听: {project_path}");
+        debug!("[git_watcher] 开始监听: {project_path}");
         Ok(())
     }
 
@@ -107,7 +107,7 @@ impl GitWatcherBridge {
     pub fn stop(&self) -> Result<(), String> {
         let mut guard = self.state.lock().map_err(|_| "lock_poisoned".to_string())?;
         if let Some(s) = guard.take() {
-            info!("[git_watcher] 停止监听: {}", s.project_path);
+            debug!("[git_watcher] 停止监听: {}", s.project_path);
         }
         Ok(())
     }

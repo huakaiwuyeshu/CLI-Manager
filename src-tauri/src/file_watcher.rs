@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{debug, warn};
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use serde::Serialize;
@@ -71,7 +71,7 @@ impl FileWatcherBridge {
             if let Some(state) = guard.as_mut() {
                 if state.project_path == project_path {
                     state.subscribers += 1;
-                    info!(
+                    debug!(
                         "[file_watcher] 复用监听: {} (subscribers={})",
                         state.project_path, state.subscribers
                     );
@@ -122,7 +122,7 @@ impl FileWatcherBridge {
             subscribers: 1,
             _debouncer: debouncer,
         });
-        info!("[file_watcher] 开始监听: {project_path}");
+        debug!("[file_watcher] 开始监听: {project_path}");
         Ok(())
     }
 
@@ -136,13 +136,13 @@ impl FileWatcherBridge {
         }
         if state.subscribers > 1 {
             state.subscribers -= 1;
-            info!(
+            debug!(
                 "[file_watcher] 保留监听: {} (subscribers={})",
                 state.project_path, state.subscribers
             );
             return Ok(());
         }
-        info!("[file_watcher] 停止监听: {}", state.project_path);
+        debug!("[file_watcher] 停止监听: {}", state.project_path);
         *guard = None;
         Ok(())
     }

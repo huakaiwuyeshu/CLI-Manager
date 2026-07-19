@@ -932,6 +932,12 @@ export function SystemResourcesPanel({ open, visible = true, embedded = false }:
             <Server size={15} />
           </span>
           <span className="truncate">{t("systemResources.title")}</span>
+          <span
+            className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold"
+            style={{ color: PANEL_SOFT_FG, borderColor: TERM_PANEL.border, backgroundColor: TERM_PANEL.cardInner }}
+          >
+            {t("systemResources.localMachine")}
+          </span>
         </span>
         <span className="flex items-center gap-1.5 text-[10px]" style={{ color: TERM_PANEL.dim }}>
           {sampleTime && <span className="tabular-nums">{sampleTime}</span>}

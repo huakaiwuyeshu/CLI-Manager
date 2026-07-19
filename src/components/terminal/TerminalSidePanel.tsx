@@ -229,6 +229,10 @@ export function TerminalSidePanel({
   const tabListRef = useRef<HTMLDivElement | null>(null);
   const expandedTabsWidthRef = useRef<number | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
+  const statsEnabled = visibleTabs.includes("stats");
+  const replayEnabled = visibleTabs.includes("replay");
+  const gitEnabled = visibleTabs.includes("git");
+  const filesEnabled = visibleTabs.includes("files");
   const allTabs = [
     { key: "stats" as const, label: t("terminal.panel.sideStats"), color: TERM_PANEL.cyan, icon: <BarChart3 size={12} strokeWidth={1.8} /> },
     ...(systemResourcesEnabled
@@ -333,17 +337,21 @@ export function TerminalSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <TerminalStatsPanel activeSessionId={activeSessionId} open={open} visible={activeTab === "stats"} embedded />
+        {statsEnabled && (
+          <TerminalStatsPanel activeSessionId={activeSessionId} open={open} visible={activeTab === "stats"} embedded />
+        )}
         {systemResourcesEnabled && (
           <SystemResourcesPanel open={open} visible={activeTab === "systemResources"} embedded />
         )}
-        <SessionReplayPanel activeSessionId={activeSessionId} open={open} visible={activeTab === "replay"} />
-        {activeTab === "git" && (
+        {replayEnabled && (
+          <SessionReplayPanel activeSessionId={activeSessionId} open={open} visible={activeTab === "replay"} />
+        )}
+        {gitEnabled && activeTab === "git" && (
           <Suspense fallback={null}>
             <GitChangesPanel open={open} projectPath={projectPath} visible embedded />
           </Suspense>
         )}
-        {activeTab === "files" ? filesPanelContent : null}
+        {filesEnabled && activeTab === "files" ? filesPanelContent : null}
       </div>
     </ResizableTerminalPanelFrame>
   );

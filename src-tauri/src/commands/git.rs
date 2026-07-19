@@ -34,7 +34,7 @@ fn log_worktree_snapshot_oom_diagnostic(
             elapsed_ms
         );
     } else {
-        log::info!(
+        log::debug!(
             "[oom-diagnostics:backend] area=git phase={phase} project_path={} dirty={} files={} patch_bytes={} elapsed_ms={} threshold_exceeded=false",
             project_path,
             snapshot.dirty,
@@ -59,11 +59,11 @@ fn open_git_repo<P: AsRef<Path>>(path: P) -> Result<Repository, String> {
             if !crate::wsl::is_wsl_config_dir(&path_str) {
                 return Err(format!("打开 Git 仓库失败: {first_err}"));
             }
-            log::info!(
+            log::debug!(
                 "[git:wsl] 检测到 WSL UNC 路径, 首次打开失败(Owner -36 预期): path={} error={first_err}",
                 path_str
             );
-            log::info!("[git:wsl] 临时关闭 libgit2 所有权验证后重试");
+            log::debug!("[git:wsl] 临时关闭 libgit2 所有权验证后重试");
         }
     }
 
@@ -79,7 +79,7 @@ fn open_git_repo<P: AsRef<Path>>(path: P) -> Result<Repository, String> {
     let _ = unsafe { git2::opts::set_verify_owner_validation(true) };
 
     match &result {
-        Ok(_) => log::info!(
+        Ok(_) => log::debug!(
             "[git:wsl] 关闭所有权验证后 Git 仓库打开成功: path={}",
             path.to_string_lossy()
         ),
@@ -187,7 +187,7 @@ pub struct GitFileDiffPayload {
 /// * `Err(String)` - 错误信息
 #[tauri::command]
 pub async fn git_get_changes(project_path: String) -> Result<Vec<GitFileChange>, String> {
-    log::info!(
+    log::debug!(
         "[git_get_changes] 开始查询 Git 变更, project_path: {}",
         project_path
     );
@@ -196,7 +196,7 @@ pub async fn git_get_changes(project_path: String) -> Result<Vec<GitFileChange>,
         let started_at = std::time::Instant::now();
         if let Some((distro, linux_path)) = crate::wsl::parse_wsl_unc_path(&project_path) {
             if let Some(windows_path) = resolve_wsl_mnt_git_project_path(&distro, &linux_path) {
-                log::info!(
+                log::debug!(
                     "[git_get_changes:wsl] WSL UNC 解析到 Windows 挂载路径，改用 native git 状态: project_path={} resolved={}",
                     project_path,
                     windows_path
@@ -228,7 +228,7 @@ fn git_get_changes_native(
         return Err(err_msg);
     }
 
-    log::info!("[git_get_changes] 路径存在，尝试打开 Git 仓库");
+    log::debug!("[git_get_changes] 路径存在，尝试打开 Git 仓库");
 
     let repo = open_git_repo(path).map_err(|e| {
         let err_msg = format!("不是 Git 仓库或无法访问: {}", e);
@@ -236,7 +236,7 @@ fn git_get_changes_native(
         err_msg
     })?;
 
-    log::info!("[git_get_changes] Git 仓库打开成功");
+    log::debug!("[git_get_changes] Git 仓库打开成功");
 
     let mut opts = StatusOptions::new();
     opts.include_untracked(true);
@@ -249,7 +249,7 @@ fn git_get_changes_native(
         err_msg
     })?;
 
-    log::info!(
+    log::debug!(
         "[git_get_changes] 获取到 {} 个状态条目 status_elapsed_ms={}",
         statuses.len(),
         status_started_at.elapsed().as_millis()
@@ -295,7 +295,7 @@ fn git_get_changes_native(
         });
     }
 
-    log::info!(
+    log::debug!(
         "[git_get_changes] 查询完成，返回 {} 个变更文件 line_stats={} elapsed_ms={}",
         changes.len(),
         if skipped_line_stats {
@@ -315,7 +315,7 @@ fn git_get_changes_wsl(
     linux_path: &str,
     started_at: std::time::Instant,
 ) -> Result<Vec<GitFileChange>, String> {
-    log::info!(
+    log::debug!(
         "[git_get_changes:wsl] 检测到 WSL UNC 路径, 使用 wsl.exe git 热路径: project_path={} distro={} linux_path={}",
         project_path,
         distro,
@@ -343,7 +343,7 @@ fn git_get_changes_wsl(
         !change.path.ends_with('/') || !unc_root.join(&change.path).join(".git").exists()
     });
 
-    log::info!(
+    log::debug!(
         "[git_get_changes:wsl] 获取到 {} 个状态条目 status_elapsed_ms={}",
         changes.len(),
         status_started_at.elapsed().as_millis()
@@ -373,7 +373,7 @@ fn git_get_changes_wsl(
         }
     }
 
-    log::info!(
+    log::debug!(
         "[git_get_changes:wsl] 查询完成，返回 {} 个变更文件 line_stats={} elapsed_ms={}",
         changes.len(),
         if skipped_line_stats {
@@ -899,7 +899,7 @@ fn compute_diff_line_stats(repo: &Repository) -> std::collections::HashMap<Strin
         );
         map.clear();
     }
-    log::info!(
+    log::debug!(
         "[git_get_changes] diff 行数统计完成 files={} lines_seen={} truncated={} elapsed_ms={}",
         map.len(),
         seen_lines,
@@ -921,7 +921,7 @@ fn compute_wsl_diff_line_stats(
         &["diff", "--numstat", "-z", "HEAD", "--"],
     )?;
     let stats = parse_wsl_numstat(&stdout);
-    log::info!(
+    log::debug!(
         "[git_get_changes:wsl] diff numstat 完成 files={} elapsed_ms={}",
         stats.len(),
         started_at.elapsed().as_millis()
@@ -974,7 +974,7 @@ pub async fn git_get_file_diff(
     file_path: String,
     status: String,
 ) -> Result<GitFileDiffPayload, String> {
-    log::info!(
+    log::debug!(
         "[git_get_file_diff] project_path: {}, file_path: {}, status: {}",
         project_path,
         file_path,
@@ -1087,7 +1087,7 @@ pub async fn git_get_file_diff(
 pub async fn git_get_worktree_snapshot(
     project_path: String,
 ) -> Result<GitWorktreeSnapshot, String> {
-    log::info!("[git_get_worktree_snapshot] project_path: {}", project_path);
+    log::debug!("[git_get_worktree_snapshot] project_path: {}", project_path);
 
     tokio::task::spawn_blocking(move || {
         let started_at = std::time::Instant::now();
@@ -1358,7 +1358,7 @@ fn format_diff_for_display(
         return Err(format!("文件 {} 无变更", file_path));
     }
 
-    log::info!("[git_get_file_diff] diff 生成成功，长度: {}", content.len());
+    log::debug!("[git_get_file_diff] diff 生成成功，长度: {}", content.len());
     Ok(GitFileDiffPayload {
         content,
         can_revert_hunks,

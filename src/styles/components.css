@@ -2467,6 +2467,49 @@
   color: var(--text-muted);
 }
 
+.ui-config-modal {
+  border-radius: 14px;
+  box-shadow:
+    0 24px 72px color-mix(in srgb, #000 28%, transparent),
+    0 2px 12px color-mix(in srgb, #000 10%, transparent);
+}
+
+.ui-config-modal .ui-input {
+  min-height: 36px;
+  border-color: color-mix(in srgb, var(--border) 42%, transparent);
+  border-radius: 8px;
+  background-color: var(--surface-container-low);
+  box-shadow: none;
+}
+
+.ui-config-modal .ui-input:hover {
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
+  background-color: var(--surface-container-low);
+}
+
+.ui-config-modal .ui-input:focus-visible,
+.ui-config-modal .ui-input:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--border) 42%);
+  box-shadow: 0 0 0 2px var(--interactive-focus-ring);
+}
+
+.ui-config-modal .ui-btn {
+  border-radius: 8px;
+}
+
+.ui-config-form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.ui-config-modal-scroll {
+  scrollbar-gutter: stable;
+}
+
 .ui-select-popover {
   background-color: color-mix(in srgb, var(--surface) 92%, transparent);
   border-color: color-mix(in srgb, var(--border) 32%, transparent);
@@ -3890,16 +3933,10 @@
 
 .ui-terminal-split-child {
   opacity: 1;
-  transform: translateZ(0);
   transition:
-    left var(--animate-duration-normal) var(--ease-standard),
-    top var(--animate-duration-normal) var(--ease-standard),
-    width var(--animate-duration-normal) var(--ease-standard),
-    height var(--animate-duration-normal) var(--ease-standard),
     opacity var(--animate-duration-fast) var(--ease-standard),
     transform var(--animate-duration-fast) var(--ease-standard),
     visibility var(--animate-duration-fast) var(--ease-standard);
-  will-change: left, top, width, height, opacity, transform;
 }
 
 .ui-terminal-split-node[data-dragging="true"] .ui-terminal-split-child {
@@ -4607,6 +4644,12 @@
     inset 0 0 0 1px color-mix(in srgb, var(--terminal-theme-foreground, #f8fafc) 12%, transparent);
 }
 
+.ui-terminal-drag-overlay {
+  pointer-events: none;
+  opacity: 0.78;
+  will-change: transform;
+}
+
 .ui-terminal-pane-center-drop,
 .ui-terminal-pane-edge-drop,
 .ui-terminal-pane-drop-preview {
@@ -4627,7 +4670,7 @@
 .ui-terminal-pane-edge-drop-right {
   top: 0;
   bottom: 0;
-  width: min(28%, 96px);
+  width: min(32%, 160px);
 }
 
 .ui-terminal-pane-edge-drop-left {
@@ -4642,7 +4685,7 @@
 .ui-terminal-pane-edge-drop-bottom {
   right: 0;
   left: 0;
-  height: min(28%, 96px);
+  height: min(32%, 160px);
 }
 
 .ui-terminal-pane-edge-drop-top {
@@ -5272,6 +5315,24 @@
   background-color: transparent;
 }
 
+.ui-history-message-card[data-selection-mode="true"] {
+  cursor: pointer;
+  transition: border-color 130ms ease, background-color 130ms ease;
+}
+
+.ui-history-message-card[data-selection-mode="true"]:hover {
+  background-color: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.ui-history-message-card[data-selected="true"] {
+  background-color: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.ui-history-message-card[data-selection-mode="true"]:focus-visible {
+  outline: 2px solid var(--interactive-focus-ring);
+  outline-offset: -2px;
+}
+
 .ui-history-message-card[data-role="user"] {
   justify-content: flex-end;
 }
@@ -5532,22 +5593,11 @@
   border-radius: 4px;
   background-color: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   transition: color 130ms ease, background-color 130ms ease;
-}
-
-.ui-history-message-select:hover {
-  background-color: color-mix(in srgb, var(--on-surface) 7%, transparent);
-  color: var(--text-secondary);
 }
 
 .ui-history-message-select[data-selected="true"] {
   color: var(--accent);
-}
-
-.ui-history-message-select:focus-visible {
-  outline: 2px solid var(--interactive-focus-ring);
-  outline-offset: 1px;
 }
 
 .ui-history-message-select-bar {

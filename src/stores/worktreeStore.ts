@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { getDb } from "../lib/db";
 import { logWarn } from "../lib/logger";
 import { hasConfiguredCliTool } from "../lib/providerSwitching";
+import { projectSupportsCapability } from "../lib/projectCapabilities";
 import type { Project, TerminalSession, WorktreeIsolationStrategy, WorktreeRecord } from "../lib/types";
 import { useProjectStore } from "./projectStore";
 import { useTerminalStore } from "./terminalStore";
@@ -195,6 +196,9 @@ export const useWorktreeStore = create<WorktreeStore>((set, get) => ({
   },
 
   createWorktreeForProject: async (project, name) => {
+    if (!projectSupportsCapability(project, "worktree")) {
+      throw new Error("remote_project_capability_unsupported:worktree");
+    }
     const existingNames = new Set(
       get().worktrees
         .filter((worktree) => worktree.project_id === project.id)
@@ -219,6 +223,7 @@ export const useWorktreeStore = create<WorktreeStore>((set, get) => ({
   },
 
   shouldIsolateNewSession: (project, sessions) => {
+    if (!projectSupportsCapability(project, "worktree")) return "none";
     const strategy = normalizeStrategy(project.worktree_strategy);
     if (strategy === "disabled") return "none";
     if (strategy === "always") return "auto";
@@ -228,6 +233,7 @@ export const useWorktreeStore = create<WorktreeStore>((set, get) => ({
   },
 
   validateProjectGit: async (project) => {
+    if (!projectSupportsCapability(project, "worktree")) return false;
     const key = `${project.id}:${project.path}`;
     const cached = get().validatingProjects[project.id];
     if (cached?.key === key) return cached.valid;

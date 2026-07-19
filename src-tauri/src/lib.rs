@@ -6,6 +6,7 @@ mod claude_hook;
 pub mod codex_statusline;
 mod commands;
 mod conpty_sideload;
+mod crash_reporter;
 mod credential_store;
 // daemon 二进制（src/bin/cli-manager-daemon.rs）经 lib 复用以下模块，
 // 因此 app_paths 与 daemon 需 pub。
@@ -17,6 +18,9 @@ mod linux_graphics;
 mod log_rotation;
 pub mod pty;
 mod shell_resolver;
+pub mod ssh_launch;
+pub mod ssh_askpass;
+pub mod ssh_proxy;
 pub mod statusline;
 pub mod statusline_profiles;
 mod sync;
@@ -102,6 +106,11 @@ pub fn run_daemon_and_exit() -> ! {
             std::process::exit(1);
         }
     };
+    if let Err(err) = crash_reporter::initialize(data_dir.join("logs"), "pty-daemon") {
+        eprintln!("cli-manager-daemon: crash reporter unavailable: {err}");
+    } else if let Err(err) = crash_reporter::start_runtime() {
+        eprintln!("cli-manager-daemon: crash runtime marker unavailable: {err}");
+    }
     let info_path = daemon_info_path(&data_dir, cfg!(debug_assertions));
     let config = DaemonServerConfig {
         info_path,
@@ -111,6 +120,7 @@ pub fn run_daemon_and_exit() -> ! {
         eprintln!("cli-manager-daemon: {err}");
         std::process::exit(1);
     }
+    crash_reporter::mark_graceful_exit();
     std::process::exit(0);
 }
 
@@ -261,6 +271,75 @@ pub(crate) const MIGRATION_CREATE_REQUEST_LOGS_SQL: &str = "
                     last_synced_at_ms  INTEGER NOT NULL
                 );
             ";
+
+const MIGRATION_CREATE_SSH_HOSTS_VERSION: i64 = 20;
+const MIGRATION_CREATE_SSH_HOSTS_DESCRIPTION: &str = "create_ssh_hosts_and_project_environment";
+const MIGRATION_CREATE_SSH_HOSTS_SQL: &str = "
+                CREATE TABLE IF NOT EXISTS ssh_hosts (
+                    id                        TEXT PRIMARY KEY,
+                    name                      TEXT NOT NULL,
+                    group_name                TEXT NOT NULL DEFAULT '',
+                    host                      TEXT NOT NULL DEFAULT '',
+                    port                      INTEGER NOT NULL DEFAULT 22,
+                    username                  TEXT NOT NULL DEFAULT '',
+                    config_alias              TEXT NOT NULL DEFAULT '',
+                    auth_mode                 TEXT NOT NULL DEFAULT 'ssh_config',
+                    identity_file             TEXT NOT NULL DEFAULT '',
+                    credential_ref            TEXT NOT NULL DEFAULT '',
+                    jump_mode                 TEXT NOT NULL DEFAULT 'none',
+                    jump_host_id              TEXT REFERENCES ssh_hosts(id) ON DELETE SET NULL,
+                    proxy_type                TEXT NOT NULL DEFAULT 'none',
+                    proxy_host                TEXT NOT NULL DEFAULT '',
+                    proxy_port                INTEGER NOT NULL DEFAULT 0,
+                    proxy_command             TEXT NOT NULL DEFAULT '',
+                    connect_timeout_sec       INTEGER NOT NULL DEFAULT 15,
+                    server_alive_interval_sec INTEGER NOT NULL DEFAULT 30,
+                    server_alive_count_max    INTEGER NOT NULL DEFAULT 3,
+                    terminal_encoding         TEXT NOT NULL DEFAULT 'UTF-8',
+                    startup_script            TEXT NOT NULL DEFAULT '',
+                    notes                     TEXT NOT NULL DEFAULT '',
+                    sort_order                INTEGER NOT NULL DEFAULT 0,
+                    created_at                TEXT NOT NULL,
+                    updated_at                TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssh_hosts_group ON ssh_hosts(group_name, sort_order, name);
+                CREATE INDEX IF NOT EXISTS idx_ssh_hosts_jump ON ssh_hosts(jump_host_id);
+
+                ALTER TABLE projects ADD COLUMN environment_type TEXT NOT NULL DEFAULT 'local';
+                ALTER TABLE projects ADD COLUMN ssh_host_id TEXT REFERENCES ssh_hosts(id) ON DELETE SET NULL;
+                ALTER TABLE projects ADD COLUMN remote_path TEXT NOT NULL DEFAULT '';
+                CREATE INDEX IF NOT EXISTS idx_projects_environment ON projects(environment_type);
+                CREATE INDEX IF NOT EXISTS idx_projects_ssh_host ON projects(ssh_host_id);
+              ";
+
+const MIGRATION_CREATE_SSH_HOST_GROUPS_VERSION: i64 = 21;
+const MIGRATION_CREATE_SSH_HOST_GROUPS_DESCRIPTION: &str = "create_hierarchical_ssh_host_groups";
+const MIGRATION_CREATE_SSH_HOST_GROUPS_SQL: &str = "
+                CREATE TABLE IF NOT EXISTS ssh_host_groups (
+                    id         TEXT PRIMARY KEY,
+                    name       TEXT NOT NULL,
+                    parent_id  TEXT REFERENCES ssh_host_groups(id) ON DELETE SET NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ssh_host_groups_parent
+                    ON ssh_host_groups(parent_id, sort_order, name);
+                ALTER TABLE ssh_hosts ADD COLUMN group_id TEXT REFERENCES ssh_host_groups(id) ON DELETE SET NULL;
+                INSERT INTO ssh_host_groups (id, name, parent_id, sort_order, created_at)
+                SELECT lower(hex(randomblob(16))), group_name, NULL, 0, CAST(strftime('%s', 'now') AS TEXT)
+                FROM ssh_hosts
+                WHERE trim(group_name) <> ''
+                GROUP BY group_name;
+                UPDATE ssh_hosts
+                SET group_id = (
+                    SELECT id FROM ssh_host_groups
+                    WHERE parent_id IS NULL AND name = ssh_hosts.group_name
+                    ORDER BY created_at, id LIMIT 1
+                )
+                WHERE trim(group_name) <> '';
+                CREATE INDEX IF NOT EXISTS idx_ssh_hosts_group_id
+                    ON ssh_hosts(group_id, sort_order, name);
+              ";
 
 fn migrations() -> Vec<Migration> {
     vec![
@@ -482,6 +561,18 @@ fn migrations() -> Vec<Migration> {
             sql: MIGRATION_CREATE_REQUEST_LOGS_SQL,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: MIGRATION_CREATE_SSH_HOSTS_VERSION,
+            description: MIGRATION_CREATE_SSH_HOSTS_DESCRIPTION,
+            sql: MIGRATION_CREATE_SSH_HOSTS_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: MIGRATION_CREATE_SSH_HOST_GROUPS_VERSION,
+            description: MIGRATION_CREATE_SSH_HOST_GROUPS_DESCRIPTION,
+            sql: MIGRATION_CREATE_SSH_HOST_GROUPS_SQL,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -548,6 +639,9 @@ pub fn run() {
     let data_db_url = app_paths::db_url().expect("failed to resolve CLI-Manager database path");
     let log_dir = app_paths::logs_dir().expect("failed to resolve CLI-Manager log directory");
     std::fs::create_dir_all(&log_dir).expect("failed to create CLI-Manager log directory");
+    if let Err(err) = crash_reporter::initialize(log_dir.clone(), "app") {
+        eprintln!("failed to initialize CLI-Manager crash reporter: {err}");
+    }
     let mut context = tauri::generate_context!();
     if load_disable_hardware_acceleration_setting() {
         apply_webview_disable_gpu_config(context.config_mut());
@@ -582,6 +676,9 @@ pub fn run() {
                 .build()
         })
         .setup(move |app| {
+            if let Err(err) = crash_reporter::start_runtime() {
+                log::warn!("failed to start CLI-Manager crash runtime marker: {err}");
+            }
             let startup_args: Vec<String> = std::env::args().collect();
             if let Some(session_id) = background_session_arg(&startup_args) {
                 if let Ok(mut pending) = app.state::<PendingBackgroundSession>().0.lock() {
@@ -594,45 +691,31 @@ pub fn run() {
             conpty_sideload::initialize(app.handle());
             // 保留应用自身调试日志，但压掉 sqlx 的逐条 SQL 输出。
             log::set_max_level(log_level);
-            app.manage(claude_hook::ClaudeHookBridge::start(app.handle().clone()));
-            // Issue #123 Phase 2：后台线程发现/拉起 PTY daemon，成功后写入 bridge；
-            // 失败只记日志，命令层自动降级进程内 PTY，不阻塞启动。
-            // 逃生舱：CLI_MANAGER_DISABLE_DAEMON=1 强制进程内 PTY（排障用）。
+            // PtyHost 是唯一生产终端路径。后台线程发现/拉起 daemon，成功后写入 bridge；
+            // 失败只记日志并让终端创建明确失败，不恢复已删除的进程内 PTY 路径。
             {
-                let daemon_disabled = std::env::var("CLI_MANAGER_DISABLE_DAEMON")
-                    .map(|value| {
-                        let value = value.trim();
-                        value == "1" || value.eq_ignore_ascii_case("true")
-                    })
-                    .unwrap_or(false);
-                if daemon_disabled {
-                    log::info!("pty daemon disabled via CLI_MANAGER_DISABLE_DAEMON");
-                } else {
-                    let handle = app.handle().clone();
-                    std::thread::spawn(move || match app_paths::cli_manager_data_dir() {
-                        Ok(data_dir) => {
-                            match daemon::client::connect_or_spawn(
-                                handle.clone(),
-                                &data_dir,
-                                cfg!(debug_assertions),
-                            ) {
-                                Ok(client) => {
-                                    log::info!(
-                                        "pty daemon connected: 127.0.0.1:{}",
-                                        client.info().port
-                                    );
-                                    handle.state::<daemon::client::DaemonBridge>().set(client);
-                                }
-                                Err(err) => {
-                                    log::warn!(
-                                        "pty daemon unavailable, falling back in-process: {err}"
-                                    )
-                                }
+                let handle = app.handle().clone();
+                std::thread::spawn(move || match app_paths::cli_manager_data_dir() {
+                    Ok(data_dir) => {
+                        match daemon::client::connect_or_spawn(
+                            handle.clone(),
+                            &data_dir,
+                            cfg!(debug_assertions),
+                        ) {
+                            Ok(client) => {
+                                log::info!(
+                                    "pty daemon connected: 127.0.0.1:{}",
+                                    client.info().port
+                                );
+                                handle.state::<daemon::client::DaemonBridge>().set(client);
                             }
+                            Err(err) => log::warn!(
+                                "pty daemon unavailable; terminal creation disabled: {err}"
+                            ),
                         }
-                        Err(err) => log::warn!("pty daemon skipped (no data dir): {err}"),
-                    });
-                }
+                    }
+                    Err(err) => log::warn!("pty daemon skipped (no data dir): {err}"),
+                });
             }
             // 注入 appLocalData 目录用于历史索引磁盘缓存（加速冷启动加载）。
             {
@@ -656,7 +739,7 @@ pub fn run() {
                 },
                 log_file_name
             );
-            log::info!("Linux graphics diagnostics: {:?}", linux_graphics);
+            log::debug!("Linux graphics diagnostics: {:?}", linux_graphics);
 
             let show_item = MenuItem::with_id(app, "tray_show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
@@ -704,7 +787,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(pty::manager::PtyManager::new())
         .manage(PendingBackgroundSession::default())
         .manage(daemon::client::DaemonBridge::new())
         .manage(file_watcher::FileWatcherBridge::new())
@@ -719,16 +801,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            commands::terminal::pty_create,
-            commands::terminal::pty_write,
-            commands::terminal::pty_resize,
-            commands::terminal::pty_close,
-            commands::terminal::pty_close_all,
+            commands::terminal::pty_prepare_create,
             commands::terminal::pty_reconcile_active_sessions,
             commands::terminal::pty_status,
             commands::terminal::pty_daemon_active,
+            commands::terminal::pty_host_get_endpoint,
+            commands::terminal::pty_legacy_request,
+            commands::terminal::pty_daemon_upgrade_if_idle,
             commands::terminal::pty_daemon_sessions,
-            commands::terminal::pty_attach,
             commands::cc_connect::cc_connect_get_status,
             commands::cc_connect::cc_connect_inspect_executable,
             commands::cc_connect::cc_connect_save_profile,
@@ -754,6 +834,13 @@ pub fn run() {
             commands::desktop_pet::desktop_pet_window_hide,
             commands::desktop_pet::desktop_pet_window_reset_position,
             commands::terminal_shell::terminal_shell_scan,
+            commands::ssh::ssh_client_status,
+            commands::ssh::ssh_test_connection,
+            commands::ssh::ssh_save_password,
+            commands::ssh::ssh_password_status,
+            commands::ssh::ssh_delete_password,
+            commands::ssh::ssh_check_path,
+            commands::ssh::ssh_list_directories,
             commands::third_party_notification::third_party_notification_test_send,
             commands::logging::set_debug_logging,
             commands::fs::check_paths_exist,
@@ -803,6 +890,19 @@ pub fn run() {
             commands::sync::sync_download,
             commands::sync::sync_local_export,
             commands::sync::sync_local_import,
+            commands::sync::backup_upload,
+            commands::sync::backup_list,
+            commands::sync::backup_download,
+            commands::sync::backup_delete,
+            commands::sync::backup_import_legacy_cloud,
+            commands::sync::backup_local_export,
+            commands::sync::backup_local_import,
+            commands::sync::backup_outbox_save,
+            commands::sync::backup_outbox_list,
+            commands::sync::backup_outbox_remove,
+            commands::sync::backup_restore_safety_save,
+            commands::sync::backup_restore_safety_load,
+            commands::sync::backup_restore_safety_clear,
             commands::sync::sync_save_password,
             commands::sync::sync_load_password,
             commands::sync::sync_delete_password,
@@ -898,6 +998,8 @@ pub fn run() {
             codex_statusline::codex_statusline_load,
             codex_statusline::codex_statusline_save,
             statusline_profiles::statusline_profiles_load,
+            statusline_profiles::statusline_backup_export,
+            statusline_profiles::statusline_backup_restore,
             statusline_profiles::statusline_profiles_create,
             statusline_profiles::statusline_profiles_save,
             statusline_profiles::statusline_profiles_switch,
@@ -908,13 +1010,17 @@ pub fn run() {
             statusline_profiles::statusline_profiles_export,
             statusline_profiles::statusline_profiles_analyze_import,
             statusline_profiles::statusline_profiles_commit_import,
+            crash_reporter::crash_context_update,
+            crash_reporter::frontend_crash_report,
             app_show_main_window,
         ])
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = &event {
-                app.state::<commands::cc_connect::CcConnectManager>().shutdown();
+                app.state::<commands::cc_connect::CcConnectManager>()
+                    .shutdown();
+                crash_reporter::mark_graceful_exit();
             }
 
             #[cfg(target_os = "macos")]
@@ -931,4 +1037,93 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         });
+}
+
+#[cfg(test)]
+mod ssh_migration_tests {
+    use super::{MIGRATION_CREATE_SSH_HOST_GROUPS_SQL, MIGRATION_CREATE_SSH_HOSTS_SQL};
+    use sqlx::{Connection, Row, SqliteConnection};
+
+    #[tokio::test]
+    async fn ssh_host_migration_preserves_local_defaults_and_foreign_keys() {
+        let mut conn = SqliteConnection::connect(":memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(MIGRATION_CREATE_SSH_HOSTS_SQL)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO projects (id, name, path) VALUES ('local', 'Local', 'D:/repo')")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let local = sqlx::query(
+            "SELECT environment_type, ssh_host_id, remote_path FROM projects WHERE id = 'local'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+        assert_eq!(local.get::<String, _>("environment_type"), "local");
+        assert_eq!(local.get::<Option<String>, _>("ssh_host_id"), None);
+        assert_eq!(local.get::<String, _>("remote_path"), "");
+
+        sqlx::query(
+            "INSERT INTO ssh_hosts (id, name, host, created_at, updated_at)
+             VALUES ('host-1', 'Server', 'example.com', '1', '1')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (
+                id, name, path, environment_type, ssh_host_id, remote_path
+             ) VALUES ('remote', 'Remote', '', 'ssh', 'host-1', '/srv/app')",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM ssh_hosts WHERE id = 'host-1'")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let remote = sqlx::query("SELECT ssh_host_id FROM projects WHERE id = 'remote'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(remote.get::<Option<String>, _>("ssh_host_id"), None);
+    }
+
+    #[tokio::test]
+    async fn ssh_group_migration_preserves_flat_groups_as_roots() {
+        let mut conn = SqliteConnection::connect(":memory:").await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&mut conn).await.unwrap();
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL)")
+            .execute(&mut conn).await.unwrap();
+        sqlx::raw_sql(MIGRATION_CREATE_SSH_HOSTS_SQL).execute(&mut conn).await.unwrap();
+        sqlx::query("INSERT INTO ssh_hosts (id, name, group_name, host, created_at, updated_at) VALUES ('host-1', 'Server', 'Production', 'example.com', '1', '1')")
+            .execute(&mut conn).await.unwrap();
+
+        sqlx::raw_sql(MIGRATION_CREATE_SSH_HOST_GROUPS_SQL).execute(&mut conn).await.unwrap();
+
+        let host = sqlx::query("SELECT group_id FROM ssh_hosts WHERE id = 'host-1'").fetch_one(&mut conn).await.unwrap();
+        let group_id = host.get::<Option<String>, _>("group_id").unwrap();
+        let group = sqlx::query("SELECT name, parent_id FROM ssh_host_groups WHERE id = ?")
+            .bind(group_id).fetch_one(&mut conn).await.unwrap();
+        assert_eq!(group.get::<String, _>("name"), "Production");
+        assert_eq!(group.get::<Option<String>, _>("parent_id"), None);
+    }
 }

@@ -170,8 +170,8 @@ export function BatchShellDialog({ preselectedIds, onClose }: BatchShellDialogPr
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-on-surface">{project.name}</span>
-                        <span className="mt-0.5 block truncate text-xs text-on-surface-variant" title={project.path}>
-                          {project.path}
+                        <span className="mt-0.5 block truncate text-xs text-on-surface-variant" title={project.environment_type === "ssh" ? project.remote_path : project.path}>
+                          {project.environment_type === "ssh" ? project.remote_path : project.path}
                         </span>
                       </span>
                       <span className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-on-surface-variant ring-1 ring-border/70">

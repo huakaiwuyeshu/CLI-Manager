@@ -1,6 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { initLogging, installGlobalCrashHandlers, reportFrontendCrash } from "./lib/logger";
+
+installGlobalCrashHandlers();
 
 // 禁用 WebView 默认右键菜单；组件自定义的 onContextMenu 不受影响
 window.addEventListener("contextmenu", (e) => {
@@ -26,14 +29,12 @@ async function bootstrap() {
     { AppMantineThemeProvider },
     { QueryClientProvider },
     { queryClient },
-    { initLogging },
   ] = await Promise.all([
     import("./App"),
     import("./components/AppErrorBoundary"),
     import("./components/ui/MantineThemeProvider"),
     import("@tanstack/react-query"),
     import("./lib/queryClient"),
-    import("./lib/logger"),
     import("@mantine/core/styles.css"),
   ]);
   void initLogging();
@@ -50,4 +51,13 @@ async function bootstrap() {
   );
 }
 
-void bootstrap();
+void bootstrap().catch((error: unknown) => {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  reportFrontendCrash({
+    kind: "bootstrap_failure",
+    message: normalized.message,
+    stack: normalized.stack,
+    url: window.location.href,
+  });
+  console.error("CLI-Manager bootstrap failed:", normalized);
+});

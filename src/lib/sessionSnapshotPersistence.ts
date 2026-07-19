@@ -22,7 +22,8 @@ const SNAPSHOT_MAX_LINES = 2000;
 
 interface SnapshotSource {
   /** 返回当前终端画面的完整序列化文本（含 scrollback）。 */
-  serialize: () => string;
+  serialize: () => string | Promise<string>;
+  checkpoint?: (serialized: string) => Promise<void>;
   /** 自上次落盘后是否收到过新 PTY 输出。 */
   dirty: boolean;
 }
@@ -50,8 +51,12 @@ function trimToTailLines(text: string, maxLines: number): string {
  * 注册一个终端的快照来源。XTermTerminal 挂载时调用，dispose 时须调用返回的注销函数。
  * 注册后若定时器未运行则启动它。
  */
-export function registerTerminalSnapshotSource(sessionId: string, serialize: () => string): () => void {
-  sources.set(sessionId, { serialize, dirty: false });
+export function registerTerminalSnapshotSource(
+  sessionId: string,
+  serialize: () => string | Promise<string>,
+  checkpoint?: (serialized: string) => Promise<void>,
+): () => void {
+  sources.set(sessionId, { serialize, checkpoint, dirty: false });
   ensureTimerRunning();
   return () => {
     sources.delete(sessionId);
@@ -105,7 +110,16 @@ async function flushSnapshots(force: boolean): Promise<void> {
     if (!force && !source.dirty) continue;
     source.dirty = false;
     try {
-      const snapshot = trimToTailLines(source.serialize(), SNAPSHOT_MAX_LINES);
+      const serialized = await source.serialize();
+      if (source.checkpoint) {
+        try {
+          await source.checkpoint(serialized);
+        } catch (err) {
+          source.dirty = true;
+          logError("Failed to upload terminal checkpoint", { sessionId, err });
+        }
+      }
+      const snapshot = trimToTailLines(serialized, SNAPSHOT_MAX_LINES);
       store.updateSessionTerminalSnapshot(sessionId, snapshot);
       anyUpdated = true;
     } catch (err) {

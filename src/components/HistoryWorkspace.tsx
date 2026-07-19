@@ -12,6 +12,7 @@ import { useI18n } from "../lib/i18n";
 import { findWorktreeByPath, projectWithWorktreeProviderOverrides } from "../lib/terminalProject";
 import { appendResumeCliArgs } from "../lib/projectStartupCommand";
 import { getProviderSwitchAppType } from "../lib/providerSwitching";
+import { projectSupportsCapability } from "../lib/projectCapabilities";
 import { PromptLibrary } from "./prompts/PromptLibrary";
 import { DiffModal } from "./history/DiffModal";
 import { EditAuditModal } from "./history/EditAuditModal";
@@ -236,6 +237,10 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const historySidebarWidth = normalizeHistorySidebarWidth(storedHistorySidebarWidth);
   const updateSetting = useSettingsStore((s) => s.update);
   const projects = useProjectStore((s) => s.projects);
+  const historyProjects = useMemo(
+    () => projects.filter((project) => projectSupportsCapability(project, "history")),
+    [projects]
+  );
   const groups = useProjectStore((s) => s.groups);
   const worktrees = useWorktreeStore((s) => s.worktrees);
   const createSession = useTerminalStore((s) => s.createSession);
@@ -828,8 +833,8 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
 
   const requestResume = useCallback((session: HistorySessionView | HistorySessionDetail, title: string) => {
     const worktree = findHistoryWorktree(session, worktrees);
-    const worktreeProject = findProjectForWorktree(worktree, projects);
-    const matchedProjects = findHistoryProjects(session, projects);
+    const worktreeProject = findProjectForWorktree(worktree, historyProjects);
+    const matchedProjects = findHistoryProjects(session, historyProjects);
     const candidates = worktreeProject && matchesHistorySource(worktreeProject, session.source)
       ? [worktreeProject]
       : matchedProjects;
@@ -1024,7 +1029,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           sourceFilter={sourceFilter}
           projectPathFilter={projectPathFilter}
           scopedProjectPathFilter={scopedProjectPathFilter}
-          projects={projects}
+          projects={historyProjects}
           groups={groups}
           globalQuery={globalQuery}
           favoriteOnly={favoriteOnly}

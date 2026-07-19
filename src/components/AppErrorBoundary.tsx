@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AppFailureState } from "./AppFailureState";
 import { translateCurrent } from "../lib/i18n";
+import { reportFrontendCrash } from "../lib/logger";
 
 interface AppErrorBoundaryProps {
   children: ReactNode;
@@ -20,6 +21,13 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    reportFrontendCrash({
+      kind: "react_render_error",
+      message: error.message,
+      stack: error.stack,
+      componentStack: errorInfo.componentStack ?? undefined,
+      url: window.location.href,
+    });
     console.error("CLI-Manager render crashed:", error, errorInfo);
   }
 

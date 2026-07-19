@@ -1,24 +1,39 @@
-use crate::claude_hook::ClaudeHookBridge;
 use crate::commands::ccswitch::{
     apply_codex_provider_launch_env, refresh_claude_provider_launch_settings,
     ClaudeProviderLaunchConfig, CodexProviderLaunchConfig,
 };
-use crate::daemon::client::DaemonBridge;
-use crate::daemon::protocol::SessionMeta;
-use crate::pty::manager::{PtyManager, PtyOrphanCleanupSummary, PtyProcessStatus};
-use crate::pty::tauri_sink::TauriPtyEventSink;
-use log::{debug, error, info, warn};
+use crate::daemon::client::{DaemonBridge, DaemonClient};
+use crate::daemon::protocol::{
+    ClientFrame, SessionMeta, FEATURE_WS_BINARY_OUTPUT,
+};
+use crate::pty::manager::{PtyOrphanCleanupSummary, PtyProcessStatus};
+use crate::ssh_launch::SshLaunchPlan;
+use log::{debug, warn};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::AppHandle;
 use uuid::Uuid;
 
+const DAEMON_READY_WAIT_ATTEMPTS: usize = 60;
+const DAEMON_READY_WAIT_INTERVAL: Duration = Duration::from_millis(100);
+
+async fn wait_for_daemon(daemon_bridge: &DaemonBridge) -> Option<Arc<DaemonClient>> {
+    for attempt in 0..DAEMON_READY_WAIT_ATTEMPTS {
+        if let Some(client) = daemon_bridge.get() {
+            return Some(client);
+        }
+        if attempt + 1 < DAEMON_READY_WAIT_ATTEMPTS {
+            tokio::time::sleep(DAEMON_READY_WAIT_INTERVAL).await;
+        }
+    }
+    None
+}
+
 #[tauri::command]
-pub async fn pty_create(
+pub async fn pty_prepare_create(
     app_handle: AppHandle,
-    pty_manager: tauri::State<'_, PtyManager>,
-    claude_hook_bridge: tauri::State<'_, ClaudeHookBridge>,
     daemon_bridge: tauri::State<'_, DaemonBridge>,
     cwd: Option<String>,
     env_vars: Option<HashMap<String, String>>,
@@ -26,7 +41,8 @@ pub async fn pty_create(
     hook_env_enabled: Option<bool>,
     claude_provider: Option<ClaudeProviderLaunchConfig>,
     codex_provider: Option<CodexProviderLaunchConfig>,
-) -> Result<String, String> {
+    ssh_launch: Option<SshLaunchPlan>,
+) -> Result<PreparedPtyCreate, String> {
     let session_id = Uuid::new_v4().to_string();
     let mut env_vars = env_vars.unwrap_or_default();
     refresh_claude_provider_launch_settings(&app_handle, claude_provider).await?;
@@ -34,186 +50,56 @@ pub async fn pty_create(
         .await?;
     env_vars.insert("CLI_MANAGER_TAB_ID".to_string(), session_id.clone());
 
-    // daemon 模式：hook 上报指向 daemon 的稳定端口（app 重启不失效，契约★）；
-    // 进程内模式：沿用 app 自身 hook bridge。
-    let daemon_client = daemon_bridge.get();
+    // Hook 上报指向 daemon 的稳定端口，确保 app 重启后仍然有效。
+    let daemon_client = wait_for_daemon(&daemon_bridge)
+        .await
+        .ok_or_else(|| "PtyHost daemon unavailable".to_string())?;
+    if ssh_launch.is_some() && daemon_client.info().version != env!("CARGO_PKG_VERSION") {
+        warn!(
+            "SSH launch rejected for stale daemon: daemon_version={}, app_version={}",
+            daemon_client.info().version,
+            env!("CARGO_PKG_VERSION")
+        );
+        return Err("SSH launch requires the current PtyHost daemon".to_string());
+    }
     if hook_env_enabled.unwrap_or(false) {
-        match daemon_client.as_ref() {
-            Some(client) => {
-                let info = client.info();
-                if info.hook_port > 0 {
-                    env_vars.insert(
-                        "CLI_MANAGER_NOTIFY_PORT".to_string(),
-                        info.hook_port.to_string(),
-                    );
-                    env_vars.insert("CLI_MANAGER_NOTIFY_TOKEN".to_string(), info.token.clone());
-                }
-            }
-            None => claude_hook_bridge.apply_env(&session_id, &mut env_vars),
+        let info = daemon_client.info();
+        if info.hook_port > 0 {
+            env_vars.insert(
+                "CLI_MANAGER_NOTIFY_PORT".to_string(),
+                info.hook_port.to_string(),
+            );
+            env_vars.insert("CLI_MANAGER_NOTIFY_TOKEN".to_string(), info.token.clone());
         }
     }
 
     let env_count = env_vars.len();
-    info!(
-        "pty_create requested: session_id={}, cwd={:?}, shell={:?}, env_vars={}, daemon={}",
+    debug!(
+        "pty_prepare_create requested: session_id={}, cwd={:?}, shell={:?}, env_vars={}, daemon={}",
+        session_id, cwd, shell, env_count, true
+    );
+
+    Ok(PreparedPtyCreate {
         session_id,
         cwd,
+        env_vars,
         shell,
-        env_count,
-        daemon_client.is_some()
-    );
-
-    if let Some(client) = daemon_client {
-        client
-            .create(&session_id, cwd.clone(), Some(env_vars), shell.clone())
-            .map_err(|err| {
-                error!(
-                    "pty_create (daemon) failed: session_id={}, error={}",
-                    session_id, err
-                );
-                err
-            })?;
-        // 立即 attach：订阅输出推送（新会话 replay 为空）。
-        if let Err(err) = client.attach(&session_id) {
-            warn!(
-                "pty attach after create failed: session_id={}, error={}",
-                session_id, err
-            );
-        }
-        info!("pty_create succeeded (daemon): session_id={}", session_id);
-        return Ok(session_id);
-    }
-
-    pty_manager
-        .create(
-            &session_id,
-            cwd.as_deref(),
-            Some(env_vars),
-            shell.as_deref(),
-            Arc::new(TauriPtyEventSink::new(app_handle)),
-        )
-        .map_err(|err| {
-            error!(
-                "pty_create failed: session_id={}, error={}",
-                session_id, err
-            );
-            err
-        })?;
-    info!("pty_create succeeded: session_id={}", session_id);
-    Ok(session_id)
-}
-
-#[tauri::command]
-pub async fn pty_write(
-    pty_manager: tauri::State<'_, PtyManager>,
-    daemon_bridge: tauri::State<'_, DaemonBridge>,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    if let Some(client) = daemon_bridge.get() {
-        return client.write(&session_id, &data).map_err(|err| {
-            error!(
-                "pty_write (daemon) failed: session_id={}, error={}",
-                session_id, err
-            );
-            err
-        });
-    }
-    pty_manager.write(&session_id, &data).map_err(|err| {
-        error!("pty_write failed: session_id={}, error={}", session_id, err);
-        err
+        ssh_launch,
     })
 }
 
-#[tauri::command]
-pub async fn pty_resize(
-    pty_manager: tauri::State<'_, PtyManager>,
-    daemon_bridge: tauri::State<'_, DaemonBridge>,
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    debug!(
-        "pty_resize requested: session_id={}, cols={}, rows={}",
-        session_id, cols, rows
-    );
-    if let Some(client) = daemon_bridge.get() {
-        return client.resize(&session_id, cols, rows).map_err(|err| {
-            error!(
-                "pty_resize (daemon) failed: session_id={}, error={}",
-                session_id, err
-            );
-            err
-        });
-    }
-    pty_manager.resize(&session_id, cols, rows).map_err(|err| {
-        error!(
-            "pty_resize failed: session_id={}, error={}",
-            session_id, err
-        );
-        err
-    })
-}
-
-#[tauri::command]
-pub async fn pty_close(
-    pty_manager: tauri::State<'_, PtyManager>,
-    daemon_bridge: tauri::State<'_, DaemonBridge>,
-    session_id: String,
-) -> Result<(), String> {
-    info!("pty_close requested: session_id={}", session_id);
-    if let Some(client) = daemon_bridge.get() {
-        let result = client.close(&session_id).map_err(|err| {
-            error!(
-                "pty_close (daemon) failed: session_id={}, error={}",
-                session_id, err
-            );
-            err
-        });
-        if result.is_ok() {
-            info!("pty_close succeeded (daemon): session_id={}", session_id);
-        }
-        return result;
-    }
-    let result = pty_manager.close(&session_id).map_err(|err| {
-        error!("pty_close failed: session_id={}, error={}", session_id, err);
-        err
-    });
-    if result.is_ok() {
-        info!("pty_close succeeded: session_id={}", session_id);
-    }
-    result
-}
-
-#[tauri::command]
-pub async fn pty_close_all(
-    pty_manager: tauri::State<'_, PtyManager>,
-    daemon_bridge: tauri::State<'_, DaemonBridge>,
-) -> Result<(), String> {
-    info!("pty_close_all requested");
-    if let Some(client) = daemon_bridge.get() {
-        let result = client.close_all().map_err(|err| {
-            error!("pty_close_all (daemon) failed: error={}", err);
-            err
-        });
-        if result.is_ok() {
-            info!("pty_close_all succeeded (daemon)");
-        }
-        return result;
-    }
-    let result = pty_manager.close_all().map_err(|err| {
-        error!("pty_close_all failed: error={}", err);
-        err
-    });
-    if result.is_ok() {
-        info!("pty_close_all succeeded");
-    }
-    result
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedPtyCreate {
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub env_vars: HashMap<String, String>,
+    pub shell: Option<String>,
+    pub ssh_launch: Option<SshLaunchPlan>,
 }
 
 #[tauri::command]
 pub async fn pty_reconcile_active_sessions(
-    pty_manager: tauri::State<'_, PtyManager>,
     daemon_bridge: tauri::State<'_, DaemonBridge>,
     active_session_ids: Vec<String>,
 ) -> Result<PtyOrphanCleanupSummary, String> {
@@ -221,24 +107,23 @@ pub async fn pty_reconcile_active_sessions(
         "pty_reconcile_active_sessions requested: active_count={}",
         active_session_ids.len()
     );
-    if let Some(client) = daemon_bridge.get() {
-        let summary = client.reconcile(active_session_ids)?;
-        return serde_json::from_value(summary)
-            .map_err(|err| format!("daemon reconcile summary parse failed: {err}"));
-    }
-    Ok(pty_manager.reconcile_active_sessions(active_session_ids))
+    let summary = daemon_bridge
+        .get()
+        .ok_or_else(|| "PtyHost daemon unavailable".to_string())?
+        .reconcile(active_session_ids)?;
+    serde_json::from_value(summary)
+        .map_err(|err| format!("daemon reconcile summary parse failed: {err}"))
 }
 
 #[tauri::command]
 pub async fn pty_status(
-    pty_manager: tauri::State<'_, PtyManager>,
     daemon_bridge: tauri::State<'_, DaemonBridge>,
 ) -> Result<HashMap<String, PtyProcessStatus>, String> {
     debug!("pty_status requested");
-    if let Some(client) = daemon_bridge.get() {
-        return client.status_all();
-    }
-    Ok(pty_manager.status_all())
+    daemon_bridge
+        .get()
+        .ok_or_else(|| "PtyHost daemon unavailable".to_string())?
+        .status_all()
 }
 
 /// daemon 是否可用（前端"转入后台=真退出"分支判定）。
@@ -249,16 +134,125 @@ pub async fn pty_daemon_active(
     Ok(daemon_bridge.get().is_some())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyHostEndpoint {
+    pub transport_mode: String,
+    pub url: Option<String>,
+    pub token: Option<String>,
+    pub protocol_version: u16,
+    pub binary_protocol_version: u8,
+    pub features: Vec<String>,
+    pub daemon_version: String,
+}
+
+/// WebView 只通过低频 Tauri command 获取本机 PtyHost 地址与短期鉴权信息。
+#[tauri::command]
+pub async fn pty_host_get_endpoint(
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+) -> Result<Option<PtyHostEndpoint>, String> {
+    let Some(client) = wait_for_daemon(&daemon_bridge).await else {
+        return Ok(None);
+    };
+    let info = client.info();
+    let websocket_available = info.ws_port > 0
+        && info.protocol_version > 0
+        && info
+            .features
+            .iter()
+            .any(|feature| feature == FEATURE_WS_BINARY_OUTPUT);
+    Ok(Some(PtyHostEndpoint {
+        transport_mode: if websocket_available {
+            "websocket".to_string()
+        } else {
+            "legacy".to_string()
+        },
+        url: websocket_available.then(|| format!("ws://127.0.0.1:{}/pty", info.ws_port)),
+        token: websocket_available.then(|| info.token.clone()),
+        protocol_version: info.protocol_version,
+        binary_protocol_version: info.binary_protocol_version,
+        features: info.features.clone(),
+        daemon_version: info.version.clone(),
+    }))
+}
+
+fn client_frame_id(frame: &ClientFrame) -> Option<u64> {
+    match frame {
+        ClientFrame::Auth { .. } => None,
+        ClientFrame::Ping { id }
+        | ClientFrame::List { id }
+        | ClientFrame::Create { id, .. }
+        | ClientFrame::Write { id, .. }
+        | ClientFrame::Ack { id, .. }
+        | ClientFrame::Resize { id, .. }
+        | ClientFrame::Close { id, .. }
+        | ClientFrame::CloseAll { id }
+        | ClientFrame::Attach { id, .. }
+        | ClientFrame::Detach { id }
+        | ClientFrame::Reconcile { id, .. }
+        | ClientFrame::Status { id }
+        | ClientFrame::Shutdown { id } => Some(*id),
+    }
+}
+
+/// 旧 daemon 的兼容 transport。只复用已鉴权的主进程 NDJSON 连接，
+/// WebView 不接触 daemon token，也不能绕过 daemon 自身的参数校验。
+#[tauri::command]
+pub async fn pty_legacy_request(
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+    frame: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let frame: ClientFrame = serde_json::from_value(frame)
+        .map_err(|err| format!("invalid legacy PtyHost request: {err}"))?;
+    let id = client_frame_id(&frame).ok_or_else(|| "legacy auth is not allowed".to_string())?;
+    let client = wait_for_daemon(&daemon_bridge)
+        .await
+        .ok_or_else(|| "PtyHost daemon unavailable".to_string())?;
+    let reply = client.request(id, &frame)?;
+    serde_json::to_value(reply).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn pty_daemon_upgrade_if_idle(
+    app_handle: AppHandle,
+    daemon_bridge: tauri::State<'_, DaemonBridge>,
+) -> Result<bool, String> {
+    let Some(client) = daemon_bridge.get() else {
+        return Ok(false);
+    };
+    if client
+        .info()
+        .features
+        .iter()
+        .any(|feature| feature == FEATURE_WS_BINARY_OUTPUT)
+    {
+        return Ok(true);
+    }
+    if client.list()?.iter().any(|session| session.alive) {
+        return Ok(false);
+    }
+    client.shutdown_if_idle()?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let data_dir = crate::app_paths::cli_manager_data_dir()?;
+    let client = crate::daemon::client::connect_or_spawn(
+        app_handle,
+        &data_dir,
+        cfg!(debug_assertions),
+    )?;
+    daemon_bridge.set(client);
+    Ok(true)
+}
+
 /// daemon 中的会话列表（启动恢复时优先 attach 的依据）。
 #[tauri::command]
 pub async fn pty_daemon_sessions(
     daemon_bridge: tauri::State<'_, DaemonBridge>,
 ) -> Result<Vec<SessionMeta>, String> {
-    match daemon_bridge.get() {
+    match wait_for_daemon(&daemon_bridge).await {
         Some(client) => {
             let sessions = client.list()?;
             let alive_count = sessions.iter().filter(|session| session.alive).count();
-            info!(
+            debug!(
                 "pty_daemon_sessions requested: count={}, alive_count={}",
                 sessions.len(),
                 alive_count
@@ -266,67 +260,8 @@ pub async fn pty_daemon_sessions(
             Ok(sessions)
         }
         None => {
-            info!("pty_daemon_sessions requested: daemon unavailable");
+            debug!("pty_daemon_sessions requested: daemon unavailable");
             Ok(Vec::new())
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PtyAttachResult {
-    pub attached: bool,
-    pub alive: bool,
-    pub replay_base64: String,
-    pub cwd: Option<String>,
-    pub shell: Option<String>,
-    pub created_at_ms: u64,
-    pub task_status: Option<String>,
-    pub task_updated_at_ms: Option<u64>,
-}
-
-/// attach daemon 中已存在的会话：订阅输出并返回 ring buffer 回放。
-/// daemon 不可用或会话不存在 → attached=false（调用方走 resume 兜底）。
-#[tauri::command]
-pub async fn pty_attach(
-    daemon_bridge: tauri::State<'_, DaemonBridge>,
-    session_id: String,
-) -> Result<PtyAttachResult, String> {
-    let Some(client) = daemon_bridge.get() else {
-        return Ok(PtyAttachResult {
-            attached: false,
-            alive: false,
-            replay_base64: String::new(),
-            cwd: None,
-            shell: None,
-            created_at_ms: 0,
-            task_status: None,
-            task_updated_at_ms: None,
-        });
-    };
-    match client.attach(&session_id) {
-        Ok((replay_base64, meta)) => Ok(PtyAttachResult {
-            attached: true,
-            alive: meta.alive,
-            replay_base64,
-            cwd: meta.cwd,
-            shell: meta.shell,
-            created_at_ms: meta.created_at_ms,
-            task_status: meta.task_status,
-            task_updated_at_ms: meta.task_updated_at_ms,
-        }),
-        Err(err) => {
-            debug!("pty_attach miss: session_id={}, reason={}", session_id, err);
-            Ok(PtyAttachResult {
-                attached: false,
-                alive: false,
-                replay_base64: String::new(),
-                cwd: None,
-                shell: None,
-                created_at_ms: 0,
-                task_status: None,
-                task_updated_at_ms: None,
-            })
         }
     }
 }

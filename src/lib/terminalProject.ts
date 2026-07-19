@@ -12,6 +12,7 @@ export function findProjectByPath(projects: Project[], path: string | null | und
   let bestMatchLength = -1;
 
   for (const project of projects) {
+    if (project.environment_type === "ssh" || !project.path.trim()) continue;
     const normalizedProjectPath = normalizeProjectPath(project.path);
     const matches = normalizedPath === normalizedProjectPath || normalizedPath.startsWith(`${normalizedProjectPath}/`);
     if (!matches || normalizedProjectPath.length <= bestMatchLength) continue;

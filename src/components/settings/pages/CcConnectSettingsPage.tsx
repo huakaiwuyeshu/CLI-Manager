@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { projectSupportsCapability } from "../../../lib/projectCapabilities";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Badge,
@@ -181,7 +182,11 @@ function formatTimestamp(value: number | null, language: AppLanguage) {
 
 export function CcConnectSettingsPage() {
   const { t, language } = useI18n();
-  const projects = useProjectStore((state) => state.projects);
+  const allProjects = useProjectStore((state) => state.projects);
+  const projects = useMemo(
+    () => allProjects.filter((project) => projectSupportsCapability(project, "hooks")),
+    [allProjects]
+  );
   const projectsLoaded = useProjectStore((state) => state.loaded);
   const fetchProjects = useProjectStore((state) => state.fetchAll);
   const ccSwitchDbPath = useSettingsStore((state) => state.ccSwitchDbPath);

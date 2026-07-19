@@ -1,7 +1,7 @@
 use crate::commands::model_pricing::{find_cached_model_pricing, CachedModelPricingLookup};
 use crate::shell_resolver::silent_command;
 use chrono::{DateTime, Datelike, SecondsFormat, Utc};
-use log::{debug, info, warn};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::sqlite::SqliteConnectOptions;
@@ -84,7 +84,7 @@ fn log_history_detail_oom_diagnostic(phase: &str, detail: &HistorySessionDetail,
             elapsed_ms
         );
     } else {
-        info!(
+        debug!(
             "[oom-diagnostics:backend] area=history phase={phase} source={} project_key={} session_id={} messages={} content_bytes={} token_trend={} tool_events={} file_changes={} file_change_operations={} elapsed_ms={} threshold_exceeded=false",
             detail.source,
             detail.project_key,
@@ -141,7 +141,7 @@ fn log_history_stats_oom_diagnostic(
             elapsed_ms
         );
     } else {
-        info!(
+        debug!(
             "[oom-diagnostics:backend] area=history phase={phase} range_days={} total_sessions={} total_messages={} response_bytes={} project_ranking={} model_distribution={} heatmap_days={} daily_series={} hourly_activity={} session_refs={} elapsed_ms={} threshold_exceeded=false",
             response.range_days,
             response.total_sessions,
@@ -837,7 +837,7 @@ async fn history_list_sessions_legacy(
             start_offset
         );
         if targeted_lookup {
-            info!(
+            debug!(
                 "history_list_sessions targeted lookup: source={:?}, project_path={:?}, query={:?}, limit={}, offset={}",
                 source_filter,
                 target_project_path,
@@ -892,7 +892,7 @@ async fn history_list_sessions_legacy(
                 matched_entries.len(),
             );
             if targeted_lookup {
-                info!(
+                debug!(
                     "history_list_sessions targeted candidates: source={:?}, project_path={:?}, total_files={}, matched_files={}, mismatch_samples={:?}",
                     source_filter,
                     target_project_path,
@@ -928,7 +928,7 @@ async fn history_list_sessions_legacy(
                     file_ref.path.to_string_lossy()
                 );
                 if targeted_lookup && sessions.is_empty() {
-                    info!(
+                    debug!(
                         "history_list_sessions targeted hit: source={}, project_key={}, session_id={}, path={}",
                         file_ref.source,
                         file_ref.project_key,
@@ -947,7 +947,7 @@ async fn history_list_sessions_legacy(
                     matched
                 );
                 if targeted_lookup {
-                    info!(
+                    debug!(
                         "history_list_sessions targeted miss: source={:?}, project_path={:?}, total_files={}, matched_files={}",
                         source_filter,
                         target_project_path,
@@ -1003,7 +1003,7 @@ async fn history_list_sessions_legacy(
                 entry.file_ref.path.to_string_lossy()
             );
             if targeted_lookup && sessions.is_empty() {
-                info!(
+                debug!(
                     "history_list_sessions targeted indexed hit: source={}, project_key={}, session_id={}, path={}",
                     entry.file_ref.source,
                     entry.file_ref.project_key,
@@ -1023,7 +1023,7 @@ async fn history_list_sessions_legacy(
                 scanned_entries
             );
             if targeted_lookup {
-                info!(
+                debug!(
                     "history_list_sessions targeted indexed miss: source={:?}, project_path={:?}, query={:?}, scanned_entries={}",
                     source_filter,
                     target_project_path,
@@ -3589,7 +3589,7 @@ fn rfc3339_millis(timestamp: &str) -> Option<i64> {
 
 async fn register_codex_thread(registration: &CodexThreadRegistration) -> Result<(), String> {
     if !should_register_codex_state_db(&registration.state_db_path) {
-        info!(
+        debug!(
             "skip Windows-side Codex state registration for WSL database: {}",
             registration.state_db_path.to_string_lossy()
         );
@@ -3985,7 +3985,7 @@ fn wsl_find_session_files(
         "-printf",
         "%p\t%s\t%T@\n",
     ];
-    info!(
+    debug!(
         "[wsl] 枚举会话文件: wsl.exe -d {distro} find {linux_dir} -name '{name_pattern}' -type f"
     );
     let started_at = now_millis();
@@ -4009,7 +4009,7 @@ fn wsl_find_session_files(
                 }
             }
 
-            info!(
+            debug!(
                 "[wsl] 枚举完成: distro={distro} dir={linux_dir} pattern={name_pattern} files={} skipped={} raw_lines={} elapsed_ms={}",
                 files.len(),
                 skipped_lines,
@@ -4168,7 +4168,7 @@ fn codex_project_key_from_wsl_linux_path(linux_path: &str, linux_root: &str) -> 
 }
 
 fn collect_wsl_claude_session_files(linux_projects_dir: &str, distro: &str) -> Vec<SessionFileRef> {
-    info!("[wsl] 开始扫描 Claude 会话: distro={distro} projects_dir={linux_projects_dir}");
+    debug!("[wsl] 开始扫描 Claude 会话: distro={distro} projects_dir={linux_projects_dir}");
     let results = wsl_find_session_files(linux_projects_dir, distro, "*.jsonl", &|linux_path| {
         claude_project_key_from_wsl_linux_path(linux_path)
     });
@@ -4190,7 +4190,7 @@ fn collect_wsl_claude_session_files(linux_projects_dir: &str, distro: &str) -> V
             }
         })
         .collect();
-    info!(
+    debug!(
         "[wsl] Claude 会话扫描完成: distro={distro} total_files={}",
         files.len()
     );
@@ -4198,7 +4198,7 @@ fn collect_wsl_claude_session_files(linux_projects_dir: &str, distro: &str) -> V
 }
 
 fn collect_wsl_codex_session_files(linux_sessions_dir: &str, distro: &str) -> Vec<SessionFileRef> {
-    info!("[wsl] 开始扫描 Codex 会话: distro={distro} sessions_dir={linux_sessions_dir}");
+    debug!("[wsl] 开始扫描 Codex 会话: distro={distro} sessions_dir={linux_sessions_dir}");
     let results = wsl_find_session_files(
         linux_sessions_dir,
         distro,
@@ -4223,7 +4223,7 @@ fn collect_wsl_codex_session_files(linux_sessions_dir: &str, distro: &str) -> Ve
             }
         })
         .collect();
-    info!(
+    debug!(
         "[wsl] Codex 会话扫描完成: distro={distro} total_files={}",
         files.len()
     );
@@ -4233,9 +4233,9 @@ fn collect_wsl_codex_session_files(linux_sessions_dir: &str, distro: &str) -> Ve
 fn collect_claude_session_files(root: &Path) -> Vec<SessionFileRef> {
     let root_str = root.to_string_lossy();
     if crate::wsl::is_wsl_config_dir(&root_str) {
-        info!("[wsl] 检测到 WSL UNC 路径, 切换 wsl.exe 扫描: root={root_str}");
+        debug!("[wsl] 检测到 WSL UNC 路径, 切换 wsl.exe 扫描: root={root_str}");
         if let Some((distro, linux_path)) = crate::wsl::parse_wsl_unc_path(&root_str) {
-            info!("[wsl] 解析成功: distro={distro} linux_path={linux_path}");
+            debug!("[wsl] 解析成功: distro={distro} linux_path={linux_path}");
             return collect_wsl_claude_session_files(&linux_path, &distro);
         }
         warn!("[wsl] 路径检测为 WSL 但解析失败: {root_str}, 回退到原生 fs API");
@@ -4274,9 +4274,9 @@ fn collect_claude_session_files(root: &Path) -> Vec<SessionFileRef> {
 fn collect_codex_session_files(root: &Path) -> Vec<SessionFileRef> {
     let root_str = root.to_string_lossy();
     if crate::wsl::is_wsl_config_dir(&root_str) {
-        info!("[wsl] 检测到 WSL UNC 路径, 切换 wsl.exe 扫描: root={root_str}");
+        debug!("[wsl] 检测到 WSL UNC 路径, 切换 wsl.exe 扫描: root={root_str}");
         if let Some((distro, linux_path)) = crate::wsl::parse_wsl_unc_path(&root_str) {
-            info!("[wsl] 解析成功: distro={distro} linux_path={linux_path}");
+            debug!("[wsl] 解析成功: distro={distro} linux_path={linux_path}");
             return collect_wsl_codex_session_files(&linux_path, &distro);
         }
         warn!("[wsl] 路径检测为 WSL 但解析失败: {root_str}, 回退到原生 fs API");
