@@ -111,6 +111,17 @@ export interface SshAgentInstallation {
   checked_at: string;
 }
 
+export interface SshAgentProbeResult {
+  status: "installed" | "notInstalled" | "incompatible" | "corrupt" | "unreachable" | "unsupported" | "authenticationRequired";
+  code: string;
+  installPath: string;
+  agentVersion: string;
+  protocolVersion: string;
+  target: string;
+  supported: boolean;
+  detail: string;
+}
+
 export interface SshHostToolPreference {
   host_id: string;
   source: SshToolSource;

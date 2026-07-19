@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUp, ChevronRight, FolderOpen, RotateCcw, Save } from "lucide-react";
+import { ArrowUp, ChevronRight, FolderOpen, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { buildSshConnectionSpec } from "../../../lib/ssh";
 import { DEFAULT_SSH_TOOL_CONFIG_ROOT, validateSshToolConfigRoot } from "../../../lib/sshToolIntegration";
-import type { SshHost, SshToolSource } from "../../../lib/types";
+import type { SshAgentProbeResult, SshHost, SshToolSource } from "../../../lib/types";
 import { useI18n, type TranslationKey } from "../../../lib/i18n";
 import { useSshAgentIntegrationStore } from "../../../stores/sshAgentIntegrationStore";
 import { CliToolIcon } from "../../CliToolIcon";
@@ -24,12 +24,41 @@ interface Props {
 }
 
 const SOURCES: SshToolSource[] = ["claude", "codex"];
+const AGENT_STATUS_KEYS: Record<string, TranslationKey> = {
+  notChecked: "settings.sshHosts.cliIntegration.agent.status.notChecked",
+  installed: "settings.sshHosts.cliIntegration.agent.status.installed",
+  notInstalled: "settings.sshHosts.cliIntegration.agent.status.notInstalled",
+  incompatible: "settings.sshHosts.cliIntegration.agent.status.incompatible",
+  corrupt: "settings.sshHosts.cliIntegration.agent.status.corrupt",
+  unreachable: "settings.sshHosts.cliIntegration.agent.status.unreachable",
+  unsupported: "settings.sshHosts.cliIntegration.agent.status.unsupported",
+  authenticationRequired: "settings.sshHosts.cliIntegration.agent.status.authenticationRequired",
+};
+const AGENT_CODE_KEYS: Record<string, TranslationKey> = {
+  ssh_agent_not_installed: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_not_installed",
+  ssh_agent_protocol_incompatible: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_protocol_incompatible",
+  ssh_agent_identity_invalid: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_identity_invalid",
+  ssh_agent_authentication_required: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_authentication_required",
+  unsupported_target: "settings.sshHosts.cliIntegration.agent.code.unsupported_target",
+  ssh_agent_unreachable: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_unreachable",
+  ssh_agent_probe_failed: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_failed",
+  ssh_agent_probe_output_too_large: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_output_too_large",
+  ssh_agent_probe_output_invalid: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_output_invalid",
+  ssh_agent_probe_magic_missing: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_magic_missing",
+  ssh_agent_probe_banner_too_large: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_banner_too_large",
+  ssh_agent_probe_stdout_contaminated: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_stdout_contaminated",
+  ssh_agent_probe_path_invalid: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_path_invalid",
+  ssh_agent_probe_magic_invalid: "settings.sshHosts.cliIntegration.agent.code.ssh_agent_probe_magic_invalid",
+  home_directory_unavailable: "settings.sshHosts.cliIntegration.agent.code.home_directory_unavailable",
+};
 
 export function SshCliIntegrationDialog({ open, host, hosts, onOpenChange }: Props) {
   const { t } = useI18n();
   const preferences = useSshAgentIntegrationStore((state) => state.preferences);
+  const installations = useSshAgentIntegrationStore((state) => state.installations);
   const fetchAll = useSshAgentIntegrationStore((state) => state.fetchAll);
   const saveHostPreferences = useSshAgentIntegrationStore((state) => state.saveHostPreferences);
+  const recordAgentProbe = useSshAgentIntegrationStore((state) => state.recordAgentProbe);
   const [roots, setRoots] = useState<Record<SshToolSource, string>>({ claude: "", codex: "" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -38,6 +67,9 @@ export function SshCliIntegrationDialog({ open, host, hosts, onOpenChange }: Pro
   const [directories, setDirectories] = useState<SshDirectoryEntry[]>([]);
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<SshAgentProbeResult | null>(null);
+  const [probeError, setProbeError] = useState("");
 
   const hostPreferences = useMemo(() => {
     const result = new Map<SshToolSource, string>();
@@ -47,6 +79,10 @@ export function SshCliIntegrationDialog({ open, host, hosts, onOpenChange }: Pro
     }
     return result;
   }, [host, preferences]);
+  const installation = useMemo(
+    () => host ? installations.find((item) => item.host_id === host.id) ?? null : null,
+    [host, installations],
+  );
 
   useEffect(() => {
     if (!open || !host) return;
@@ -61,6 +97,31 @@ export function SshCliIntegrationDialog({ open, host, hosts, onOpenChange }: Pro
     });
     setError("");
   }, [host, hostPreferences, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setProbeResult(null);
+    setProbeError("");
+  }, [host?.id, open]);
+
+  const probeAgent = async () => {
+    if (!host) return;
+    setProbing(true);
+    setProbeError("");
+    try {
+      const result = await invoke<SshAgentProbeResult>("ssh_agent_probe", {
+        hostId: host.id,
+        spec: buildSshConnectionSpec(host, hosts),
+        agentPath: installation?.install_path || null,
+      });
+      await recordAgentProbe(host.id, result);
+      setProbeResult(result);
+    } catch (nextError) {
+      setProbeError(String(nextError));
+    } finally {
+      setProbing(false);
+    }
+  };
 
   const loadDirectories = async (source: SshToolSource, path: string) => {
     if (!host) return;
@@ -117,6 +178,38 @@ export function SshCliIntegrationDialog({ open, host, hosts, onOpenChange }: Pro
             <DialogDescription>{t("settings.sshHosts.cliIntegration.description")}</DialogDescription>
           </div>
           <div className="space-y-5 px-5 py-4">
+            <section className="space-y-3 border-b border-border pb-5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-text-primary">cli-manager-ssh-agent</h3>
+                  <p className="text-xs text-text-muted">
+                    {t(AGENT_STATUS_KEYS[probeResult?.status ?? installation?.status ?? "notChecked"] ?? AGENT_STATUS_KEYS.notChecked)}
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => void probeAgent()} disabled={probing}>
+                  <RefreshCw className={`h-4 w-4 ${probing ? "animate-spin" : ""}`} />
+                  {probing ? t("settings.sshHosts.cliIntegration.agent.probing") : t("settings.sshHosts.cliIntegration.agent.probe")}
+                </Button>
+              </div>
+              {(probeResult?.agentVersion || installation?.agent_version) && (
+                <div className="grid gap-2 text-xs text-text-muted sm:grid-cols-2">
+                  <div>{t("settings.sshHosts.cliIntegration.agent.version", { value: probeResult?.agentVersion || installation?.agent_version || "-" })}</div>
+                  <div>{t("settings.sshHosts.cliIntegration.agent.protocol", { value: probeResult?.protocolVersion || installation?.protocol_version || "-" })}</div>
+                  <div>{t("settings.sshHosts.cliIntegration.agent.target", { value: probeResult?.target || installation?.target || "-" })}</div>
+                  <div className="truncate font-mono" title={probeResult?.installPath || installation?.install_path || ""}>
+                    {t("settings.sshHosts.cliIntegration.agent.path", { value: probeResult?.installPath || installation?.install_path || "-" })}
+                  </div>
+                </div>
+              )}
+              {probeResult?.code && probeResult.code !== "ok" && (
+                <p className="text-xs text-warning">
+                  {AGENT_CODE_KEYS[probeResult.code] ? t(AGENT_CODE_KEYS[probeResult.code]) : probeResult.code}
+                </p>
+              )}
+              {(probeError || probeResult?.detail) && (
+                <p className="break-words text-xs text-danger">{probeError || probeResult?.detail}</p>
+              )}
+            </section>
             {SOURCES.map((source) => (
               <section key={source} className="space-y-3 border-b border-border pb-5 last:border-b-0 last:pb-0">
                 <div className="flex items-center gap-2">

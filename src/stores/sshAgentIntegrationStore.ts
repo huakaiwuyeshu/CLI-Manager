@@ -3,6 +3,7 @@ import { getDb } from "../lib/db";
 import { validateSshToolConfigRoot } from "../lib/sshToolIntegration";
 import type {
   SshAgentInstallation,
+  SshAgentProbeResult,
   SshAgentToolIntegration,
   SshHostToolPreference,
   SshToolSource,
@@ -16,6 +17,7 @@ interface SshAgentIntegrationStore {
   loadError: string | null;
   fetchAll: () => Promise<void>;
   saveHostPreferences: (hostId: string, roots: Record<SshToolSource, string>) => Promise<void>;
+  recordAgentProbe: (hostId: string, result: SshAgentProbeResult) => Promise<void>;
 }
 
 let fetchAllPromise: Promise<void> | null = null;
@@ -56,6 +58,7 @@ export const useSshAgentIntegrationStore = create<SshAgentIntegrationStore>((set
   },
 
   saveHostPreferences: async (hostId, roots) => {
+    if (fetchAllPromise) await fetchAllPromise;
     const normalizedHostId = hostId.trim();
     if (!normalizedHostId) throw new Error("ssh_host_not_found");
     const normalizedRoots = {
@@ -89,6 +92,52 @@ export const useSshAgentIntegrationStore = create<SshAgentIntegrationStore>((set
       await db.execute("ROLLBACK").catch(() => undefined);
       throw error;
     }
+    await get().fetchAll();
+  },
+
+  recordAgentProbe: async (hostId, result) => {
+    if (fetchAllPromise) await fetchAllPromise;
+    const normalizedHostId = hostId.trim();
+    if (!normalizedHostId) throw new Error("ssh_host_not_found");
+    const db = await getDb();
+    await db.execute(
+      `INSERT INTO ssh_agent_installations (
+         host_id, installation_id, remote_machine_id, agent_version,
+         protocol_version, target, install_path, status, checked_at
+       ) VALUES ($1, '', '', $2, $3, $4, $5, $6, $7)
+       ON CONFLICT(host_id) DO UPDATE SET
+         agent_version = CASE
+           WHEN excluded.status = 'notInstalled' THEN ''
+           WHEN excluded.agent_version <> '' THEN excluded.agent_version
+           ELSE ssh_agent_installations.agent_version
+         END,
+         protocol_version = CASE
+           WHEN excluded.status = 'notInstalled' THEN ''
+           WHEN excluded.protocol_version <> '' THEN excluded.protocol_version
+           ELSE ssh_agent_installations.protocol_version
+         END,
+         target = CASE
+           WHEN excluded.status = 'notInstalled' THEN ''
+           WHEN excluded.target <> '' THEN excluded.target
+           ELSE ssh_agent_installations.target
+         END,
+         install_path = CASE
+           WHEN excluded.status = 'notInstalled' THEN ''
+           WHEN excluded.install_path <> '' THEN excluded.install_path
+           ELSE ssh_agent_installations.install_path
+         END,
+         status = excluded.status,
+         checked_at = excluded.checked_at`,
+      [
+        normalizedHostId,
+        result.agentVersion,
+        result.protocolVersion,
+        result.target,
+        result.installPath,
+        result.status,
+        Date.now().toString(),
+      ],
+    );
     await get().fetchAll();
   },
 }));

@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::ssh_transport::{
+    format_remote_home_path, posix_quote, validate_remote_home_path, SshRemoteHomePathError,
+    SshTransportLaunch, SshTransportSpec,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SshLaunchPlan {
@@ -33,147 +38,20 @@ pub struct SshLaunchPlan {
     pub startup_command: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SshProcessLaunch {
-    pub executable: String,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
-}
+pub type SshProcessLaunch = SshTransportLaunch;
 
 impl SshLaunchPlan {
     pub fn build_process_launch(&self) -> Result<SshProcessLaunch, String> {
         self.validate()?;
-        let mut args = vec![
-            "-tt".to_string(),
-            "-o".to_string(),
-            format!("ConnectTimeout={}", self.connect_timeout_sec),
-            "-o".to_string(),
-            format!("ServerAliveInterval={}", self.server_alive_interval_sec),
-            "-o".to_string(),
-            format!("ServerAliveCountMax={}", self.server_alive_count_max),
-        ];
-        if self.config_alias.trim().is_empty() {
-            args.extend(["-p".to_string(), self.port.to_string()]);
-        }
-        if self.auth_mode == "identity_file" && !self.identity_file.trim().is_empty() {
-            args.extend(["-i".to_string(), self.identity_file.trim().to_string()]);
-        }
-        match self.auth_mode.as_str() {
-            "agent" => args.extend([
-                "-o".to_string(),
-                "PubkeyAuthentication=yes".to_string(),
-                "-o".to_string(),
-                "PreferredAuthentications=publickey".to_string(),
-            ]),
-            "identity_file" => args.extend([
-                "-o".to_string(),
-                "IdentitiesOnly=yes".to_string(),
-                "-o".to_string(),
-                "PreferredAuthentications=publickey".to_string(),
-            ]),
-            "password_prompt" | "credential_ref" => args.extend([
-                "-o".to_string(),
-                "PubkeyAuthentication=no".to_string(),
-                "-o".to_string(),
-                "PasswordAuthentication=yes".to_string(),
-                "-o".to_string(),
-                "KbdInteractiveAuthentication=yes".to_string(),
-                "-o".to_string(),
-                "PreferredAuthentications=password,keyboard-interactive".to_string(),
-            ]),
-            "interactive" => args.extend([
-                "-o".to_string(),
-                "PubkeyAuthentication=no".to_string(),
-                "-o".to_string(),
-                "PasswordAuthentication=no".to_string(),
-                "-o".to_string(),
-                "KbdInteractiveAuthentication=yes".to_string(),
-                "-o".to_string(),
-                "PreferredAuthentications=keyboard-interactive".to_string(),
-            ]),
-            _ => {}
-        }
-        let proxy_command = crate::ssh_proxy::build_proxy_command(
-            &self.proxy_type,
-            &self.proxy_host,
-            self.proxy_port,
-            &self.proxy_command,
-        )?;
-        if proxy_command.is_empty() && !self.jump_target.trim().is_empty() {
-            args.extend(["-J".to_string(), self.jump_target.trim().to_string()]);
-        }
-        if !proxy_command.is_empty() {
-            args.extend(["-o".to_string(), format!("ProxyCommand={proxy_command}")]);
-        }
-        args.push(self.target());
-        args.push(self.remote_command());
-        let env = if self.auth_mode == "credential_ref" {
-            crate::ssh_askpass::prepare(&self.credential_ref)?
-        } else {
-            HashMap::new()
-        };
-        Ok(SshProcessLaunch {
-            executable: "ssh".to_string(),
-            args,
-            env,
-        })
+        self.transport_spec()
+            .build_interactive_launch(self.remote_command())
     }
 
     fn validate(&self) -> Result<(), String> {
         if self.host_id.trim().is_empty() {
             return Err("ssh_host_not_found".to_string());
         }
-        if self.config_alias.trim().is_empty() && self.host.trim().is_empty() {
-            return Err("ssh_host_address_required".to_string());
-        }
-        if self.config_alias.trim().is_empty() && self.port == 0 {
-            return Err("ssh_host_port_invalid".to_string());
-        }
-        if self.connect_timeout_sec == 0 || self.connect_timeout_sec > 300 {
-            return Err("ssh_connect_timeout_invalid".to_string());
-        }
-        if self.server_alive_count_max > 100 {
-            return Err("ssh_server_alive_count_invalid".to_string());
-        }
-        if !matches!(
-            self.auth_mode.as_str(),
-            "ssh_config"
-                | "agent"
-                | "identity_file"
-                | "password_prompt"
-                | "interactive"
-                | "credential_ref"
-        ) {
-            return Err("ssh_auth_mode_invalid".to_string());
-        }
-        if self.auth_mode == "identity_file" && self.identity_file.trim().is_empty() {
-            return Err("ssh_identity_file_required".to_string());
-        }
-        if self.auth_mode == "credential_ref" && self.credential_ref.trim().is_empty() {
-            return Err("ssh_credential_ref_required".to_string());
-        }
-        for value in [
-            &self.config_alias,
-            &self.host,
-            &self.username,
-            &self.identity_file,
-            &self.credential_ref,
-            &self.jump_target,
-            &self.proxy_type,
-            &self.proxy_host,
-            &self.proxy_command,
-        ] {
-            validate_single_line(value)?;
-        }
-        if contains_url_credentials(&self.proxy_command) {
-            return Err("ssh_proxy_credentials_forbidden".to_string());
-        }
-        crate::ssh_proxy::build_proxy_command(
-            &self.proxy_type,
-            &self.proxy_host,
-            self.proxy_port,
-            &self.proxy_command,
-        )?;
+        self.transport_spec().validate()?;
         validate_remote_path(&self.remote_path)?;
         if self
             .environment_overrides
@@ -208,14 +86,23 @@ impl SshLaunchPlan {
         Ok(())
     }
 
-    fn target(&self) -> String {
-        if !self.config_alias.trim().is_empty() {
-            return self.config_alias.trim().to_string();
-        }
-        if self.username.trim().is_empty() {
-            self.host.trim().to_string()
-        } else {
-            format!("{}@{}", self.username.trim(), self.host.trim())
+    fn transport_spec(&self) -> SshTransportSpec {
+        SshTransportSpec {
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            config_alias: self.config_alias.clone(),
+            auth_mode: self.auth_mode.clone(),
+            identity_file: self.identity_file.clone(),
+            credential_ref: self.credential_ref.clone(),
+            jump_target: self.jump_target.clone(),
+            proxy_type: self.proxy_type.clone(),
+            proxy_host: self.proxy_host.clone(),
+            proxy_port: self.proxy_port,
+            proxy_command: self.proxy_command.clone(),
+            connect_timeout_sec: self.connect_timeout_sec,
+            server_alive_interval_sec: self.server_alive_interval_sec,
+            server_alive_count_max: self.server_alive_count_max,
         }
     }
 
@@ -265,13 +152,6 @@ impl SshLaunchPlan {
     }
 }
 
-fn validate_single_line(value: &str) -> Result<(), String> {
-    if value.contains(['\0', '\r', '\n']) {
-        return Err("ssh_launch_argument_invalid".to_string());
-    }
-    Ok(())
-}
-
 fn validate_remote_path(path: &str) -> Result<(), String> {
     let path = path.trim();
     if !path.starts_with('/') || path.contains(['\0', '\r', '\n']) {
@@ -284,47 +164,23 @@ fn validate_remote_path(path: &str) -> Result<(), String> {
 }
 
 fn validate_tool_config_root(path: &str) -> Result<(), String> {
-    if path.contains(['\0', '\r', '\n', '\\', '$', '`'])
-        || !(path.starts_with('/') || path == "~" || path.starts_with("~/"))
-    {
-        return Err("ssh_tool_config_root_invalid".to_string());
+    match validate_remote_home_path(path) {
+        Ok(()) => Ok(()),
+        Err(SshRemoteHomePathError::Invalid) => Err("ssh_tool_config_root_invalid".to_string()),
+        Err(SshRemoteHomePathError::ParentTraversal) => {
+            Err("ssh_tool_config_root_parent_forbidden".to_string())
+        }
     }
-    if path.split('/').any(|part| part == "..") {
-        return Err("ssh_tool_config_root_parent_forbidden".to_string());
-    }
-    Ok(())
 }
 
 fn format_tool_config_root(path: &str) -> String {
-    if path == "~" {
-        return "\"${HOME}\"".to_string();
-    }
-    if let Some(suffix) = path.strip_prefix("~/") {
-        return format!("\"${{HOME}}\"/{}", posix_quote(suffix));
-    }
-    posix_quote(path)
-}
-
-fn posix_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    format_remote_home_path(path)
 }
 
 fn is_valid_environment_key(key: &str) -> bool {
     let mut chars = key.chars();
     matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))
         && chars.all(|ch| matches!(ch, '_' | 'A'..='Z' | 'a'..='z' | '0'..='9'))
-}
-
-fn contains_url_credentials(value: &str) -> bool {
-    value.split_whitespace().any(|token| {
-        let Some((_, remainder)) = token.split_once("://") else {
-            return false;
-        };
-        let authority = remainder.split('/').next().unwrap_or(remainder);
-        authority
-            .split_once('@')
-            .is_some_and(|(userinfo, _)| userinfo.contains(':'))
-    })
 }
 
 #[cfg(test)]

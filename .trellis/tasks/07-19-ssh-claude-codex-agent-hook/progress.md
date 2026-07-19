@@ -5,7 +5,7 @@ This is the single execution tracker for the task. Research, product requirement
 | Order | Phase | Status | Focused verification |
 |---|---|---|---|
 | S01 | Config roots and launch injection | completed | migration, TS type-check, SSH launch Rust tests |
-| S02 | Shared transport and Agent probe | in progress | transport parity, probe/error classification, protocol tests |
+| S02 | Shared transport and Agent probe | completed | transport parity, probe/error classification, protocol tests |
 | S03 | Agent install supply chain | pending | signature/hash/target/install/rollback tests |
 | S04 | Remote Hook lifecycle | pending | adapter merge, ownership, atomicity, spool tests |
 | S05 | Reusable Agent bridge runtime | pending | one-bridge invariant, reconnect, cancellation, shutdown tests |
@@ -35,9 +35,17 @@ This is the single execution tracker for the task. Research, product requirement
 - [x] Persist sanitized version/protocol/target/path/status metadata without credentials or remote output.
 - [x] Add bilingual probe status and diagnostics without automatic connection on page open.
 - [x] Add focused transport, probe parser, banner limit, path, protocol mismatch, and Agent target tests.
-- [ ] Pass full TypeScript and Rust regression after task consolidation.
-- [ ] Update executable SSH Agent contract and delivered-behavior documentation.
-- [ ] Commit S02 independently.
+- [x] Pass full TypeScript and Rust regression after task consolidation.
+- [x] Update executable SSH Agent contract and delivered-behavior documentation.
+- [x] Complete repeated review/fix cycles until the final review has no findings.
+- [x] Commit S02 independently (`feat(ssh): add agent transport and probe`).
+
+#### S02 Review Log
+
+1. Review 1 found truncated frame headers treated as clean EOF and an optional bridge protocol. Fixed strict partial-header errors and required `--protocol`; Agent tests passed.
+2. Review 2 found a dead `target()` wrapper after transport extraction. Removed it and restored warning-free `cargo check`.
+3. Review 3 found `doctor` could exit before reporting `unsupported_target` when HOME was unavailable. Made status/doctor always structured and prevented failed doctor diagnostics from being marked usable.
+4. Review 4 found no further issues. Final evidence: `npx tsc --noEmit`; desktop `cargo check`; desktop library tests `551 passed, 1 ignored`; Agent tests `10 passed`; CLI doctor smoke returned structured JSON.
 
 ### S03 Agent install supply chain
 

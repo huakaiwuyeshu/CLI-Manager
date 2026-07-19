@@ -21,6 +21,7 @@ mod shell_resolver;
 pub mod ssh_askpass;
 pub mod ssh_launch;
 pub mod ssh_proxy;
+pub mod ssh_transport;
 pub mod statusline;
 pub mod statusline_profiles;
 mod sync;
@@ -895,6 +896,7 @@ pub fn run() {
             commands::terminal_shell::terminal_shell_scan,
             commands::ssh::ssh_client_status,
             commands::ssh::ssh_test_connection,
+            commands::ssh::ssh_agent_probe,
             commands::ssh::ssh_save_password,
             commands::ssh::ssh_password_status,
             commands::ssh::ssh_delete_password,
