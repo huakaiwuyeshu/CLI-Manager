@@ -824,6 +824,7 @@ pub fn run() {
             commands::cc_connect::handoff::cc_connect_handoff_platforms,
             commands::cc_connect::handoff::cc_connect_handoff_start,
             commands::cc_connect::handoff::cc_connect_handoff_cancel,
+            commands::cc_connect::handoff_notification::cc_connect_handoff_notification_status,
             take_pending_background_session,
             commands::desktop_pet::desktop_pet_catalog,
             commands::desktop_pet::desktop_pet_list_installed,

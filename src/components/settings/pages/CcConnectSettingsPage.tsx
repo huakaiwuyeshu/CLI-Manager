@@ -11,6 +11,7 @@ import {
   Group,
   Loader,
   Modal,
+  NumberInput,
   PasswordInput,
   Select,
   SimpleGrid,
@@ -21,6 +22,7 @@ import {
 } from "@mantine/core";
 import {
   AlertTriangle,
+  BellRing,
   Copy,
   ExternalLink,
   FolderSearch,
@@ -97,6 +99,26 @@ interface CcConnectStatus {
   startedAtMs: number | null;
   lastExitCode: number | null;
   lastExitAtMs: number | null;
+}
+
+interface CcConnectHandoffNotificationStatus {
+  lastAttemptAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  lastEvent: string | null;
+  lastPlatform: PlatformKind | null;
+  lastError: string | null;
+}
+
+type HookInstallStatus =
+  | "directoryMissing"
+  | "notInstalled"
+  | "partialInstalled"
+  | "installed";
+
+interface HookMonitoringStatus {
+  codex: {
+    status: HookInstallStatus;
+  };
 }
 
 const PLATFORM_KINDS: PlatformKind[] = ["telegram", "feishu", "weixin", "wecom"];
@@ -235,7 +257,27 @@ export function CcConnectSettingsPage() {
   const fetchProjects = useProjectStore((state) => state.fetchAll);
   const ccSwitchDbPath = useSettingsStore((state) => state.ccSwitchDbPath);
   const codexConfigDir = useSettingsStore((state) => state.codexHookConfigDir);
+  const codexHookBridgeEnabled = useSettingsStore((state) => state.codexHookBridgeEnabled);
+  const remoteHandoffNotificationsEnabled = useSettingsStore(
+    (state) => state.remoteHandoffNotificationsEnabled
+  );
+  const remoteHandoffCompletionNotificationsEnabled = useSettingsStore(
+    (state) => state.remoteHandoffCompletionNotificationsEnabled
+  );
+  const remoteHandoffPermissionNotificationsEnabled = useSettingsStore(
+    (state) => state.remoteHandoffPermissionNotificationsEnabled
+  );
+  const remoteHandoffProgressNotificationsEnabled = useSettingsStore(
+    (state) => state.remoteHandoffProgressNotificationsEnabled
+  );
+  const remoteHandoffProgressIntervalMinutes = useSettingsStore(
+    (state) => state.remoteHandoffProgressIntervalMinutes
+  );
+  const updateSetting = useSettingsStore((state) => state.update);
   const [status, setStatus] = useState<CcConnectStatus | null>(null);
+  const [handoffNotificationStatus, setHandoffNotificationStatus] =
+    useState<CcConnectHandoffNotificationStatus | null>(null);
+  const [codexHookStatus, setCodexHookStatus] = useState<HookInstallStatus | null>(null);
   const [profile, setProfile] = useState<CcConnectProfile>(() => ({
     ...EMPTY_PROFILE,
     language: language === "en-US" ? "en" : "zh",
@@ -277,14 +319,30 @@ export function CcConnectSettingsPage() {
     setExecutableDirty(false);
   }, []);
 
+  const persistNotificationSetting = useCallback((operation: Promise<void>) => {
+    void operation.catch((error) => {
+      toast.error(t("settings.ccConnect.notifications.updateFailed"), {
+        description: errorMessage(error),
+      });
+    });
+  }, [t]);
+
   const refreshStatus = useCallback(async (force = false, hydrate = false, silent = false) => {
     if (statusInFlightRef.current || workingRef.current || executableCheckingRef.current) return;
     statusInFlightRef.current = true;
     const requestId = ++statusRequestRef.current;
     try {
-      const next = await invoke<CcConnectStatus>("cc_connect_get_status", { refreshDetection: force });
+      const [next, nextNotificationStatus] = await Promise.all([
+        invoke<CcConnectStatus>("cc_connect_get_status", { refreshDetection: force }),
+        invoke<CcConnectHandoffNotificationStatus>(
+          "cc_connect_handoff_notification_status"
+        ).catch(() => null),
+      ]);
       if (requestId !== statusRequestRef.current) return;
       setStatus(next);
+      if (nextNotificationStatus) {
+        setHandoffNotificationStatus(nextNotificationStatus);
+      }
       if (hydrate && !formTouchedRef.current && !executableCheckingRef.current) {
         hydrateProfile(next);
       }
@@ -322,6 +380,33 @@ export function CcConnectSettingsPage() {
   useEffect(() => {
     if (!projectsLoaded) void fetchProjects();
   }, [fetchProjects, projectsLoaded]);
+
+  useEffect(() => {
+    let disposed = false;
+    if (!codexHookBridgeEnabled) {
+      setCodexHookStatus(null);
+      return;
+    }
+    const refreshHookStatus = async () => {
+      try {
+        const next = await invoke<HookMonitoringStatus>("hook_settings_get_status", {
+          selectedDir: undefined,
+          codexSelectedDir: codexConfigDir ?? undefined,
+          ccSwitchDbPath: ccSwitchDbPath ?? undefined,
+          autoRepair: false,
+        });
+        if (!disposed) setCodexHookStatus(next.codex.status);
+      } catch {
+        if (!disposed) setCodexHookStatus(null);
+      }
+    };
+    void refreshHookStatus();
+    const timer = window.setInterval(() => void refreshHookStatus(), 30_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [ccSwitchDbPath, codexConfigDir, codexHookBridgeEnabled]);
 
   useEffect(() => {
     void refreshStatus(true, true);
@@ -806,6 +891,18 @@ export function CcConnectSettingsPage() {
     weixin: "settings.ccConnect.allowFromWeixinHelp",
     wecom: "settings.ccConnect.allowFromWecomHelp",
   } satisfies Record<PlatformKind, TranslationKey>)[profile.platform];
+  const notificationEventKey = handoffNotificationStatus?.lastEvent
+    ? ({
+        progress: "settings.ccConnect.notifications.eventProgress",
+        permission: "settings.ccConnect.notifications.eventPermission",
+        completed: "settings.ccConnect.notifications.eventCompleted",
+        failed: "settings.ccConnect.notifications.eventFailed",
+        timed_out: "settings.ccConnect.notifications.eventTimedOut",
+      } satisfies Record<string, TranslationKey>)[handoffNotificationStatus.lastEvent]
+    : undefined;
+  const notificationPlatform = handoffNotificationStatus?.lastPlatform
+    ? platformOptions.find((option) => option.value === handoffNotificationStatus.lastPlatform)?.label
+    : null;
 
   return (
     <Stack gap="md" maw={1040}>
@@ -860,6 +957,111 @@ export function CcConnectSettingsPage() {
           <Text size="xs" c="var(--text-muted)" style={{ overflowWrap: "anywhere" }}>{t("settings.ccConnect.sha256")}: {executableChecking ? "—" : displayedExecutable?.sha256 ?? "—"}</Text>
         </SimpleGrid>
         {displayedDetectionError && <Text mt="xs" size="xs" c="red">{displayedDetectionError}</Text>}
+      </Card>
+
+      <Card className="border border-border bg-surface-container-low" p="md" radius="lg">
+        <Group justify="space-between" align="flex-start">
+          <div>
+            <Group gap="xs">
+              <BellRing size={18} />
+              <Text fw={700}>{t("settings.ccConnect.notifications.title")}</Text>
+            </Group>
+            <Text mt={4} size="xs" c="var(--text-muted)">
+              {t("settings.ccConnect.notifications.description")}
+            </Text>
+          </div>
+          <Group gap="xs" wrap="wrap" justify="flex-end">
+            <Badge
+              color={!codexHookBridgeEnabled ? "gray" : codexHookStatus === "installed" ? "green" : "yellow"}
+              variant="light"
+            >
+              {!codexHookBridgeEnabled
+                ? t("settings.ccConnect.notifications.hookDisabled")
+                : codexHookStatus === "installed"
+                  ? t("settings.ccConnect.notifications.hookReady")
+                  : t("settings.ccConnect.notifications.hookUnavailable")}
+            </Badge>
+            <Badge
+              color={handoffNotificationStatus?.lastError ? "red" : handoffNotificationStatus?.lastSuccessAtMs ? "green" : "gray"}
+              variant="light"
+            >
+              {handoffNotificationStatus?.lastError
+                ? t("settings.ccConnect.notifications.lastFailed")
+                : handoffNotificationStatus?.lastSuccessAtMs
+                  ? t("settings.ccConnect.notifications.lastSucceeded")
+                  : t("settings.ccConnect.notifications.noDelivery")}
+            </Badge>
+          </Group>
+        </Group>
+        <Switch
+          mt="md"
+          checked={remoteHandoffNotificationsEnabled}
+          onChange={(event) => persistNotificationSetting(updateSetting(
+            "remoteHandoffNotificationsEnabled",
+            event.currentTarget.checked
+          ))}
+          label={t("settings.ccConnect.notifications.enabled")}
+          description={t("settings.ccConnect.notifications.enabledDescription")}
+        />
+        <SimpleGrid cols={{ base: 1, md: 2 }} mt="md" spacing="sm">
+          <Checkbox
+            checked={remoteHandoffCompletionNotificationsEnabled}
+            disabled={!remoteHandoffNotificationsEnabled}
+            onChange={(event) => persistNotificationSetting(updateSetting(
+              "remoteHandoffCompletionNotificationsEnabled",
+              event.currentTarget.checked
+            ))}
+            label={t("settings.ccConnect.notifications.completion")}
+          />
+          <Checkbox
+            checked={remoteHandoffPermissionNotificationsEnabled}
+            disabled={!remoteHandoffNotificationsEnabled}
+            onChange={(event) => persistNotificationSetting(updateSetting(
+              "remoteHandoffPermissionNotificationsEnabled",
+              event.currentTarget.checked
+            ))}
+            label={t("settings.ccConnect.notifications.permission")}
+          />
+          <Checkbox
+            checked={remoteHandoffProgressNotificationsEnabled}
+            disabled={!remoteHandoffNotificationsEnabled}
+            onChange={(event) => persistNotificationSetting(updateSetting(
+              "remoteHandoffProgressNotificationsEnabled",
+              event.currentTarget.checked
+            ))}
+            label={t("settings.ccConnect.notifications.progress")}
+          />
+          <NumberInput
+            value={remoteHandoffProgressIntervalMinutes}
+            min={1}
+            max={60}
+            step={1}
+            allowDecimal={false}
+            clampBehavior="strict"
+            disabled={!remoteHandoffNotificationsEnabled || !remoteHandoffProgressNotificationsEnabled}
+            label={t("settings.ccConnect.notifications.interval")}
+            suffix={t("settings.ccConnect.notifications.intervalSuffix")}
+            onChange={(value) => {
+              const next = typeof value === "number" && Number.isFinite(value)
+                ? Math.min(60, Math.max(1, Math.round(value)))
+                : 5;
+              persistNotificationSetting(
+                updateSetting("remoteHandoffProgressIntervalMinutes", next)
+              );
+            }}
+          />
+        </SimpleGrid>
+        <Text mt="sm" size="xs" c="var(--text-muted)">
+          {t("settings.ccConnect.notifications.routeDescription")}
+        </Text>
+        {handoffNotificationStatus?.lastAttemptAtMs ? (
+          <Text mt="xs" size="xs" c={handoffNotificationStatus.lastError ? "red" : "var(--text-muted)"} style={{ overflowWrap: "anywhere" }}>
+            {t("settings.ccConnect.notifications.lastDelivery")}: {formatTimestamp(handoffNotificationStatus.lastAttemptAtMs, language)}
+            {notificationPlatform ? ` · ${notificationPlatform}` : ""}
+            {notificationEventKey ? ` · ${t(notificationEventKey)}` : ""}
+            {handoffNotificationStatus.lastError ? ` · ${handoffNotificationStatus.lastError}` : ""}
+          </Text>
+        ) : null}
       </Card>
 
       <Card className="border border-border bg-surface-container-low" p="md" radius="lg">

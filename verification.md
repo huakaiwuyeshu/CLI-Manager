@@ -268,3 +268,29 @@
 
 - 未启动或停止用户当前安装目录中的 CLI-Manager/cc-connect，也未向真实机器人发送消息。
 - 本次尚未生成 NSIS 安装包，也未 push。
+
+## 跨平台远程托管 Hook 通知验证（2026-07-19）
+
+### 功能与场景
+
+- 托管启动时仅向受管 cc-connect 进程注入 daemon Hook 地址、令牌和本地会话 ID；无托管记录时显式移除这些内部变量，避免普通远程连接串到旧会话。
+- daemon 独立维护任务状态和周期计时：UserPromptSubmit 开始监控，PermissionRequest 立即提醒，Stop/StopFailure 结束监控，缺少结束事件时按基础超时与用户提醒间隔进行状态未知提醒。
+- Telegram、飞书/Lark、微信和企业微信共用 handoff.json 中固化的 platformSessionKey 与 cc-connect send；只通知当前托管平台，不广播到其他已配置平台。
+- 事件必须同时匹配 source、localSessionId 和可用时的 cliSessionId；取消托管或切换平台会使旧投递任务在发送前失效。
+- 最小化、托盘和前端重连不参与调度；daemon Hook 缓存回放只恢复界面状态，不会重复远程发送。
+- Hook 未安装或 daemon 不可达时不会猜测任务运行状态；权限通知只提醒，实际批准/拒绝仍由 cc-connect 原机器人会话处理。
+
+### 自动验证
+
+- cargo test --lib：518 项通过、0 项失败、1 项按环境要求忽略。
+- cargo test commands::cc_connect --lib：45 项通过，覆盖四平台文案、会话双 ID 归属、权限去重、设置默认值/区间和 Hook 环境。
+- cargo test daemon::server --lib：10 项通过，Hook 状态、缓存、WebSocket 与 PTY daemon 回归通过。
+- .\node_modules\.bin\tsc.cmd --noEmit：通过。
+- npm run build：通过，Vite 完成 6642 个模块转换；仅保留既有的大 chunk 警告。
+- git diff --check：通过，仅输出仓库既有的 LF/CRLF 转换提示。
+- codebase-memory-mcp 已按最新工作区重建 moderate 索引并完成变更影响扫描。
+
+### 未执行
+
+- 未向真实 Telegram、飞书、微信或企业微信账号发送测试消息，避免影响用户当前机器人和外部账号。
+- 未启动、停止或替换用户安装目录中的 CLI-Manager/cc-connect；本次未生成安装包，也未 push。

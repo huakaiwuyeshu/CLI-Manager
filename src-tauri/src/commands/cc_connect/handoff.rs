@@ -412,7 +412,7 @@ fn format_handoff_notification(
     }
 }
 
-fn send_handoff_notification(
+pub(super) fn send_handoff_notification(
     binary: &Path,
     project_name: &str,
     platform_session_key: &str,

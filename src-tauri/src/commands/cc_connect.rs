@@ -16,6 +16,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
 pub(crate) mod handoff;
+pub(crate) mod handoff_notification;
 mod handoff_session;
 
 const PROFILE_FILE_NAME: &str = "profile.json";
@@ -3988,6 +3989,9 @@ impl CcConnectManager {
         }
         apply_git_safe_directory_environment(&mut command, Path::new(&profile.project_path));
         apply_proxy_environment(&mut command, profile.proxy_enabled, proxy.as_ref());
+        // cc-connect app-server children merge the managed process environment,
+        // so the existing Hook executable can report remote task state to the daemon.
+        handoff_notification::apply_hook_environment(&mut command);
         let mut child = command
             .spawn()
             .map_err(|err| format!("spawn cc-connect failed: {err}"))?;

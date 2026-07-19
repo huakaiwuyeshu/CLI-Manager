@@ -336,6 +336,56 @@ void sendSystemNotification(payload, tabTitle);
 - TypeScript type-check must pass after settings migration or Hook settings UI changes.
 - Regression: one Hook payload produces at most one third-party dispatch in app mode and one in daemon mode; frontend reconnect/cache replay produces zero additional remote dispatches.
 
+## Scenario: Remote Handoff Hook Notifications
+
+### 1. Scope / Trigger
+
+- Trigger: an active Codex remote handoff receives UserPromptSubmit, PermissionRequest, Stop, or StopFailure through the daemon Hook listener.
+- Applies to: the managed cc-connect process environment, daemon Hook sink, handoff.json ownership record, cc-connect native send command, persisted notification settings, and the remote connection settings page.
+
+### 2. Contracts
+
+- The managed cc-connect process receives CLI_MANAGER_TAB_ID, CLI_MANAGER_NOTIFY_PORT, and CLI_MANAGER_NOTIFY_TOKEN only while a valid handoff record exists. Normal cc-connect startup explicitly removes stale inherited values.
+- The daemon is the sole task-state scheduler. Frontend Hook replay must not send or schedule remote handoff notifications.
+- A Hook event belongs to a handoff only when source=codex, tabId equals localSessionId, and a present Hook sessionId equals cliSessionId.
+- Delivery always uses the platform and platformSessionKey frozen in the active handoff record. Telegram, Feishu/Lark, Weixin, and WeCom share the same cc-connect send route.
+- Notifications go only to the platform selected for the active handoff; enabling several platforms must not broadcast one task event to all of them.
+- UserPromptSubmit starts or resets task monitoring. Periodic reminders are sent every configured 1-60 minutes.
+- PermissionRequest sends an immediate, deduplicated approval reminder. The reminder does not approve or deny the request; cc-connect retains approval ownership in the original bot conversation.
+- Stop sends one completion message and StopFailure sends one failure message. A task without a terminal Hook event times out after 20 minutes or five minutes after its first configured progress interval, whichever is later.
+- Cancelling or replacing a handoff invalidates queued jobs by the full handoff identity before delivery.
+- Messages contain only handoff metadata: platform, project, Provider, cliSessionId, work directory, elapsed time, and normalized state. They must not contain Prompt text, Hook message content, tool arguments, terminal output, environment variables, or credentials.
+- Delivery is non-blocking at the Hook sink. Scheduler and delivery queues are bounded, and the existing cc-connect retry policy remains authoritative.
+- Delivery status persists only the event, platform, timestamps, and a bounded sanitized error. The daemon token must never be persisted or logged.
+
+### 3. Settings
+
+- remoteHandoffNotificationsEnabled
+- remoteHandoffCompletionNotificationsEnabled
+- remoteHandoffPermissionNotificationsEnabled
+- remoteHandoffProgressNotificationsEnabled
+- remoteHandoffProgressIntervalMinutes (default 5, clamped to 1-60)
+
+All settings apply without restarting cc-connect. Hook installation remains a prerequisite for task-state monitoring.
+
+### 4. Validation & Error Matrix
+
+- No active handoff -> ignore the Hook event.
+- Hook belongs to another local or CLI session -> ignore it.
+- Hook is missing or cannot reach the daemon -> do not infer running state or start blind reminders.
+- App window minimized, hidden, or in the tray -> daemon scheduling and delivery continue.
+- Platform changes after cancellation -> old queued jobs fail identity validation and are discarded.
+- Duplicate permission/terminal events -> at most one matching notification for the current task state.
+- cc-connect send failure -> record a sanitized failure status without blocking Hook broadcast, tab status, or third-party notifications.
+- Feishu has no resolved conversation session -> handoff remains unavailable before monitoring starts; the notifier must not invent a session key.
+
+### 5. Tests Required
+
+- Rust tests for settings defaults/clamping, handoff ownership matching, permission deduplication, daemon Hook environment values, and safe message formatting across all four platforms.
+- Rust compile and cc-connect regression tests after process environment or handoff sender changes.
+- TypeScript type-check and production build after settings migration, backup policy, i18n, or remote connection UI changes.
+- Manual smoke test per platform: long-running reminder, permission reminder, completion, cancellation before the next interval, and no cross-platform broadcast.
+
 ## Scenario: CLI Hook Protection Through cc-switch Common Config
 
 ### 1. Scope / Trigger
