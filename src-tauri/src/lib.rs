@@ -3,6 +3,7 @@
 pub mod app_paths;
 mod ccswitch_db;
 mod claude_hook;
+pub mod codex_app_server_proxy;
 pub mod codex_statusline;
 mod commands;
 mod conpty_sideload;

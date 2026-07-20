@@ -294,3 +294,28 @@
 
 - 未向真实 Telegram、飞书、微信或企业微信账号发送测试消息，避免影响用户当前机器人和外部账号。
 - 未启动、停止或替换用户安装目录中的 CLI-Manager/cc-connect；本次未生成安装包，也未 push。
+
+## 大型 Codex 会话远程恢复修复验证（2026-07-19）
+
+### 根因与触点
+
+- 根因位于 Codex app-server 到 cc-connect 的 JSONL 传输边界：原 Session ID 和 rollout 均正常，Codex 已恢复完整上下文，但单行 `thread/resume` 回复为 10,566,391 字节，超过 cc-connect 约 10 MB 的读取上限；随后 cc-connect 回退执行 `thread/start`，产生漂移 Session ID。
+- 新增 `codex_app_server_proxy.rs`，完整接收大回复后仅转发 cc-connect 实际消费的线程 ID、目录、模型与推理强度；代理不修改 Codex 内部已加载的历史上下文。
+- `cc_connect.rs` 只让包装器的 `app-server` 模式经过代理，并从 `handoff.json` 注入预期原 Session ID；其他 Codex 命令保持原行为。
+- `handoff_session.rs` 的异常取消只接受当前原 ID，或身份历史明确包含原 ID 的后继线程；没有增加删除 Codex Session/rollout 的代码。
+- 已确认无需修改 cc-connect 源码/安装、平台协议、Provider 配置、本地 Codex 恢复、前端入口和两个 Codex rollout 文件。
+
+### 自动与真实链路验证
+
+- `cargo test --lib`：561 项通过、0 项失败、1 项忽略。
+- `npm run build`：通过，Vite 完成 6668 个模块转换；仅保留既有的大 chunk 警告。
+- Rust 格式检查：通过。
+- 真实恢复原 Session `019f5e8b-2d11-76d1-89b4-a0c0ff20d111`：Codex 原始回复 10,566,391 字节，代理转交 176 字节，Session ID 保持原值，cwd/model/reasoning effort 正确。
+- codebase-memory 已用 moderate 模式刷新并完成变更影响检测；GitNexus MCP 未暴露，已用源码、`rg`、Git diff、测试和真实协议恢复结果补充复核。
+
+### 发布产物
+
+- NSIS：`src-tauri/target/release/bundle/nsis/CLI-Manager_1.2.10_x64-setup.exe`，SHA-256 `084E582847D63E0BE8F789B08120DFFDDC2C976BFC90EAE1546DE418E54C1C96`。
+- MSI：`src-tauri/target/release/bundle/msi/CLI-Manager_1.2.10_x64_en-US.msi`，SHA-256 `86A5756BB49D2793E21746B1D2F231BDBB9C1410F559DCDE3B8FF7D24EC8DB0F`。
+- Release EXE：SHA-256 `7F63FC46432115F1616B8B18D8083E5B89F13E41EE2382A79230DD6236A5C695`。
+- 当前异常托管在最终回复前继续运行；已要求延迟停止 cc-connect、移除 `s3` 和 handoff 记录，同时保留原 Session `019f5e8b-2d11-76d1-89b4-a0c0ff20d111` 与漂移 Session `019f7a9b-01c1-75e3-aa9c-0e59ca43a7ef` 的全部 Codex 文件。

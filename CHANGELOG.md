@@ -1,5 +1,11 @@
 # Changelog
 
+## [V1.2.10] - 2026-07-19
+
+### 修复
+- **远程托管恢复大型 Codex 会话**：CLI-Manager 的 Codex 包装层新增 app-server 兼容代理，完整保留 Codex 已加载的历史上下文，同时将超过 cc-connect 10 MB 单行限制的 `thread/resume` 回复缩减为其实际消费的线程标识、目录、模型与推理强度字段。
+- **远程托管会话漂移保护**：活动托管强制恢复 handoff 中记录的原 Session ID；恢复失败或 ID 不一致时禁止 cc-connect 静默创建新线程。取消异常托管时可识别由原线程回退产生的后继 ID，安全清理 cc-connect 绑定且不删除任何 Codex rollout。
+
 ## [V1.3.0] - 2026-07-17
 
 ### 新增

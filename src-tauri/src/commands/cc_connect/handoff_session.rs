@@ -313,7 +313,15 @@ pub(super) fn cleanup_handoff_session(
                 .get("agent_session_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if recorded_cli_session_id != cli_session_id {
+            let descended_from_handoff = existing
+                .get("past_agent_session_ids")
+                .and_then(Value::as_array)
+                .is_some_and(|session_ids| {
+                    session_ids
+                        .iter()
+                        .any(|value| value.as_str() == Some(cli_session_id))
+                });
+            if recorded_cli_session_id != cli_session_id && !descended_from_handoff {
                 return Err("handoff_session_identity_mismatch".to_string());
             }
         }
@@ -535,6 +543,31 @@ mod tests {
             ),
             Err("handoff_session_identity_mismatch".to_string())
         );
+    }
+
+    #[test]
+    fn cleanup_accepts_a_fallback_thread_descended_from_the_handoff() {
+        let mut document = json!({
+            "sessions": {
+                "s1": {
+                    "agent_session_id": "fallback-thread",
+                    "past_agent_session_ids": ["expected-thread"]
+                }
+            },
+            "active_session": {"telegram:10:10": "s1"},
+            "user_sessions": {"telegram:10:10": ["s1"]}
+        });
+
+        assert!(cleanup_handoff_session(
+            &mut document,
+            "telegram:10:10",
+            "s1",
+            "expected-thread",
+            None,
+        )
+        .unwrap());
+        assert!(document["sessions"].get("s1").is_none());
+        assert!(document["active_session"].get("telegram:10:10").is_none());
     }
 
     #[test]

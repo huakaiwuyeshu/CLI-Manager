@@ -1,3 +1,7 @@
+use crate::codex_app_server_proxy::{
+    CODEX_LAUNCHER_ENV, EXPECTED_SESSION_ID_ENV, HELPER_SUBCOMMAND as CODEX_PROXY_SUBCOMMAND,
+    PROXY_EXECUTABLE_ENV,
+};
 use crate::shell_resolver::{output_with_timeout, silent_command};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -62,7 +66,6 @@ const FEISHU_APP_SECRET_ENV: &str = "CLI_MANAGER_CC_FEISHU_APP_SECRET";
 const WEIXIN_TOKEN_ENV: &str = "CLI_MANAGER_CC_WEIXIN_TOKEN";
 const WECOM_BOT_ID_ENV: &str = "CLI_MANAGER_CC_WECOM_BOT_ID";
 const WECOM_BOT_SECRET_ENV: &str = "CLI_MANAGER_CC_WECOM_BOT_SECRET";
-const CODEX_LAUNCHER_ENV: &str = "CLI_MANAGER_CODEX_LAUNCHER";
 const CODEX_BASE_URL_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_BASE_URL_OVERRIDE";
 const CODEX_ENV_KEY_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_ENV_KEY_OVERRIDE";
 const CODEX_MODEL_OVERRIDE_ENV: &str = "CLI_MANAGER_CODEX_MODEL_OVERRIDE";
@@ -2105,6 +2108,8 @@ fn configured_cc_switch_db_path(profile: Option<&CcConnectProfile>) -> Option<Pa
 struct RemoteCodexLaunch {
     wrapper_dir: PathBuf,
     launcher: PathBuf,
+    proxy_executable: PathBuf,
+    expected_session_id: Option<String>,
     codex_home: PathBuf,
     base_url_override: String,
     env_key_override: String,
@@ -2150,11 +2155,11 @@ fn resolve_codex_launcher(_wrapper_dir: &Path) -> Result<PathBuf, String> {
 fn codex_profile_wrapper_payload() -> String {
     #[cfg(target_os = "windows")]
     let payload = format!(
-        "@echo off\r\nsetlocal\r\nif defined {CODEX_MODEL_OVERRIDE_ENV} (\r\n  call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" -c \"%{CODEX_MODEL_OVERRIDE_ENV}%\" %*\r\n) else (\r\n  call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" %*\r\n)\r\nexit /b %errorlevel%\r\n"
+        "@echo off\r\nsetlocal\r\nif /I \"%~1\"==\"app-server\" (\r\n  if defined {CODEX_MODEL_OVERRIDE_ENV} (\r\n    \"%{PROXY_EXECUTABLE_ENV}%\" {CODEX_PROXY_SUBCOMMAND} -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" -c \"%{CODEX_MODEL_OVERRIDE_ENV}%\" %*\r\n  ) else (\r\n    \"%{PROXY_EXECUTABLE_ENV}%\" {CODEX_PROXY_SUBCOMMAND} -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" %*\r\n  )\r\n) else (\r\n  if defined {CODEX_MODEL_OVERRIDE_ENV} (\r\n    call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" -c \"%{CODEX_MODEL_OVERRIDE_ENV}%\" %*\r\n  ) else (\r\n    call \"%{CODEX_LAUNCHER_ENV}%\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"%{CODEX_BASE_URL_OVERRIDE_ENV}%\" -c \"%{CODEX_ENV_KEY_OVERRIDE_ENV}%\" -c \"%{CODEX_WIRE_API_OVERRIDE_ENV}%\" %*\r\n  )\r\n)\r\nexit /b %errorlevel%\r\n"
     );
     #[cfg(not(target_os = "windows"))]
     let payload = format!(
-        "#!/bin/sh\nif [ -n \"${{{CODEX_MODEL_OVERRIDE_ENV}:-}}\" ]; then\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" -c \"${CODEX_MODEL_OVERRIDE_ENV}\" \"$@\"\nelse\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" \"$@\"\nfi\n"
+        "#!/bin/sh\nif [ \"${{1:-}}\" = \"app-server\" ]; then\n  if [ -n \"${{{CODEX_MODEL_OVERRIDE_ENV}:-}}\" ]; then\n    exec \"${PROXY_EXECUTABLE_ENV}\" {CODEX_PROXY_SUBCOMMAND} -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" -c \"${CODEX_MODEL_OVERRIDE_ENV}\" \"$@\"\n  else\n    exec \"${PROXY_EXECUTABLE_ENV}\" {CODEX_PROXY_SUBCOMMAND} -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" \"$@\"\n  fi\nfi\nif [ -n \"${{{CODEX_MODEL_OVERRIDE_ENV}:-}}\" ]; then\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" -c \"${CODEX_MODEL_OVERRIDE_ENV}\" \"$@\"\nelse\n  exec \"${CODEX_LAUNCHER_ENV}\" -c \"model_provider={CODEX_REMOTE_PROVIDER_NAME}\" -c \"model_providers.{CODEX_REMOTE_PROVIDER_NAME}.name=CLI-Manager remote\" -c \"${CODEX_BASE_URL_OVERRIDE_ENV}\" -c \"${CODEX_ENV_KEY_OVERRIDE_ENV}\" -c \"${CODEX_WIRE_API_OVERRIDE_ENV}\" \"$@\"\nfi\n"
     );
     payload
 }
@@ -2265,9 +2270,15 @@ fn prepare_remote_codex_launch(
         .ok_or_else(|| "Codex wrapper directory is missing".to_string())?
         .to_path_buf();
     let launcher = resolve_codex_launcher(&wrapper_dir)?;
+    let proxy_executable = env::current_exe()
+        .map_err(|err| format!("resolve Codex app-server proxy failed: {err}"))?;
+    let expected_session_id =
+        handoff_session::load_handoff_record()?.map(|record| record.cli_session_id);
     Ok(Some(RemoteCodexLaunch {
         wrapper_dir,
         launcher,
+        proxy_executable,
+        expected_session_id,
         codex_home,
         base_url_override: codex_base_url_override(&runtime.base_url)?,
         env_key_override: codex_env_key_override(&runtime.env_key)?,
@@ -2291,10 +2302,19 @@ fn apply_remote_codex_launch_environment(
     command
         .env("PATH", path_value)
         .env(CODEX_LAUNCHER_ENV, &launch.launcher)
+        .env(PROXY_EXECUTABLE_ENV, &launch.proxy_executable)
         .env(CODEX_BASE_URL_OVERRIDE_ENV, &launch.base_url_override)
         .env(CODEX_ENV_KEY_OVERRIDE_ENV, &launch.env_key_override)
         .env(CODEX_WIRE_API_OVERRIDE_ENV, &launch.wire_api_override)
         .env("CODEX_HOME", &launch.codex_home);
+    match launch.expected_session_id.as_ref() {
+        Some(session_id) => {
+            command.env(EXPECTED_SESSION_ID_ENV, session_id);
+        }
+        None => {
+            command.env_remove(EXPECTED_SESSION_ID_ENV);
+        }
+    }
     match launch.model_override.as_ref() {
         Some(model_override) => {
             command.env(CODEX_MODEL_OVERRIDE_ENV, model_override);
@@ -5089,6 +5109,8 @@ allow_from = ""
         assert!(!payload.contains("--profile"));
         assert!(payload.contains("model_provider=cli_manager_remote"));
         assert!(payload.contains(CODEX_LAUNCHER_ENV));
+        assert!(payload.contains(PROXY_EXECUTABLE_ENV));
+        assert!(payload.contains(CODEX_PROXY_SUBCOMMAND));
         assert!(payload.contains(CODEX_BASE_URL_OVERRIDE_ENV));
         assert!(payload.contains(CODEX_ENV_KEY_OVERRIDE_ENV));
         assert!(payload.contains(CODEX_MODEL_OVERRIDE_ENV));
@@ -5099,6 +5121,8 @@ allow_from = ""
         let launch = RemoteCodexLaunch {
             wrapper_dir: PathBuf::from(r"C:\Users\test\.cli-manager\remote-manager\bin"),
             launcher: PathBuf::from(r"D:\npm\codex.cmd"),
+            proxy_executable: PathBuf::from(r"C:\Program Files\CLI-Manager\cli-manager.exe"),
+            expected_session_id: Some("thread-original".to_string()),
             codex_home: PathBuf::from(r"C:\Users\test\.codex"),
             base_url_override:
                 "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
@@ -5136,6 +5160,10 @@ allow_from = ""
             environment.get("CODEX_HOME"),
             Some(&Some(r"C:\Users\test\.codex".to_string()))
         );
+        assert_eq!(
+            environment.get(EXPECTED_SESSION_ID_ENV),
+            Some(&Some("thread-original".to_string()))
+        );
         assert!(!environment
             .values()
             .flatten()
@@ -5161,6 +5189,7 @@ allow_from = ""
             .arg(&wrapper)
             .args(["app-server", "--listen", "stdio://"])
             .env(CODEX_LAUNCHER_ENV, &launcher)
+            .env(PROXY_EXECUTABLE_ENV, &launcher)
             .env(
                 CODEX_BASE_URL_OVERRIDE_ENV,
                 "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1",
@@ -5181,7 +5210,7 @@ allow_from = ""
         assert!(status.success());
         assert_eq!(
             fs::read_to_string(arguments).unwrap().trim(),
-            "-c \"model_provider=cli_manager_remote\" -c \"model_providers.cli_manager_remote.name=CLI-Manager remote\" -c \"model_providers.cli_manager_remote.base_url=https://provider.example.com/v1\" -c \"model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY\" -c \"model_providers.cli_manager_remote.wire_api=responses\" -c \"model=gpt-5.4\" app-server --listen stdio://"
+            "__codex_app_server_proxy -c \"model_provider=cli_manager_remote\" -c \"model_providers.cli_manager_remote.name=CLI-Manager remote\" -c \"model_providers.cli_manager_remote.base_url=https://provider.example.com/v1\" -c \"model_providers.cli_manager_remote.env_key=CLI_MANAGER_CODEX_PROVIDER_API_KEY\" -c \"model_providers.cli_manager_remote.wire_api=responses\" -c \"model=gpt-5.4\" app-server --listen stdio://"
         );
     }
 
@@ -5219,7 +5248,9 @@ allow_from = ""
         fs::write(&wrapper, codex_profile_wrapper_payload()).unwrap();
         let launch = RemoteCodexLaunch {
             wrapper_dir,
+            proxy_executable: launcher.clone(),
             launcher,
+            expected_session_id: None,
             codex_home: directory.path().join("codex-home"),
             base_url_override:
                 "model_providers.cli_manager_remote.base_url=https://provider.example.com/v1"
