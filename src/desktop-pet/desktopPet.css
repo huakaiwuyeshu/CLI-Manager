@@ -212,7 +212,7 @@
 
 .desktop-pet-target-list {
   position: absolute;
-  right: calc(var(--pet-anchor-width) + 144px);
+  right: calc(var(--pet-anchor-width) + 128px);
   bottom: 12px;
   display: flex;
   width: min(260px, max(132px, calc(var(--pet-menu-panel-width) - 166px)));
@@ -514,6 +514,8 @@
   background: linear-gradient(135deg, rgb(24 52 54 / 82%), rgb(6 17 24 / 72%));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%), 0 10px 26px rgb(0 0 0 / 28%);
   padding: 5px;
+  scrollbar-color: rgb(109 226 169 / 32%) transparent;
+  scrollbar-width: thin;
   pointer-events: auto;
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
@@ -543,6 +545,32 @@
 .desktop-pet-menu-actions button span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.desktop-pet-menu-actions::-webkit-scrollbar {
+  width: 4px;
+  background: transparent;
+}
+
+.desktop-pet-menu-actions::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.desktop-pet-menu-actions::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  border-radius: 999px;
+  background: rgb(109 226 169 / 30%);
+}
+
+.desktop-pet-menu-actions::-webkit-scrollbar-thumb:hover {
+  background: rgb(109 226 169 / 48%);
+}
+
+.desktop-pet-menu-actions::-webkit-scrollbar-track,
+.desktop-pet-menu-actions::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .desktop-pet-size-control {
@@ -623,7 +651,7 @@
 
 .desktop-pet-root[data-menu-horizontal="right"] .desktop-pet-target-list {
   right: auto;
-  left: calc(var(--pet-anchor-width) + 144px);
+  left: calc(var(--pet-anchor-width) + 128px);
   align-items: flex-start;
   padding: 0 28px 0 10px;
 }
