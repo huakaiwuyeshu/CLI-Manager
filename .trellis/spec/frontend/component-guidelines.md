@@ -35,28 +35,27 @@ terminalProcessManager.subscribeOutput(sessionId, (delivery) => {
 
 **Tests**: Run `npx tsc --noEmit` and `node --test scripts/ptyHostSocket.test.mjs scripts/terminalProcessManager.test.mjs scripts/terminalReplay.test.mjs scripts/terminalResizeDebouncer.test.mjs scripts/terminalResizeRenderBarrier.test.mjs scripts/terminalReflowPolicy.test.mjs`; manually verify background output, reconnect replay, rapid split/fullscreen shrink, transparent terminal backgrounds, IME, WebGL fallback, and no duplicate output after daemon reconnect.
 
-### Convention: Replay normalization has no PTY input side effects
+### Convention: OSC color-query normalization has no frontend PTY side effects
 
-**What**: OSC 10/11 color queries may be answered only while processing live PTY output. Replay must remove these queries from the display stream without writing a response to the current PTY. Multiple live color queries received in one output batch are combined into one ordered write.
+**What**: Rust PTY owns live OSC 10/11 replies. Frontend normalization only removes residual queries from live, replay, and restored display text; it must not import the process manager or write a reply.
 
-**Why**: Replay contains historical terminal output. Re-executing its terminal queries injects stale OSC responses into the current CLI input state; separate asynchronous replies also increase the chance that a short-lived terminal probe has already switched to its composer.
+**Why**: A WebView → daemon → PTY round trip can exceed a CLI's short terminal-probe window. The late response is then parsed as user input. Replay is historical output and must also remain side-effect free.
 
 **Correct**:
 
 ```ts
-normalizeOutput(rawText, {
-  replyToColorQueries: frame.kind === "output",
-});
+const text = normalizeTerminalOutput(rawText);
 ```
 
 **Wrong**:
 
 ```ts
-// Historical queries must not produce live input.
-normalizeOutput(replayText);
+terminalProcessManager.write(sessionId, colorReply);
 ```
 
-**Tests**: Run `node --test scripts/terminalOsc.test.mjs`; assert live OSC 10/11 queries produce one combined write and replay queries produce no write.
+**Contracts**: See [Terminal OSC Color Contracts](../backend/terminal-osc-color-contracts.md) for protocol, validation, local/WSL/SSH behavior, and required tests.
+
+**Tests**: Run `node --test scripts/terminalOsc.test.mjs`; assert both live and replay queries are filtered and `useTerminalOsc.ts` contains no `terminalProcessManager.write` or `replyToColorQueries` path.
 
 > How components are built in this project.
 

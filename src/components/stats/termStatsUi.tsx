@@ -310,7 +310,7 @@ export function SourcePill({ source }: { source: string }) {
   return (
     <HeaderPill color={SOURCE_COLORS[source] ?? TERM.cyan}>
       <span className="inline-flex items-center gap-1">
-        {icon && <CliToolIcon icon={icon} size={11} />}
+        {icon && <CliToolIcon icon={icon} size={11} className="text-current" />}
         {source}
       </span>
     </HeaderPill>

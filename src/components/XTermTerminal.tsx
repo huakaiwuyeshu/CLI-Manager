@@ -26,7 +26,7 @@ import { findProjectByPath, findWorktreeByPath } from "../lib/terminalProject";
 import { projectSupportsCapability } from "../lib/projectCapabilities";
 import { useTerminalSearch } from "../hooks/useTerminalSearch";
 import { useTerminalContextMenu } from "../hooks/useTerminalContextMenu";
-import { useTerminalOsc, type TerminalOutputNormalizationOptions } from "../hooks/useTerminalOsc";
+import { useTerminalOsc } from "../hooks/useTerminalOsc";
 import { useTerminalDisplay } from "../hooks/useTerminalDisplay";
 import { useTerminalInput, type TerminalSuggestionGhostState } from "../hooks/useTerminalInput";
 import { getTerminalCellWidth } from "../lib/terminalCellWidth";
@@ -304,10 +304,7 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const visibilityRestoreFallbackRafRef = useRef<number | null>(null);
   const cursorShowTimerRef = useRef<number | null>(null);
   const tuiComposerNormalizeRafRef = useRef<number | null>(null);
-  const displayNormalizeOutputRef = useRef<(
-    text: string,
-    options?: TerminalOutputNormalizationOptions,
-  ) => string>((text) => text);
+  const displayNormalizeOutputRef = useRef<(text: string) => string>((text) => text);
   const displayTransformOutputRef = useRef<(text: string) => string>((text) => text);
   const displayAfterWriteRef = useRef<((terminal: Terminal) => void) | null>(null);
   const cleanedAttachmentRootsRef = useRef<Set<string>>(new Set());
@@ -530,11 +527,9 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
   const {
     normalizeTerminalOutput,
     updateSessionCwdIfChanged,
-    updateTerminalColorReplies,
   } = useTerminalOsc({
     sessionId,
     osPlatformRef,
-    onPtyWriteError: reportPtyWriteError,
   });
   displayNormalizeOutputRef.current = normalizeTerminalOutput;
 
@@ -1302,10 +1297,14 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
 
   const backgroundOverlayColor = getTerminalBackgroundOverlayColor(terminalTheme);
   const showBackgroundImage = isTransparent && assetUrl !== null;
-  updateTerminalColorReplies({
-    foreground: normalizeHexColor(terminalTheme.foreground, "#d8dee9"),
-    background: normalizeHexColor(terminalTheme.background, backgroundColor),
-  });
+  const terminalForegroundColor = normalizeHexColor(terminalTheme.foreground, "#d8dee9");
+  const terminalBackgroundColor = normalizeHexColor(terminalTheme.background, backgroundColor);
+  useEffect(() => {
+    terminalProcessManager.setTerminalColors(sessionId, {
+      foreground: terminalForegroundColor,
+      background: terminalBackgroundColor,
+    }).catch((err) => reportPtyWriteError("terminal_colors", err));
+  }, [sessionId, terminalForegroundColor, terminalBackgroundColor]);
   const searchForeground = normalizeHexColor(terminalTheme.foreground, "#d8dee9");
   const searchBackground = normalizeHexColor(terminalTheme.background, backgroundColor);
   const searchAccent = normalizeHexColor(terminalTheme.cursor, searchForeground);

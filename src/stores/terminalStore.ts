@@ -8,6 +8,7 @@ import { sourceTool, type SyncedHistoryGroup } from "../lib/externalSessionGroup
 import { logError, logInfo, logWarn, recordCrashActivity } from "../lib/logger";
 import { appendResumeCliArgs, isDirectCodexStartupCommand, normalizeDirectCodexStartupCommand, resolveProjectStartupCommand, withCodexLightTuiTheme } from "../lib/projectStartupCommand";
 import { getTerminalTheme } from "../lib/terminalThemes";
+import { normalizeHexColor } from "../lib/terminalColor";
 import { useSettingsStore } from "./settingsStore";
 import { useSessionStore } from "./sessionStore";
 import { defaultShellForOs, getOsPlatform, normalizeShellForOs, normalizeShellKey, type OsPlatform, type ShellKey } from "../lib/shell";
@@ -992,6 +993,23 @@ function isCurrentTerminalBackgroundLight(): boolean {
   return isLightHexColor(theme.background);
 }
 
+function getCurrentTerminalColors() {
+  const settings = useSettingsStore.getState();
+  const theme = getTerminalTheme(
+    settings.terminalThemeName,
+    settings.resolvedTheme,
+    settings.lightThemePalette,
+    settings.darkThemePalette,
+  );
+  return {
+    foreground: normalizeHexColor(theme.foreground, "#d8dee9"),
+    background: normalizeHexColor(
+      theme.background,
+      settings.resolvedTheme === "dark" ? "#0c0e10" : "#ffffff",
+    ),
+  };
+}
+
 function prepareStartupCommandForPty(command: string | undefined, shell: ShellKey | null): string | undefined {
   if (!command || shell !== "gitbash" || !isCurrentTerminalBackgroundLight()) return command;
   return withCodexLightTuiTheme(command);
@@ -1127,6 +1145,7 @@ interface ResolvedPtyLaunch {
     hookEnvEnabled: boolean;
     claudeProvider: ReturnType<typeof getClaudeProviderLaunchConfig>;
     codexProvider: ReturnType<typeof getCodexProviderLaunchConfig>;
+    terminalColors: ReturnType<typeof getCurrentTerminalColors>;
     sshLaunch: SshLaunchPayload | null;
   };
 }
@@ -1267,6 +1286,7 @@ async function resolvePtyLaunch(options: DetachedPtyLaunchOptions, os: OsPlatfor
         hookEnvEnabled: false,
         claudeProvider: null,
         codexProvider: null,
+        terminalColors: getCurrentTerminalColors(),
         sshLaunch: {
           ...buildSshConnectionSpec(host, hosts),
           hostId: host.id,
@@ -1291,6 +1311,7 @@ async function resolvePtyLaunch(options: DetachedPtyLaunchOptions, os: OsPlatfor
       hookEnvEnabled: await shouldEnableHookEnv(),
       claudeProvider: getClaudeProviderLaunchConfig(options.projectId, options.worktreeId),
       codexProvider: getCodexProviderLaunchConfig(options.projectId, options.startupCmd, options.worktreeId),
+      terminalColors: getCurrentTerminalColors(),
       sshLaunch: null,
     },
   };
