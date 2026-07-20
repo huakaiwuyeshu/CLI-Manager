@@ -750,7 +750,7 @@ mod tests {
         fn fake_agent(root: &Path, version: &str) -> PathBuf {
             let path = root.join(format!("agent-{version}"));
             let report = format!(
-                "{{\"agentName\":\"cli-manager-ssh-agent\",\"agentVersion\":\"{version}\",\"protocolMajor\":1,\"protocolMinor\":0,\"targetOs\":\"linux\",\"targetArch\":\"{}\"}}",
+                "{{\"agentName\":\"cli-manager-ssh-agent\",\"agentVersion\":\"{version}\",\"protocolMajor\":1,\"protocolMinor\":1,\"targetOs\":\"linux\",\"targetArch\":\"{}\"}}",
                 std::env::consts::ARCH
             );
             fs::write(

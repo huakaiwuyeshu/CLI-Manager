@@ -4,50 +4,73 @@ use crate::ssh_launch::SshLaunchPlan;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_PREAMBLE_BYTES: usize = 8 * 1024;
+const MAX_STDERR_BYTES: usize = 8 * 1024;
 const DEDUP_EVENT_IDS: usize = 10_000;
+const READER_QUEUE_CAPACITY: usize = 32;
+const MAX_CONCURRENT_BRIDGES: usize = 4;
 const MAX_CONCURRENT_CONNECTS: usize = 2;
+const MAX_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+const HOOK_DRAIN_WAIT_MS: u64 = 2_000;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const STABLE_CONNECTION_RESET: Duration = Duration::from_secs(30);
+const RETRY_BASE_SECONDS: [u64; 6] = [1, 2, 5, 10, 30, 60];
 
-struct ConnectPermit;
+#[derive(Default)]
+struct PermitPool {
+    active: Mutex<usize>,
+    changed: Condvar,
+}
 
-impl ConnectPermit {
-    fn acquire(control: &BridgeControl) -> Option<Self> {
-        let state = CONNECT_LIMIT.get_or_init(|| (Mutex::new(0), Condvar::new()));
-        let mut active = state.0.lock().ok()?;
-        while *active >= MAX_CONCURRENT_CONNECTS {
+struct CounterPermit {
+    pool: &'static PermitPool,
+}
+
+impl CounterPermit {
+    fn acquire(
+        state: &'static OnceLock<PermitPool>,
+        limit: usize,
+        control: &BridgeControl,
+    ) -> Option<Self> {
+        let pool = state.get_or_init(PermitPool::default);
+        let mut active = pool.active.lock().ok()?;
+        while *active >= limit {
             if control.stop.load(Ordering::Acquire) {
                 return None;
             }
-            active = state
-                .1
+            active = pool
+                .changed
                 .wait_timeout(active, Duration::from_millis(250))
                 .ok()?
                 .0;
         }
         *active += 1;
-        Some(Self)
+        Some(Self { pool })
     }
 }
 
-impl Drop for ConnectPermit {
+impl Drop for CounterPermit {
     fn drop(&mut self) {
-        let state = CONNECT_LIMIT.get_or_init(|| (Mutex::new(0), Condvar::new()));
-        if let Ok(mut active) = state.0.lock() {
+        if let Ok(mut active) = self.pool.active.lock() {
             *active = active.saturating_sub(1);
-            state.1.notify_one();
+            self.pool.changed.notify_one();
         }
     }
 }
 
-static CONNECT_LIMIT: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
+static BRIDGE_LIMIT: OnceLock<PermitPool> = OnceLock::new();
+static CONNECT_LIMIT: OnceLock<PermitPool> = OnceLock::new();
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,12 +80,48 @@ struct ClientFrame<'a> {
     payload: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ServerFrame {
     request_id: String,
     kind: String,
     payload: Value,
+}
+
+enum ReaderMessage {
+    Ready,
+    Frame(ServerFrame),
+    Error(String),
+}
+
+struct BridgeRunError {
+    code: String,
+    connected_for: Option<Duration>,
+}
+
+fn bridge_identity(plan: &SshLaunchPlan) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        plan.host,
+        plan.port,
+        plan.username,
+        plan.config_alias,
+        plan.auth_mode,
+        plan.identity_file,
+        plan.credential_ref,
+        plan.jump_target,
+        plan.proxy_type,
+        plan.proxy_host,
+        plan.proxy_port,
+        plan.proxy_command,
+        plan.agent_path,
+        plan.agent_installation_id,
+        plan.agent_remote_machine_id,
+        plan.client_instance_id,
+        plan.connect_timeout_sec,
+        plan.server_alive_interval_sec,
+        plan.server_alive_count_max,
+    )
 }
 
 struct BridgeControl {
@@ -82,12 +141,21 @@ impl BridgeControl {
 
     fn stop(&self) {
         self.stop.store(true, Ordering::Release);
+        self.terminate_current_child();
+    }
+
+    fn terminate_current_child(&self) {
         if let Ok(mut child) = self.child.lock() {
-            if let Some(child) = child.as_mut() {
-                let _ = child.kill();
+            if let Some(mut child) = child.take() {
+                terminate_child(&mut child);
             }
         }
     }
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 struct BridgeEntry {
@@ -134,45 +202,24 @@ impl SshAgentBridgeManager {
         {
             return;
         }
-        let identity = format!(
-            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
-            plan.host,
-            plan.port,
-            plan.username,
-            plan.config_alias,
-            plan.auth_mode,
-            plan.identity_file,
-            plan.credential_ref,
-            plan.jump_target,
-            plan.proxy_type,
-            plan.proxy_host,
-            plan.proxy_port,
-            plan.proxy_command,
-            plan.agent_path,
-            plan.agent_installation_id,
-            plan.agent_remote_machine_id,
-            plan.client_instance_id,
-            plan.connect_timeout_sec,
-            plan.server_alive_interval_sec,
-            plan.server_alive_count_max,
-        );
+        let identity = bridge_identity(plan);
         let mut bridges = match self.bridges.lock() {
             Ok(bridges) => bridges,
             Err(_) => return,
         };
         let mut sessions = HashSet::from([session_id.to_string()]);
+        let mut replaced_control = None;
         if let Some(existing) = bridges.get_mut(&plan.host_id) {
             if existing.identity == identity && !existing.control.finished.load(Ordering::Acquire) {
                 existing.sessions.insert(session_id.to_string());
                 return;
             }
             sessions.extend(existing.sessions.iter().cloned());
-            existing.control.stop();
+            replaced_control = Some(Arc::clone(&existing.control));
         }
         let control = Arc::new(BridgeControl::new());
         let thread_control = Arc::clone(&control);
         let thread_plan = plan.clone();
-        thread::spawn(move || run_bridge_loop(host, thread_plan, thread_control));
         bridges.insert(
             plan.host_id.clone(),
             BridgeEntry {
@@ -181,6 +228,11 @@ impl SshAgentBridgeManager {
                 control,
             },
         );
+        drop(bridges);
+        if let Some(replaced_control) = replaced_control {
+            replaced_control.stop();
+        }
+        thread::spawn(move || run_bridge_loop(host, thread_plan, thread_control));
     }
 
     pub fn release(&self, host_id: &str, session_id: &str) {
@@ -192,10 +244,10 @@ impl SshAgentBridgeManager {
             entry.sessions.remove(session_id);
             entry.sessions.is_empty()
         });
-        if remove {
-            if let Some(entry) = bridges.remove(host_id) {
-                entry.control.stop();
-            }
+        let removed = remove.then(|| bridges.remove(host_id)).flatten();
+        drop(bridges);
+        if let Some(entry) = removed {
+            entry.control.stop();
         }
     }
 }
@@ -256,11 +308,112 @@ fn read_preamble(reader: &mut BufReader<impl Read>) -> Result<(), String> {
         }
         let text = std::str::from_utf8(&line)
             .map_err(|_| "ssh_agent_bridge_preamble_invalid".to_string())?;
-        if text.starts_with("CLI_MANAGER_SSH_AGENT/1 ") {
-            break;
+        if let Some(nonce) = text
+            .trim_end_matches(['\r', '\n'])
+            .strip_prefix("CLI_MANAGER_SSH_AGENT/1 ")
+        {
+            if nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Ok(());
+            }
+            return Err("ssh_agent_bridge_preamble_invalid".to_string());
         }
     }
-    Ok(())
+}
+
+fn spawn_reader(
+    reader: impl Read + Send + 'static,
+    sender: SyncSender<ReaderMessage>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        match read_preamble(&mut reader) {
+            Ok(()) => {
+                if sender.send(ReaderMessage::Ready).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(ReaderMessage::Error(error));
+                return;
+            }
+        }
+        loop {
+            match read_frame(&mut reader) {
+                Ok(frame) => {
+                    if sender.send(ReaderMessage::Frame(frame)).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(ReaderMessage::Error(error));
+                    return;
+                }
+            }
+        }
+    })
+}
+
+fn spawn_stderr_reader(
+    mut reader: impl Read + Send + 'static,
+    captured: Arc<Mutex<Vec<u8>>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = reader.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            if let Ok(mut output) = captured.lock() {
+                let remaining = MAX_STDERR_BYTES.saturating_sub(output.len());
+                output.extend_from_slice(&buffer[..read.min(remaining)]);
+            }
+        }
+    })
+}
+
+fn classify_bridge_stderr(bytes: &[u8]) -> Option<&'static str> {
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    if [
+        "permission denied",
+        "authentication failed",
+        "no supported authentication methods",
+        "enter passphrase",
+        "keyboard-interactive",
+    ]
+    .iter()
+    .any(|pattern| text.contains(pattern))
+    {
+        return Some("ssh_interactive_auth_required");
+    }
+    if text.contains("host key verification failed")
+        || text.contains("remote host identification has changed")
+    {
+        return Some("ssh_host_key_verification_required");
+    }
+    None
+}
+
+fn receive_ready(receiver: &Receiver<ReaderMessage>, timeout: Duration) -> Result<(), String> {
+    match receiver.recv_timeout(timeout) {
+        Ok(ReaderMessage::Ready) => Ok(()),
+        Ok(ReaderMessage::Error(error)) => Err(error),
+        Ok(ReaderMessage::Frame(_)) => Err("ssh_agent_bridge_preamble_invalid".to_string()),
+        Err(RecvTimeoutError::Timeout) => Err("ssh_agent_bridge_handshake_timeout".to_string()),
+        Err(RecvTimeoutError::Disconnected) => Err("ssh_agent_bridge_read_failed".to_string()),
+    }
+}
+
+fn receive_frame(
+    receiver: &Receiver<ReaderMessage>,
+    timeout: Duration,
+) -> Result<ServerFrame, String> {
+    match receiver.recv_timeout(timeout) {
+        Ok(ReaderMessage::Frame(frame)) => Ok(frame),
+        Ok(ReaderMessage::Error(error)) => Err(error),
+        Ok(ReaderMessage::Ready) => Err("ssh_agent_bridge_preamble_invalid".to_string()),
+        Err(RecvTimeoutError::Timeout) => Err("ssh_agent_bridge_response_timeout".to_string()),
+        Err(RecvTimeoutError::Disconnected) => Err("ssh_agent_bridge_read_failed".to_string()),
+    }
 }
 
 fn checked_response(frame: ServerFrame, request_id: &str, kind: &str) -> Result<Value, String> {
@@ -272,6 +425,13 @@ fn checked_response(frame: ServerFrame, request_id: &str, kind: &str) -> Result<
             .payload
             .get("code")
             .and_then(Value::as_str)
+            .filter(|code| {
+                !code.is_empty()
+                    && code.len() <= 128
+                    && code
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            })
             .unwrap_or("ssh_agent_bridge_remote_error")
             .to_string());
     }
@@ -281,36 +441,142 @@ fn checked_response(frame: ServerFrame, request_id: &str, kind: &str) -> Result<
     Ok(frame.payload)
 }
 
+fn validate_hook_batch(payload: &Value, cursor: u64) -> Result<(&[Value], u64), String> {
+    let events = payload
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ssh_agent_bridge_hook_batch_invalid".to_string())?;
+    let latest = payload
+        .get("latestSequence")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "ssh_agent_bridge_hook_batch_invalid".to_string())?;
+    if events.len() > 128 || latest < cursor {
+        return Err("ssh_agent_bridge_hook_batch_invalid".to_string());
+    }
+    let mut previous = cursor;
+    for event in events {
+        let sequence = event
+            .get("sequence")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "ssh_agent_bridge_hook_batch_invalid".to_string())?;
+        if sequence <= previous || sequence > latest {
+            return Err("ssh_agent_bridge_hook_batch_invalid".to_string());
+        }
+        previous = sequence;
+    }
+    if previous != latest {
+        return Err("ssh_agent_bridge_hook_batch_invalid".to_string());
+    }
+    Ok((events.as_slice(), latest))
+}
+
+fn request(
+    writer: &mut impl Write,
+    receiver: &Receiver<ReaderMessage>,
+    request_id: String,
+    kind: &str,
+    payload: Value,
+    response_kind: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    write_frame(
+        writer,
+        &ClientFrame {
+            request_id: request_id.clone(),
+            kind,
+            payload,
+        },
+    )?;
+    checked_response(
+        receive_frame(receiver, timeout)?,
+        &request_id,
+        response_kind,
+    )
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn retry_delay(attempt: usize, seed: &str) -> Duration {
+    let base = RETRY_BASE_SECONDS[attempt.min(RETRY_BASE_SECONDS.len() - 1)] * 1_000;
+    let span = base / 5;
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    let offset =
+        (hasher.finish() % (span.saturating_mul(2).saturating_add(1))) as i64 - span as i64;
+    Duration::from_millis((base as i64 + offset).max(1) as u64)
+}
+
+fn wait_for_retry(control: &BridgeControl, delay: Duration) -> bool {
+    let deadline = Instant::now() + delay;
+    while !control.stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        thread::sleep(remaining.min(Duration::from_millis(250)));
+    }
+    false
+}
+
+fn permanent_bridge_error(error: &str) -> bool {
+    matches!(
+        error,
+        "ssh_interactive_auth_required"
+            | "bridge_installation_id_mismatch"
+            | "ssh_agent_identity_changed"
+            | "ssh_agent_identity_required"
+            | "ssh_host_key_verification_required"
+            | "agent_installation_record_missing"
+            | "bridge_client_instance_invalid"
+            | "bridge_host_id_invalid"
+            | "bridge_installation_id_invalid"
+            | "ssh_agent_bridge_protocol_incompatible"
+    )
+}
+
 fn run_bridge_loop(host: Weak<DaemonHost>, plan: SshLaunchPlan, control: Arc<BridgeControl>) {
-    let mut backoff = Duration::from_secs(1);
+    let Some(_bridge_permit) =
+        CounterPermit::acquire(&BRIDGE_LIMIT, MAX_CONCURRENT_BRIDGES, &control)
+    else {
+        control.finished.store(true, Ordering::Release);
+        return;
+    };
+    let mut attempt = 0usize;
     let mut dedup = EventDedup::default();
     while !control.stop.load(Ordering::Acquire) {
         match run_bridge_once(&host, &plan, &control, &mut dedup) {
             Ok(()) => break,
-            Err(error) => {
+            Err(failure) => {
                 log::warn!(
                     "SSH Agent bridge stopped for host {}: {}",
                     plan.host_id,
-                    error
+                    failure.code
                 );
-                if matches!(
-                    error.as_str(),
-                    "ssh_interactive_auth_required"
-                        | "bridge_installation_id_mismatch"
-                        | "ssh_agent_identity_changed"
-                        | "ssh_agent_identity_required"
-                        | "bridge_already_active"
-                        | "ssh_agent_bridge_protocol_incompatible"
-                ) {
+                if permanent_bridge_error(&failure.code) {
                     break;
+                }
+                if failure
+                    .connected_for
+                    .is_some_and(|duration| duration >= STABLE_CONNECTION_RESET)
+                {
+                    attempt = 0;
                 }
             }
         }
         if control.stop.load(Ordering::Acquire) {
             break;
         }
-        thread::sleep(backoff);
-        backoff = (backoff * 2).min(Duration::from_secs(30));
+        let delay = retry_delay(attempt, &plan.host_id);
+        attempt = attempt.saturating_add(1).min(RETRY_BASE_SECONDS.len() - 1);
+        if !wait_for_retry(&control, delay) {
+            break;
+        }
     }
     control.finished.store(true, Ordering::Release);
 }
@@ -320,9 +586,25 @@ fn run_bridge_once(
     plan: &SshLaunchPlan,
     control: &Arc<BridgeControl>,
     dedup: &mut EventDedup,
+) -> Result<(), BridgeRunError> {
+    let mut connected_at = None;
+    run_bridge_once_inner(host, plan, control, dedup, &mut connected_at).map_err(|code| {
+        BridgeRunError {
+            code,
+            connected_for: connected_at.map(|started: Instant| started.elapsed()),
+        }
+    })
+}
+
+fn run_bridge_once_inner(
+    host: &Weak<DaemonHost>,
+    plan: &SshLaunchPlan,
+    control: &Arc<BridgeControl>,
+    dedup: &mut EventDedup,
+    connected_at: &mut Option<Instant>,
 ) -> Result<(), String> {
-    let connect_permit =
-        ConnectPermit::acquire(control).ok_or_else(|| "ssh_agent_bridge_stopped".to_string())?;
+    let connect_permit = CounterPermit::acquire(&CONNECT_LIMIT, MAX_CONCURRENT_CONNECTS, control)
+        .ok_or_else(|| "ssh_agent_bridge_stopped".to_string())?;
     let launch = plan.build_agent_bridge_launch()?;
     let mut command = silent_command(&launch.executable);
     command
@@ -334,57 +616,71 @@ fn run_bridge_once(
     let mut child = command
         .spawn()
         .map_err(|_| "ssh_agent_bridge_spawn_failed".to_string())?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "ssh_agent_bridge_stdin_missing".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ssh_agent_bridge_stdout_missing".to_string())?;
+    let Some(stdin) = child.stdin.take() else {
+        terminate_child(&mut child);
+        return Err("ssh_agent_bridge_stdin_missing".to_string());
+    };
+    let Some(stdout) = child.stdout.take() else {
+        terminate_child(&mut child);
+        return Err("ssh_agent_bridge_stdout_missing".to_string());
+    };
     let stderr = child.stderr.take();
-    if let Some(stderr) = stderr {
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut buffer = [0u8; 4096];
-            while reader.read(&mut buffer).ok().is_some_and(|read| read > 0) {}
-        });
+    let stderr_output = Arc::new(Mutex::new(Vec::new()));
+    let stderr_handle =
+        stderr.map(|stderr| spawn_stderr_reader(stderr, Arc::clone(&stderr_output)));
+    let Ok(mut child_slot) = control.child.lock() else {
+        terminate_child(&mut child);
+        return Err("ssh_agent_bridge_state_failed".to_string());
+    };
+    *child_slot = Some(child);
+    drop(child_slot);
+    if control.stop.load(Ordering::Acquire) {
+        control.terminate_current_child();
+        if let Some(stderr_handle) = stderr_handle {
+            let _ = stderr_handle.join();
+        }
+        return Err("ssh_agent_bridge_stopped".to_string());
     }
-    *control
-        .child
-        .lock()
-        .map_err(|_| "ssh_agent_bridge_state_failed".to_string())? = Some(child);
 
+    let (reader_sender, reader_receiver) = mpsc::sync_channel(READER_QUEUE_CAPACITY);
+    let reader_handle = spawn_reader(stdout, reader_sender);
     let result = (|| {
-        let mut reader = BufReader::new(stdout);
         let mut writer = BufWriter::new(stdin);
-        read_preamble(&mut reader)?;
-        let hello_id = "hello-1";
-        write_frame(
+        let handshake_timeout = Duration::from_secs(plan.connect_timeout_sec.saturating_add(10))
+            .min(MAX_HANDSHAKE_TIMEOUT);
+        receive_ready(&reader_receiver, handshake_timeout)?;
+        let hello = request(
             &mut writer,
-            &ClientFrame {
-                request_id: hello_id.to_string(),
-                kind: "hello",
-                payload: json!({
-                    "hostId": plan.host_id,
-                    "clientInstanceId": plan.client_instance_id,
-                    "installationId": plan.agent_installation_id,
-                }),
-            },
+            &reader_receiver,
+            "hello-1".to_string(),
+            "hello",
+            json!({
+                "hostId": plan.host_id,
+                "clientInstanceId": plan.client_instance_id,
+                "installationId": plan.agent_installation_id,
+            }),
+            "helloOk",
+            RESPONSE_TIMEOUT,
         )?;
-        let hello = checked_response(read_frame(&mut reader)?, hello_id, "helloOk")?;
         if hello.get("protocolMajor").and_then(Value::as_u64) != Some(1) {
             return Err("ssh_agent_bridge_protocol_incompatible".to_string());
         }
-        if !hello
+        let capabilities = hello
             .get("capabilities")
             .and_then(Value::as_array)
-            .is_some_and(|capabilities| {
-                capabilities
-                    .iter()
-                    .any(|value| value.as_str() == Some("hookSpool"))
-            })
-        {
+            .ok_or_else(|| "ssh_agent_bridge_protocol_incompatible".to_string())?;
+        if [
+            "hookSpool",
+            "heartbeat",
+            "requestCancellation",
+            "boundedBackpressure",
+        ]
+        .iter()
+        .any(|required| {
+            !capabilities
+                .iter()
+                .any(|value| value.as_str() == Some(*required))
+        }) {
             return Err("ssh_agent_bridge_protocol_incompatible".to_string());
         }
         if hello.get("remoteMachineId").and_then(Value::as_str)
@@ -392,29 +688,24 @@ fn run_bridge_once(
         {
             return Err("ssh_agent_identity_changed".to_string());
         }
+        *connected_at = Some(Instant::now());
         drop(connect_permit);
         let mut cursor = 0u64;
-        let mut request = 2u64;
+        let mut request_number = 2u64;
+        let mut last_heartbeat = Instant::now();
         while !control.stop.load(Ordering::Acquire) {
-            let drain_id = format!("hook-drain-{request}");
-            request = request.saturating_add(1);
-            write_frame(
+            let drain_id = format!("hook-drain-{request_number}");
+            request_number = request_number.saturating_add(1);
+            let payload = request(
                 &mut writer,
-                &ClientFrame {
-                    request_id: drain_id.clone(),
-                    kind: "hookDrain",
-                    payload: json!({ "afterSequence": cursor, "limit": 128, "waitMs": 2000 }),
-                },
+                &reader_receiver,
+                drain_id,
+                "hookDrain",
+                json!({ "afterSequence": cursor, "limit": 128, "waitMs": HOOK_DRAIN_WAIT_MS }),
+                "hookBatch",
+                Duration::from_millis(HOOK_DRAIN_WAIT_MS) + RESPONSE_TIMEOUT,
             )?;
-            let payload = checked_response(read_frame(&mut reader)?, &drain_id, "hookBatch")?;
-            let events = payload
-                .get("events")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "ssh_agent_bridge_hook_batch_invalid".to_string())?;
-            let latest = payload
-                .get("latestSequence")
-                .and_then(Value::as_u64)
-                .unwrap_or(cursor);
+            let (events, latest) = validate_hook_batch(&payload, cursor)?;
             for event in events {
                 if event.get("kind").and_then(Value::as_str) == Some("gap") {
                     let Some(sequence) = event.get("sequence").and_then(Value::as_u64) else {
@@ -450,27 +741,57 @@ fn run_bridge_once(
                 }
             }
             if latest > cursor {
-                let ack_id = format!("hook-ack-{request}");
-                request = request.saturating_add(1);
-                write_frame(
+                let ack_id = format!("hook-ack-{request_number}");
+                request_number = request_number.saturating_add(1);
+                let ack = request(
                     &mut writer,
-                    &ClientFrame {
-                        request_id: ack_id.clone(),
-                        kind: "hookAck",
-                        payload: json!({ "throughSequence": latest }),
-                    },
+                    &reader_receiver,
+                    ack_id,
+                    "hookAck",
+                    json!({ "throughSequence": latest }),
+                    "response",
+                    RESPONSE_TIMEOUT,
                 )?;
-                checked_response(read_frame(&mut reader)?, &ack_id, "response")?;
+                if ack.get("accepted").and_then(Value::as_bool) != Some(true)
+                    || ack.get("throughSequence").and_then(Value::as_u64) != Some(latest)
+                {
+                    return Err("ssh_agent_bridge_ack_invalid".to_string());
+                }
                 cursor = latest;
+            }
+            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                let ping_id = format!("ping-{request_number}");
+                request_number = request_number.saturating_add(1);
+                let sent_at = now_ms();
+                let pong = request(
+                    &mut writer,
+                    &reader_receiver,
+                    ping_id,
+                    "ping",
+                    json!({ "sentAt": sent_at }),
+                    "pong",
+                    RESPONSE_TIMEOUT,
+                )?;
+                if pong.get("sentAt").and_then(Value::as_u64) != Some(sent_at) {
+                    return Err("ssh_agent_bridge_heartbeat_invalid".to_string());
+                }
+                last_heartbeat = Instant::now();
             }
         }
         Ok(())
     })();
 
-    if let Ok(mut child) = control.child.lock() {
-        if let Some(mut child) = child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    drop(reader_receiver);
+    control.terminate_current_child();
+    let _ = reader_handle.join();
+    if let Some(stderr_handle) = stderr_handle {
+        let _ = stderr_handle.join();
+    }
+    if result.is_err() && connected_at.is_none() {
+        if let Ok(stderr) = stderr_output.lock() {
+            if let Some(code) = classify_bridge_stderr(&stderr) {
+                return Err(code.to_string());
+            }
         }
     }
     result
@@ -478,8 +799,17 @@ fn run_bridge_once(
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_response, ClientFrame, EventDedup, ServerFrame, DEDUP_EVENT_IDS};
+    use super::{
+        checked_response, classify_bridge_stderr, permanent_bridge_error, read_preamble,
+        receive_frame, retry_delay, validate_hook_batch, BridgeControl, BridgeEntry, ClientFrame,
+        CounterPermit, EventDedup, PermitPool, ServerFrame, SshAgentBridgeManager, DEDUP_EVENT_IDS,
+    };
     use serde_json::json;
+    use std::collections::{HashMap, HashSet};
+    use std::io::{BufReader, Cursor};
+    use std::sync::atomic::Ordering;
+    use std::sync::{mpsc, Arc, OnceLock};
+    use std::time::Duration;
 
     #[test]
     fn bridge_frames_require_matching_request_ids() {
@@ -503,6 +833,50 @@ mod tests {
     }
 
     #[test]
+    fn remote_error_codes_are_short_and_stable() {
+        let error = checked_response(
+            ServerFrame {
+                request_id: "request-1".to_string(),
+                kind: "error".to_string(),
+                payload: json!({ "code": "x".repeat(129) }),
+            },
+            "request-1",
+            "response",
+        )
+        .unwrap_err();
+        assert_eq!(error, "ssh_agent_bridge_remote_error");
+    }
+
+    #[test]
+    fn hook_batch_requires_monotonic_sequences_and_exact_latest() {
+        assert!(validate_hook_batch(
+            &json!({
+                "events": [
+                    { "sequence": 2, "kind": "gap" },
+                    { "sequence": 3, "kind": "hookEvent" }
+                ],
+                "latestSequence": 3
+            }),
+            1,
+        )
+        .is_ok());
+        assert_eq!(
+            validate_hook_batch(
+                &json!({
+                    "events": [
+                        { "sequence": 3, "kind": "hookEvent" },
+                        { "sequence": 2, "kind": "gap" }
+                    ],
+                    "latestSequence": 3
+                }),
+                1,
+            )
+            .unwrap_err(),
+            "ssh_agent_bridge_hook_batch_invalid"
+        );
+    }
+
+    #[test]
     fn dedup_window_covers_the_bounded_agent_spool() {
         let mut dedup = EventDedup::default();
         for index in 0..DEDUP_EVENT_IDS {
@@ -511,5 +885,93 @@ mod tests {
         assert!(!dedup.insert("event-0"));
         assert!(dedup.insert("gap:10001"));
         assert!(!dedup.insert("gap:10001"));
+    }
+
+    #[test]
+    fn preamble_is_bounded_and_requires_a_hex_nonce() {
+        let mut valid = BufReader::new(Cursor::new(
+            b"login banner\nCLI_MANAGER_SSH_AGENT/1 0123456789abcdef0123456789abcdef\n",
+        ));
+        read_preamble(&mut valid).unwrap();
+
+        let mut invalid =
+            BufReader::new(Cursor::new(b"CLI_MANAGER_SSH_AGENT/1 not-a-valid-nonce\n"));
+        assert_eq!(
+            read_preamble(&mut invalid).unwrap_err(),
+            "ssh_agent_bridge_preamble_invalid"
+        );
+    }
+
+    #[test]
+    fn response_wait_has_a_hard_timeout() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        assert_eq!(
+            receive_frame(&receiver, Duration::from_millis(1)).unwrap_err(),
+            "ssh_agent_bridge_response_timeout"
+        );
+    }
+
+    #[test]
+    fn reconnect_jitter_stays_within_twenty_percent() {
+        for (attempt, base) in [1u64, 2, 5, 10, 30, 60].into_iter().enumerate() {
+            let delay = retry_delay(attempt, "host-1").as_millis() as u64;
+            assert!(delay >= base * 800);
+            assert!(delay <= base * 1_200);
+        }
+    }
+
+    #[test]
+    fn active_remote_bridge_is_retried_for_takeover() {
+        assert!(!permanent_bridge_error("bridge_already_active"));
+        assert!(permanent_bridge_error(
+            "ssh_agent_bridge_protocol_incompatible"
+        ));
+    }
+
+    #[test]
+    fn bridge_stderr_classifies_auth_and_host_key_without_logging_raw_text() {
+        assert_eq!(
+            classify_bridge_stderr(b"user@example: Permission denied (publickey)."),
+            Some("ssh_interactive_auth_required")
+        );
+        assert_eq!(
+            classify_bridge_stderr(b"REMOTE HOST IDENTIFICATION HAS CHANGED"),
+            Some("ssh_host_key_verification_required")
+        );
+        assert_eq!(classify_bridge_stderr(b"connection reset by peer"), None);
+        assert!(permanent_bridge_error("ssh_host_key_verification_required"));
+    }
+
+    #[test]
+    fn permit_pool_enforces_the_configured_limit() {
+        let state: &'static OnceLock<PermitPool> = Box::leak(Box::new(OnceLock::new()));
+        let first_control = BridgeControl::new();
+        let first = CounterPermit::acquire(state, 1, &first_control).unwrap();
+        let stopped = BridgeControl::new();
+        stopped.stop.store(true, Ordering::Release);
+        assert!(CounterPermit::acquire(state, 1, &stopped).is_none());
+        drop(first);
+        assert!(CounterPermit::acquire(state, 1, &BridgeControl::new()).is_some());
+    }
+
+    #[test]
+    fn bridge_stays_alive_until_the_last_session_releases() {
+        let control = Arc::new(BridgeControl::new());
+        let manager = SshAgentBridgeManager {
+            bridges: std::sync::Mutex::new(HashMap::from([(
+                "host-1".to_string(),
+                BridgeEntry {
+                    identity: "identity".to_string(),
+                    sessions: HashSet::from(["session-1".to_string(), "session-2".to_string()]),
+                    control: Arc::clone(&control),
+                },
+            )])),
+        };
+        manager.release("host-1", "session-1");
+        assert_eq!(manager.bridges.lock().unwrap().len(), 1);
+        assert!(!control.stop.load(Ordering::Acquire));
+        manager.release("host-1", "session-2");
+        assert!(manager.bridges.lock().unwrap().is_empty());
+        assert!(control.stop.load(Ordering::Acquire));
     }
 }

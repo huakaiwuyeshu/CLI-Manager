@@ -4,7 +4,7 @@ use cli_manager_hook_schema::{normalize_hook_input, NormalizedHookInput};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -15,6 +15,7 @@ const MAX_SPOOL_BYTES: u64 = 32 * 1024 * 1024;
 const SPOOL_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const COMPACT_INTERVAL_MS: u64 = 60 * 1000;
 const SPOOL_LOCK_STALE_SECS: u64 = 300;
+const MAX_SPOOL_RECORD_BYTES: usize = 1024 * 1024;
 
 const CLAUDE_EVENTS: &[&str] = &[
     "SessionStart",
@@ -483,22 +484,98 @@ pub(crate) fn read_spool_batch(
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
     let spool_path = state_dir.join("spool").join(namespace).join("events.jsonl");
-    let bytes = fs::read(spool_path).unwrap_or_default();
-    if bytes.len() as u64 > MAX_SPOOL_BYTES.saturating_mul(2) {
+    let file = match File::open(&spool_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("hook_spool_read_failed".to_string()),
+    };
+    if file
+        .metadata()
+        .map_err(|_| "hook_spool_read_failed".to_string())?
+        .len()
+        > MAX_SPOOL_BYTES.saturating_mul(2)
+    {
         return Err("hook_spool_oversize".to_string());
     }
-    Ok(bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .filter(|value| {
-            value
-                .get("sequence")
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|sequence| sequence > after_sequence)
-        })
-        .take(limit.clamp(1, 256))
-        .collect())
+    let mut reader = BufReader::new(file);
+    let mut events = Vec::new();
+    let limit = limit.clamp(1, 256);
+    while events.len() < limit {
+        let mut line = Vec::new();
+        let read = (&mut reader)
+            .take(MAX_SPOOL_RECORD_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "hook_spool_read_failed".to_string())?;
+        if read == 0 {
+            break;
+        }
+        if line.len() > MAX_SPOOL_RECORD_BYTES || !line.ends_with(b"\n") {
+            return Err("hook_spool_record_too_large".to_string());
+        }
+        line.pop();
+        if line.ends_with(b"\r") {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let value = serde_json::from_slice::<serde_json::Value>(&line)
+            .map_err(|_| "hook_spool_record_invalid".to_string())?;
+        let sequence = value
+            .get("sequence")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "hook_spool_record_invalid".to_string())?;
+        if sequence > after_sequence {
+            events.push(value);
+        }
+    }
+    Ok(events)
+}
+
+fn write_unacked_spool(
+    input: File,
+    temporary: &Path,
+    through_sequence: u64,
+) -> Result<(u64, u64), String> {
+    let output = File::create(temporary).map_err(|_| "hook_spool_ack_write_failed".to_string())?;
+    let mut reader = BufReader::new(input);
+    let mut writer = BufWriter::new(output);
+    let mut count = 0u64;
+    let mut retained_bytes = 0u64;
+    loop {
+        let mut line = Vec::new();
+        let read = (&mut reader)
+            .take(MAX_SPOOL_RECORD_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "hook_spool_ack_read_failed".to_string())?;
+        if read == 0 {
+            break;
+        }
+        if line.len() > MAX_SPOOL_RECORD_BYTES || !line.ends_with(b"\n") {
+            return Err("hook_spool_record_too_large".to_string());
+        }
+        let sequence = serde_json::from_slice::<serde_json::Value>(&line)
+            .map_err(|_| "hook_spool_record_invalid".to_string())?
+            .get("sequence")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "hook_spool_record_invalid".to_string())?;
+        if sequence <= through_sequence {
+            continue;
+        }
+        writer
+            .write_all(&line)
+            .map_err(|_| "hook_spool_ack_write_failed".to_string())?;
+        count = count.saturating_add(1);
+        retained_bytes = retained_bytes.saturating_add(line.len() as u64);
+    }
+    writer
+        .flush()
+        .map_err(|_| "hook_spool_ack_write_failed".to_string())?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|_| "hook_spool_ack_write_failed".to_string())?;
+    Ok((count, retained_bytes))
 }
 
 pub(crate) fn ack_spool(
@@ -514,33 +591,26 @@ pub(crate) fn ack_spool(
     let spool_path = directory.join("events.jsonl");
     let meta_path = directory.join("meta.json");
     let current_meta = read_meta(&meta_path, &spool_path);
-    let bytes = fs::read(&spool_path).unwrap_or_default();
-    let mut output = Vec::new();
-    let mut count = 0;
-    for line in bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let sequence = serde_json::from_slice::<serde_json::Value>(line)
-            .ok()
-            .and_then(|value| value.get("sequence").and_then(serde_json::Value::as_u64))
-            .unwrap_or_default();
-        if sequence <= through_sequence {
-            continue;
-        }
-        output.extend_from_slice(line);
-        output.push(b'\n');
-        count += 1;
-    }
+    let input = match File::open(&spool_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("hook_spool_ack_read_failed".to_string()),
+    };
     let temporary = spool_path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
-    fs::write(&temporary, &output).map_err(|_| "hook_spool_ack_write_failed".to_string())?;
+    let (count, retained_bytes) = match write_unacked_spool(input, &temporary, through_sequence) {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+    };
     fs::rename(temporary, &spool_path).map_err(|_| "hook_spool_ack_promote_failed".to_string())?;
     write_json_atomic(
         &meta_path,
         &SpoolMeta {
             next_sequence: current_meta.next_sequence,
             count,
-            bytes: output.len() as u64,
+            bytes: retained_bytes,
             last_compact_at: current_meta.last_compact_at,
         },
     )
@@ -816,6 +886,32 @@ mod tests {
         let remaining = read_spool_batch(temp.path(), &namespace, 0, 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert!(remaining[0]["sequence"].as_u64().unwrap() > ack);
+    }
+
+    #[test]
+    fn malformed_spool_is_not_silently_dropped_by_read_or_ack() {
+        let temp = tempfile::tempdir().unwrap();
+        let namespace = "malformed";
+        let directory = temp.path().join("spool").join(namespace);
+        fs::create_dir_all(&directory).unwrap();
+        let spool_path = directory.join("events.jsonl");
+        fs::write(&spool_path, b"{not-json}\n").unwrap();
+        assert_eq!(
+            read_spool_batch(temp.path(), namespace, 0, 10).unwrap_err(),
+            "hook_spool_record_invalid"
+        );
+        assert_eq!(
+            ack_spool(temp.path(), namespace, 1).unwrap_err(),
+            "hook_spool_record_invalid"
+        );
+        assert_eq!(fs::read(&spool_path).unwrap(), b"{not-json}\n");
+        assert!(fs::read_dir(&directory).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("events.tmp-")
+        }));
     }
 
     #[cfg(unix)]

@@ -12,6 +12,7 @@
 - SSH Claude/Codex 终端注入按主机、客户端、项目、Tab 和 bridge epoch 隔离的非敏感绑定；普通 SSH/IDE/tmux 启动因缺少绑定而快速 no-op。只有有效配置根已验证为 Hook `installed` 且 Agent 身份仍匹配时，每条活动主机配置才复用一个 daemon Agent bridge；断线事件进入 24 小时、10000 条或 32 MiB 的主机/客户端隔离 spool，重连后按 sequence 补发、ACK 删除、event id 去重并显示 gap 告警；远端路径不会交给本地 transcript API 或第三方通知。
 
 - SSH Hook 边界复审：远端 Hook 事件仍可进入本地 Replay 的事件列表，但远端 `cwd` 只作为不透明引用保存，不会被当作本地项目路径或触发本地 Git 快照；SSH PTY 创建链路在 Rust 侧同时忽略供应商启动参数。Hook spool 的 gap 记录也计入字节配额，已保存 Hook 状态的 symlink 卸载会校验旧 canonical 根，避免误操作改指后的目录。
+- SSH Agent bridge 升级为 protocol `1.1`：全局最多 4 条常驻 bridge、2 条并发连接/重连，preamble/hello/响应均有硬超时，10 秒 heartbeat 与 1/2/5/10/30/60 秒抖动退避负责断线恢复；旧 bridge socket 支持自动接管重试，最后一个 Host 会话关闭时会取消并回收 SSH 子进程。Hook spool 改为逐条有界读取与流式 ACK，损坏或超大记录不会被静默删除。
 
 ### 修复
 - 增强 WSL Codex 子任务转录诊断日志：记录 rollout 重试次数、累计耗时、后续间隔、停止原因、Hook 身份字段与最终内容源，并限制高频轮询仅在关键轮次落盘，便于排查“分屏已出现但文字延迟显示”。

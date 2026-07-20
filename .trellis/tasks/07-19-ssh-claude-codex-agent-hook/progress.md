@@ -8,7 +8,7 @@ This is the single execution tracker for the task. Research, product requirement
 | S02 | Shared transport and Agent probe | completed | transport parity, probe/error classification, protocol tests |
 | S03 | Agent install supply chain | completed | signature/hash/target/install/rollback tests |
 | S04 | Remote Hook lifecycle | completed | adapter merge, ownership, atomicity, spool tests |
-| S05 | Reusable Agent bridge runtime | pending | one-bridge invariant, reconnect, cancellation, shutdown tests |
+| S05 | Reusable Agent bridge runtime | completed | one-bridge invariant, reconnect, cancellation, shutdown tests |
 | S06 | Remote history indexing and cache | pending | parser/index/catalog/cursor/offline tests |
 | S07 | Remote session resume | pending | preflight/ownership/cwd/config-root routing tests |
 | S08 | Read-only remote file panel | pending | confinement/read limits/provider routing tests |
@@ -94,9 +94,29 @@ Final evidence: Agent `cargo fmt --check`; Agent tests `29 passed`; Agent Clippy
 
 ### S05 Reusable Agent bridge runtime
 
-- [ ] Maintain at most one reusable bridge per Host/client while PTYs remain independent.
-- [ ] Implement framing, capabilities, bounded preamble/hello handshake timeout, heartbeat, cancellation, backpressure, reconnect, and shutdown.
-- [ ] Verify connection counts, multi-window ownership, banner contamination, and authentication-required behavior.
+- [x] Maintain at most one reusable bridge per Host/client while PTYs remain independent.
+- [x] Implement framing, capabilities, bounded preamble/hello handshake timeout, heartbeat, cancellation, backpressure, reconnect, and shutdown.
+- [x] Verify connection counts, multi-window ownership, banner contamination, and authentication-required behavior.
+
+#### S05 Root-Cause And Discovery Record
+
+- GitNexus remained unavailable. Contract + `rg` tracing confirmed `SshAgentBridgeManager` is owned only by the daemon session create/close path, while Agent `run_bridge/handle_frame` is owned only by `bridge --stdio` and protocol tests.
+- Root cause 1: bridge stdout was read synchronously without a deadline, so a stuck preamble/hello could hold one of the two global connect permits indefinitely. A bounded reader thread and 32-frame sync queue now give preamble, hello, Hook drain, ACK, and heartbeat explicit receive deadlines.
+- Root cause 2: only concurrent connection attempts were limited; established bridges were unbounded. A lifetime permit now caps active/waiting bridge processes at four while the existing reconnect gate remains two.
+- Root cause 3: `bridge_already_active` was treated as permanent, so a replacement bridge could lose takeover during the old socket cleanup window. It now follows bounded jittered retry; permanent identity/protocol/authentication/Host Key failures still stop.
+- Root cause 4: bridge replacement and release killed/waited for SSH children while holding the global Host registry lock. Registration/removal is now atomic, then child shutdown happens after the map lock is released.
+- Root cause 5: bridge stderr was discarded, making `Permission denied`, passphrase/MFA, and Host Key failures indistinguishable from transient disconnects. The daemon drains all stderr, keeps at most 8 KiB in memory for classification, and logs only stable codes.
+- Root cause 6: spool drain and ACK loaded the complete file into memory for every batch. Both paths now stream bounded records; malformed/oversized records fail closed and ACK cleanup removes temporary files without replacing the original spool.
+- Boundary confirmation: protocol 1.1 adds only heartbeat/cancellation/backpressure and Hook delivery guards. No history/file/Git/provider RPC or remote path routing was introduced in S05; PTY processes remain independent and last-session release stops only the Host bridge.
+
+#### S05 Review Log
+
+1. Review 1 added the bounded reader, hard handshake/response timeouts, heartbeat, global bridge/connect permits, stable-period retry reset, +/-20% Host jitter, bounded cancellation registry, and last-session process reaping.
+2. Review 2 found transient socket takeover was incorrectly permanent and consumed cancellation IDs remained in eviction order. Fixed both and added regressions.
+3. Review 3 found malformed remote error/batch/ACK data could inflate logs or advance the cursor, and spool replay still allocated the full backlog. Added strict short-code, monotonic sequence/latest/ACK validation and streaming spool I/O.
+4. Review 4 found child shutdown under the registry lock, a spawn/stop race, and discarded authentication/Host Key stderr. Moved process waits outside the map lock, closed the race, added bounded sanitized classification, and found no further S05 issues.
+
+Final evidence: Agent protocol minor `1.1`; Agent `cargo fmt --check`; Agent tests `33 passed`; Agent Clippy with `-D warnings`; Linux x64/aarch64 Agent `cargo check --all-targets`; touched desktop Rust `rustfmt --check --config skip_children=true`; desktop `cargo check`; focused bridge tests `11 passed`; focused Agent probe tests `6 passed`; desktop full tests `584 passed, 1 ignored`; `npx tsc --noEmit`; `git diff --check`.
 
 ### S06 Remote history indexing and cache
 

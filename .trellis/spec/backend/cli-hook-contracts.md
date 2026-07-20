@@ -526,6 +526,7 @@ Reserved launch environment: `CLI_MANAGER_SSH_HOST_ID`, `CLI_MANAGER_SSH_CLIENT_
 - Hook stdin is bounded; shared normalization feeds local and remote paths. Remote spool removes prompt/message before persistence.
 - Daemon validates Host/client/project/Tab/epoch/installation/source against a live PTY before routing. Remote transcript refs stay in `remoteTranscriptRef` fields and never enter local transcript/file commands.
 - Delivery is at least once from Agent to daemon, then deduplicated by event id. Spool uses monotonic sequence, ACK deletion, TTL/count/byte limits, and sequenced gap warnings.
+- The reusable bridge is protocol `1.1`: bounded preamble/response deadlines, 10-second heartbeat, global four-bridge/two-reconnect gates, bounded cancellation/backpressure, takeover retry, and streaming spool read/ACK apply before Hook delivery.
 - `ClaudeHookPayload::to_notification_job` must clear SSH cwd. Third-party notifications never receive remote cwd, transcript refs, Host/project/session/Tab identity, or prompt text.
 
 ### 4. Validation & Error Matrix

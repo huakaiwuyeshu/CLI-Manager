@@ -4,7 +4,7 @@
 
 Apply this contract when changing `cli-manager-ssh-agent`, shared SSH transport generation, one-shot Agent probes, Agent installation metadata, bridge framing, or the SSH Host CLI Integration status UI.
 
-The delivered scope includes explicit one-shot probe/install lifecycle, remote Claude/Codex Hook configuration, the one-shot Hook runtime, and one reusable daemon-owned Hook spool bridge per active SSH Host. History, files, Git, historical stats, generic bridge RPC scheduling, heartbeat, and idle subscriptions remain separate stages.
+The delivered scope includes explicit one-shot probe/install lifecycle, remote Claude/Codex Hook configuration, the one-shot Hook runtime, and one reusable daemon-owned protocol `1.1` bridge per active SSH Host. History, files, Git, historical stats, and their domain RPCs remain separate stages.
 
 ## 2. Signatures
 
@@ -91,6 +91,7 @@ Frames use a four-byte big-endian length followed by UTF-8 JSON. The maximum fra
 - Protocol major mismatch is incompatible. Protocol minor differences are handled later through capabilities. The first supported Agent target matrix is Linux `x86_64` and `aarch64`.
 - `ssh_agent_installations` preserves last-known sanitized metadata on unreachable/authentication-required probes, but a confirmed `notInstalled` result clears stale version/path metadata.
 - Bridge `--protocol` is mandatory. A clean EOF before a frame starts is normal; a partial four-byte length or payload is a protocol error.
+- A healthy Agent must report protocol major 1 and minor 1 or newer. Minor 1 advertises `heartbeat`, `requestCancellation`, and `boundedBackpressure`; older minor versions remain upgradeable but are not marked usable by the current desktop.
 - Desktop install and the HTTP(S) script consume the same schema-1 release manifest and Tauri updater Minisign trust root. The signature covers manifest bytes; the manifest pins channel, semantic version, protocol range, Linux target, URL, size, and SHA-256.
 - Release URLs default to HTTPS. HTTP requires explicit user opt-in, never permits embedded credentials, query strings, or fragments, and still requires a valid signature. Manifest, signature, and artifact downloads are bounded.
 - Install preview is read-only. Confirmation re-fetches and re-verifies the manifest before downloading or opening SSH, preventing a stale preview from authorizing different bytes.
@@ -110,6 +111,14 @@ Frames use a four-byte big-endian length followed by UTF-8 JSON. The maximum fra
 - Spool/socket namespace is `SHA-256(hostId, clientInstanceId, installationId)`. It is bounded by 24 hours, 10000 records, and 32 MiB; overflow emits a sequenced `gap`. A stale PID lock is recoverable, JSONL/meta divergence rebuilds monotonic sequence state, ACK removes only confirmed records, and reconnect dedup covers the full bounded spool.
 - Bridge hello requires Host/client/installation identity and reports remote machine identity. The desktop also validates every event against the live daemon session's Host/client/project/Tab/epoch/installation/source binding before routing it to the existing Hook sink.
 - SSH PTY launch injects Agent bridge identity only when the effective Host/source/configured root has a locally validated `installed` Hook report whose Agent installation and remote machine identities still match. Agent installation alone must not create a background Hook bridge.
+- The daemon owns one bridge entry per Host/client connection fingerprint while every PTY remains independent. Address, SSH user/config alias, auth, identity/credential reference, jump/proxy settings, Agent identity/path, ConnectTimeout, or KeepAlive changes replace the old bridge without holding the global registry lock during process shutdown.
+- At most four bridge processes and two concurrent connect/reconnect handshakes run globally. A fifth active Host waits without opening SSH; releasing its last session cancels that wait. Probe/install one-shot processes do not consume a bridge permit.
+- Bridge stdout is consumed by a bounded 32-frame reader queue. Login banner plus preamble must complete within `min(ConnectTimeout + 10s, 60s)`; hello, ACK, ping, and ordinary responses have a 10-second bound. Timeout or disconnect kills/reaps the local SSH child before retry.
+- Bridge stderr is always drained but only the first 8 KiB is retained in memory for classification. Permission/passphrase/keyboard-interactive failures become `ssh_interactive_auth_required`; Host Key failures become `ssh_host_key_verification_required`; raw stderr is never persisted or logged.
+- Application heartbeat uses ping/pong every 10 seconds in addition to OpenSSH KeepAlive. Reconnect uses 1/2/5/10/30/60-second backoff with deterministic +/-20% Host jitter, resets after a connection survives 30 seconds, and limits `bridge_already_active` to a retried takeover state instead of a permanent failure.
+- Cancellation IDs are validated and held in a bounded 1024-entry registry. Unknown frame kinds return a versioned error without closing the bridge; invalid request IDs/kinds, oversized frames, contaminated preamble/frame streams, or malformed response identities close it.
+- Hook batches are accepted only when at most 128 records have strictly increasing sequences above the current cursor and the final sequence equals `latestSequence`; ACK must echo `accepted=true` and the exact sequence. Remote error codes are limited to 128 ASCII identifier bytes before logging.
+- Spool drain and ACK use bounded per-record streaming rather than loading the full 32 MiB file. A malformed or over-1-MiB record fails closed and preserves the original spool; ACK temporary files are removed on failure.
 - Agent uninstall returns `agent_managed_hooks_present` while any Agent Hook installation record remains. Hook uninstall does not delete the configured root, future history source identity, or unrelated Agent state.
 - If a custom config root was deleted externally, install/inspect still report it missing, but preview-uninstall/uninstall may recover exactly one matching canonical identity from the bounded Agent-owned record set and remove that stale record without recreating the directory. Retained-root cleanup also sends the previously validated `expectedCanonicalRoot`; if the configured path is a symlink that now resolves elsewhere, only an exact unique Agent record may route cleanup back to the old canonical root. Ambiguous, missing, invalid, or retargeted canonical records fail closed.
 - Remote Hook third-party notification jobs omit remote cwd, transcript refs, Host/project/session/Tab identifiers, and prompt text.
@@ -142,6 +151,12 @@ Frames use a four-byte big-endian length followed by UTF-8 JSON. The maximum fra
 | `bridge --stdio` omits `--protocol` | `bridge_protocol_required` |
 | Frame length is zero or over 1 MiB | `frame_size_invalid` |
 | EOF occurs after only part of the length prefix | `frame_length_read_failed:*` |
+| Preamble/hello exceeds its deadline | kill/reap SSH child, release connect permit, retry with bounded backoff |
+| Required protocol minor/capability is absent | probe `incompatible` / bridge `ssh_agent_bridge_protocol_incompatible` |
+| Old bridge still owns the Host/client socket | retry `bridge_already_active` until takeover or cancellation |
+| SSH stderr indicates interactive authentication or Host Key action | stop background retry with a stable sanitized code |
+| Hook batch sequence/latest/ACK mismatch | close bridge without advancing the cursor |
+| Spool record is malformed or over 1 MiB | stable `hook_spool_record_*` error; preserve original spool |
 | Custom Hook config root is missing | `hook_config_root_missing` |
 | Deleted custom root has one valid matching Agent record during uninstall | use its canonical identity for no-op config cleanup and remove the record |
 | Deleted custom root has multiple or invalid matching records | `hook_config_record_conflict` / `hook_config_record_invalid` |
@@ -162,6 +177,8 @@ Frames use a four-byte big-endian length followed by UTF-8 JSON. The maximum fra
 - Good: an existing custom install root is upgraded in place without needing to repeat `--install-dir` inside the Agent transaction.
 - Good: Claude and Codex Hooks use different roots; preview shows actual files, confirmation preserves third-party entries, and both tools can be removed independently.
 - Good: the desktop disconnects, events spool under the bound Host/client namespace, and reconnect replays each event at most once before ACK deletion.
+- Good: four Host bridges are connected, a fifth waits without starting SSH, and closing one Host releases a permit for the waiting Host.
+- Good: a replaced bridge briefly receives `bridge_already_active`, backs off, then takes ownership after the old Agent process removes its socket.
 - Base: a missing or malformed discovery record is reconstructed only after an explicit install; no page-open or probe action changes remote files.
 - Base: Claude/Codex launched from an ordinary SSH shell has no binding variables; the installed Hook exits successfully without writing spool data.
 - Bad: trust an artifact hash from the WebView, skip manifest re-verification after preview, overwrite a non-owned launcher, or run `curl | sh` without review.
@@ -179,10 +196,11 @@ Frames use a four-byte big-endian length followed by UTF-8 JSON. The maximum fra
 - Assert transport parity for config alias, Agent, identity-file, credential reference, interactive auth, ProxyJump, and direct proxy precedence.
 - Assert explicit path validation and safe HOME expansion.
 - Assert bounded banner/report parsing, invalid UTF-8/contamination, protocol mismatch, identity mismatch, unsupported target, clean EOF, partial frame length, oversized frame, and mandatory bridge protocol.
+- Assert protocol minor 1 capability negotiation, bounded reader/response timeouts, global bridge/connect permits, retry jitter/reset classification, `bridge_already_active` takeover, heartbeat echo, cancellation bounds, and last-session shutdown.
 - Assert manifest tampering, duplicate/unknown targets, HTTP opt-in, query/fragment rejection, target selection, size/SHA-256 mismatch, and bounded downloads.
 - Assert install path quoting, strict operation markers/metadata, semantic version actions, lock conflicts, default/custom roots, corrupt/missing discovery recovery, promote rollback, distinct previous versions, and transactional uninstall.
 - Assert Claude/Codex exact-owner merge, duplicate normalization, unknown-event preservation, invalid JSON/TOML refusal, user-owned Codex feature/comment preservation, symlink target change refusal, fingerprint conflict, journal rollback, and Agent uninstall blocking.
-- Assert missing binding no-op, event allowlists, 1 MiB stdin bound, message redaction, Host/client/installation namespace isolation, stale lock recovery, monotonic meta rebuild, TTL/count/byte gap, ACK replay, full-window event/gap dedup, and remote notification cwd redaction.
+- Assert missing binding no-op, event allowlists, 1 MiB stdin bound, message redaction, Host/client/installation namespace isolation, stale lock recovery, monotonic meta rebuild, TTL/count/byte gap, streaming read/ACK, malformed-record preservation, monotonic batch/ACK validation, full-window event/gap dedup, and remote notification cwd redaction.
 - Run the POSIX installer smoke test for HTTPS dry-run, default HTTP rejection, explicit HTTP, custom install root, downgrade forwarding, and temporary-directory cleanup.
 - Compile the Agent for Linux `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` in addition to host tests.
 - Manually verify the CLI Integration page opens without SSH traffic and only Probe Agent starts a one-shot connection.

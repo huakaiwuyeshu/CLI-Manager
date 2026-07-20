@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashSet, VecDeque};
 #[cfg(unix)]
 use std::fs;
 use std::io::{self, Read, Write};
@@ -13,6 +14,7 @@ use crate::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_PREAMBLE_BANNER_BYTES: usize = 8 * 1024;
+const MAX_CANCELLED_REQUESTS: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +44,35 @@ struct HookBridgeBinding {
     pid_path: PathBuf,
 }
 
+#[derive(Default)]
+struct CancelledRequests {
+    order: VecDeque<String>,
+    ids: HashSet<String>,
+}
+
+impl CancelledRequests {
+    fn insert(&mut self, request_id: &str) -> bool {
+        if !self.ids.insert(request_id.to_string()) {
+            return false;
+        }
+        self.order.push_back(request_id.to_string());
+        while self.order.len() > MAX_CANCELLED_REQUESTS {
+            if let Some(removed) = self.order.pop_front() {
+                self.ids.remove(&removed);
+            }
+        }
+        true
+    }
+
+    fn take(&mut self, request_id: &str) -> bool {
+        if !self.ids.remove(request_id) {
+            return false;
+        }
+        self.order.retain(|queued| queued != request_id);
+        true
+    }
+}
+
 #[cfg(unix)]
 impl Drop for HookBridgeBinding {
     fn drop(&mut self) {
@@ -52,6 +83,10 @@ impl Drop for HookBridgeBinding {
 
 fn valid_binding_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.contains(['\0', '\r', '\n', '/', '\\'])
+}
+
+fn valid_request_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.contains(['\0', '\r', '\n'])
 }
 
 #[cfg(unix)]
@@ -228,7 +263,13 @@ pub fn handle_frame(frame: ClientFrame) -> (ServerFrame, bool) {
                 json!({
                     "protocolMajor": PROTOCOL_MAJOR,
                     "protocolMinor": PROTOCOL_MINOR,
-                    "capabilities": ["bridgeProtocol", "hookSpool"],
+                    "capabilities": [
+                        "bridgeProtocol",
+                        "hookSpool",
+                        "heartbeat",
+                        "requestCancellation",
+                        "boundedBackpressure"
+                    ],
                 }),
             ),
             false,
@@ -256,8 +297,23 @@ pub fn run_bridge(
 ) -> Result<(), String> {
     write_preamble(writer, nonce).map_err(|error| format!("preamble_write_failed:{error}"))?;
     let mut hook_binding = None;
+    let mut cancelled_requests = CancelledRequests::default();
     while let Some(frame) = read_frame(reader)? {
         let request_id = frame.request_id.clone();
+        if !valid_request_id(&request_id)
+            || frame.kind.is_empty()
+            || frame.kind.len() > 64
+            || frame.kind.contains(['\0', '\r', '\n'])
+        {
+            return Err("frame_identity_invalid".to_string());
+        }
+        if frame.kind != "cancel" && cancelled_requests.take(&request_id) {
+            write_frame(
+                writer,
+                &response(request_id, "error", json!({ "code": "request_cancelled" })),
+            )?;
+            continue;
+        }
         let (response, shutdown) = match frame.kind.as_str() {
             "hello" if hook_binding.is_some() => (
                 response(
@@ -279,7 +335,13 @@ pub fn run_bridge(
                             json!({
                                 "protocolMajor": PROTOCOL_MAJOR,
                                 "protocolMinor": PROTOCOL_MINOR,
-                                "capabilities": ["bridgeProtocol", "hookSpool"],
+                                "capabilities": [
+                                    "bridgeProtocol",
+                                    "hookSpool",
+                                    "heartbeat",
+                                    "requestCancellation",
+                                    "boundedBackpressure"
+                                ],
                                 "hookNamespace": namespace,
                                 "remoteMachineId": remote_machine_id,
                             }),
@@ -356,6 +418,34 @@ pub fn run_bridge(
                     ),
                 }
             }
+            "cancel" => {
+                let target = frame
+                    .payload
+                    .get("requestId")
+                    .and_then(Value::as_str)
+                    .filter(|value| valid_request_id(value) && *value != request_id);
+                match target {
+                    Some(target) => {
+                        let accepted = cancelled_requests.insert(target);
+                        (
+                            response(
+                                request_id,
+                                "response",
+                                json!({ "accepted": accepted, "requestId": target }),
+                            ),
+                            false,
+                        )
+                    }
+                    None => (
+                        response(
+                            request_id,
+                            "error",
+                            json!({ "code": "cancel_request_invalid" }),
+                        ),
+                        false,
+                    ),
+                }
+            }
             "hookAck" => {
                 let Some(binding) = hook_binding.as_ref() else {
                     let response = response(
@@ -405,7 +495,10 @@ pub fn run_bridge(
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_frame, read_frame, run_bridge, write_frame, ClientFrame, ServerFrame};
+    use super::{
+        handle_frame, read_frame, run_bridge, write_frame, CancelledRequests, ClientFrame,
+        ServerFrame, MAX_CANCELLED_REQUESTS,
+    };
     use serde_json::json;
     use std::io::Cursor;
 
@@ -415,6 +508,20 @@ mod tests {
         bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         bytes.extend_from_slice(&payload);
         bytes
+    }
+
+    fn decoded_server_frames(output: &[u8]) -> Vec<ServerFrame> {
+        let preamble_end = output.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+        let mut reader = Cursor::new(&output[preamble_end..]);
+        let mut frames = Vec::new();
+        while (reader.position() as usize) < output.len() - preamble_end {
+            let mut length = [0u8; 4];
+            std::io::Read::read_exact(&mut reader, &mut length).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(length) as usize];
+            std::io::Read::read_exact(&mut reader, &mut payload).unwrap();
+            frames.push(serde_json::from_slice(&payload).unwrap());
+        }
+        frames
     }
 
     impl serde::Serialize for ClientFrame {
@@ -444,6 +551,29 @@ mod tests {
     }
 
     #[test]
+    fn generic_capabilities_advertise_runtime_guards() {
+        let (frame, shutdown) = handle_frame(ClientFrame {
+            request_id: "hello".into(),
+            kind: "hello".into(),
+            payload: json!({}),
+        });
+        assert!(!shutdown);
+        for capability in [
+            "bridgeProtocol",
+            "hookSpool",
+            "heartbeat",
+            "requestCancellation",
+            "boundedBackpressure",
+        ] {
+            assert!(frame.payload["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value.as_str() == Some(capability)));
+        }
+    }
+
+    #[test]
     fn bridge_writes_preamble_and_shutdown_response() {
         let input = encoded_client_frame(&ClientFrame {
             request_id: "request-2".into(),
@@ -466,6 +596,46 @@ mod tests {
         let response: ServerFrame = serde_json::from_slice(&payload).unwrap();
         assert_eq!(response.kind, "response");
         assert_eq!(response.payload["accepted"], true);
+    }
+
+    #[test]
+    fn cancel_is_bounded_and_rejects_the_target_request() {
+        let mut input = encoded_client_frame(&ClientFrame {
+            request_id: "cancel-1".into(),
+            kind: "cancel".into(),
+            payload: json!({ "requestId": "target-1" }),
+        });
+        input.extend(encoded_client_frame(&ClientFrame {
+            request_id: "target-1".into(),
+            kind: "ping".into(),
+            payload: json!({ "sentAt": 1 }),
+        }));
+        input.extend(encoded_client_frame(&ClientFrame {
+            request_id: "shutdown-1".into(),
+            kind: "shutdown".into(),
+            payload: json!({}),
+        }));
+        let mut output = Vec::new();
+        run_bridge(&mut Cursor::new(input), &mut output, "nonce-1").unwrap();
+        let frames = decoded_server_frames(&output);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].kind, "response");
+        assert_eq!(frames[0].payload["accepted"], true);
+        assert_eq!(frames[1].kind, "error");
+        assert_eq!(frames[1].payload["code"], "request_cancelled");
+        assert_eq!(frames[2].kind, "response");
+    }
+
+    #[test]
+    fn consumed_cancel_id_can_be_reinserted_without_stale_eviction() {
+        let mut cancelled = CancelledRequests::default();
+        assert!(cancelled.insert("target"));
+        assert!(cancelled.take("target"));
+        assert!(cancelled.insert("target"));
+        for index in 0..MAX_CANCELLED_REQUESTS - 1 {
+            assert!(cancelled.insert(&format!("other-{index}")));
+        }
+        assert!(cancelled.take("target"));
     }
 
     #[test]

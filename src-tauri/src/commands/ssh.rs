@@ -18,6 +18,7 @@ const AGENT_ENV_MAGIC: &str = "CLI_MANAGER_SSH_AGENT_ENV/1";
 const AGENT_OPERATION_MAGIC: &str = "CLI_MANAGER_SSH_AGENT_OPERATION/1";
 const AGENT_HOOK_CONFIG_MAGIC: &str = "CLI_MANAGER_SSH_AGENT_HOOK_CONFIG/1";
 const AGENT_PROTOCOL_MAJOR: u16 = 1;
+const AGENT_PROTOCOL_MINOR_REQUIRED: u16 = 1;
 const MAX_AGENT_PROBE_BANNER_BYTES: usize = 8 * 1024;
 const MAX_AGENT_PROBE_REPORT_BYTES: usize = 64 * 1024;
 const MAX_AGENT_PROBE_STDERR_BYTES: usize = 8 * 1024;
@@ -1309,6 +1310,8 @@ fn result_from_agent_report(install_path: String, report: AgentDoctorProbe) -> S
         ("unsupported", report.code.as_str(), false)
     } else if report.code != "ok" {
         ("corrupt", report.code.as_str(), false)
+    } else if version.protocol_minor < AGENT_PROTOCOL_MINOR_REQUIRED {
+        ("incompatible", "ssh_agent_protocol_incompatible", false)
     } else {
         ("installed", report.code.as_str(), true)
     };
@@ -2013,7 +2016,7 @@ mod tests {
 
     #[test]
     fn agent_probe_parser_allows_bounded_login_banner() {
-        let stdout = b"Welcome to server\nCLI_MANAGER_SSH_AGENT_PROBE/1 found\n/usr/bin/cli-manager-ssh-agent\n{\"version\":{\"agentName\":\"cli-manager-ssh-agent\",\"agentVersion\":\"0.1.0\",\"protocolMajor\":1,\"protocolMinor\":0,\"targetOs\":\"linux\",\"targetArch\":\"x86_64\"},\"supported\":true,\"code\":\"ok\"}\n";
+        let stdout = b"Welcome to server\nCLI_MANAGER_SSH_AGENT_PROBE/1 found\n/usr/bin/cli-manager-ssh-agent\n{\"version\":{\"agentName\":\"cli-manager-ssh-agent\",\"agentVersion\":\"0.1.0\",\"protocolMajor\":1,\"protocolMinor\":1,\"targetOs\":\"linux\",\"targetArch\":\"x86_64\"},\"supported\":true,\"code\":\"ok\"}\n";
         let ParsedAgentProbe::Report {
             install_path,
             report,
@@ -2024,7 +2027,7 @@ mod tests {
         assert_eq!(install_path, "/usr/bin/cli-manager-ssh-agent");
         let result = result_from_agent_report(install_path, report);
         assert_eq!(result.status, "installed");
-        assert_eq!(result.protocol_version, "1.0");
+        assert_eq!(result.protocol_version, "1.1");
         assert_eq!(result.target, "linux/x86_64");
     }
 
@@ -2050,6 +2053,29 @@ mod tests {
                     protocol_minor: 0,
                     target_os: "linux".into(),
                     target_arch: "aarch64".into(),
+                },
+                supported: true,
+                code: "ok".into(),
+                installation: None,
+            },
+        );
+        assert_eq!(result.status, "incompatible");
+        assert_eq!(result.code, "ssh_agent_protocol_incompatible");
+        assert!(!result.supported);
+    }
+
+    #[test]
+    fn agent_probe_requires_the_bridge_runtime_minor() {
+        let result = result_from_agent_report(
+            "/opt/agent".into(),
+            AgentDoctorProbe {
+                version: AgentVersionProbe {
+                    agent_name: "cli-manager-ssh-agent".into(),
+                    agent_version: "0.1.0".into(),
+                    protocol_major: 1,
+                    protocol_minor: 0,
+                    target_os: "linux".into(),
+                    target_arch: "x86_64".into(),
                 },
                 supported: true,
                 code: "ok".into(),
