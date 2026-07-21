@@ -1215,7 +1215,46 @@ Replaced the custom file-tree ignore parser with ignore@7.0.6, reloaded project-
 - None - task complete
 
 
-## Session 35: 移除历史上下文注入并修复同步与字体状态
+## Session 35: Complete SSH Agent history, files, Git, and stats
+
+**Date**: 2026-07-21
+**Task**: Complete SSH Agent history, files, Git, and stats
+**Branch**: `feat/ssh-agent`
+
+### Summary
+
+Completed S06-S10 with remote history/cache and resume, read-only file and Git panels, remote terminal statistics, security boundaries, acceptance evidence, and full quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `34ba3f89` | (see git log) |
+| `3ab7a1bc` | (see git log) |
+| `25d00552` | (see git log) |
+| `cd618d4f` | (see git log) |
+| `72814943` | (see git log) |
+| `c14c5bdb` | (see git log) |
+| `a934ab8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 36: 移除历史上下文注入并修复同步与字体状态
 
 **Date**: 2026-07-21
 **Task**: 移除历史上下文注入并修复同步与字体状态

@@ -33,6 +33,11 @@ dist-ssr
 
 # Tauri
 src-tauri/target/
+src-tauri/ssh-agent/target/
+src-tauri/history-core/target/
+src-tauri/history-core/Cargo.lock
+src-tauri/hook-schema/target/
+src-tauri/hook-schema/Cargo.lock
 server/target/
 apps/server/target
 apps/web/dist

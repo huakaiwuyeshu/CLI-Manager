@@ -1,0 +1,42 @@
+name: SSH Agent Check
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/ssh-agent/**"
+      - "src-tauri/ssh-agent-public-key.txt"
+      - "src-tauri/tauri.conf.json"
+      - "scripts/install-ssh-agent.sh"
+      - ".github/scripts/build-ssh-agent-release.mjs"
+      - ".github/scripts/test-install-ssh-agent.sh"
+      - ".github/workflows/ssh-agent-check.yml"
+  push:
+    branches:
+      - master
+      - "feat/**"
+    paths:
+      - "src-tauri/ssh-agent/**"
+      - "src-tauri/ssh-agent-public-key.txt"
+      - "src-tauri/tauri.conf.json"
+      - "scripts/install-ssh-agent.sh"
+      - ".github/scripts/build-ssh-agent-release.mjs"
+      - ".github/scripts/test-install-ssh-agent.sh"
+      - ".github/workflows/ssh-agent-check.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Agent and installer
+        run: |
+          cargo test --manifest-path src-tauri/ssh-agent/Cargo.toml
+          cargo build --manifest-path src-tauri/ssh-agent/Cargo.toml
+          sh -n scripts/install-ssh-agent.sh
+          sh .github/scripts/test-install-ssh-agent.sh
+          node .github/scripts/build-ssh-agent-release.mjs \
+            0.1.0 V0.1.0 \
+            src-tauri/ssh-agent/target/release-test \
+            src-tauri/ssh-agent/target/debug/cli-manager-ssh-agent \
+            src-tauri/ssh-agent/target/debug/cli-manager-ssh-agent
