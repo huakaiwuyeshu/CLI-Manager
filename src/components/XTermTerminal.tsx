@@ -1093,7 +1093,17 @@ export function XTermTerminal({ sessionId, isActive = true, isVisible = true, fo
     baseDisposables.push(searchAddon.onDidChangeResults(handleSearchResults));
 
     const initialWebglReady = syncWebglRenderer(terminal, baseTheme);
-    if (initialWebglReady) terminal.loadAddon(imageAddon);
+    if (initialWebglReady) {
+      try {
+        terminal.loadAddon(imageAddon);
+      } catch (err) {
+        imageAddon.dispose();
+        logWarn("Failed to load terminal image addon; continuing without terminal image support", {
+          sessionId,
+          err,
+        });
+      }
+    }
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;

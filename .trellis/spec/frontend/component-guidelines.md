@@ -332,6 +332,71 @@ terminalRef.current = null;
 
 **Tests**: Run `npx tsc --noEmit`. Manually enable low memory mode, switch away from a terminal for more than 10 seconds, verify the session keeps running, then switch back and confirm the current viewport repaints without restarting the shell or losing scrollback.
 
+## Scenario: Terminal image addon WebAssembly compatibility
+
+### 1. Scope / Trigger
+
+- Applies whenever `@xterm/addon-image` is loaded in the Tauri WebView.
+- The addon creates WebAssembly decoders during activation, so CSP and addon loading are one compatibility boundary.
+
+### 2. Signatures
+
+- CSP: `app.security.csp` in `src-tauri/tauri.conf.json`.
+- Addon activation: `terminal.loadAddon(imageAddon)` in `XTermTerminal`.
+
+### 3. Contracts
+
+- `script-src` must include `'wasm-unsafe-eval'` and must not add the broader `'unsafe-eval'`.
+- Image-addon activation failure must dispose the partially registered addon, log a warning, and continue terminal initialization.
+- Successful activation preserves existing SIXEL, IIP, and Kitty image support.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| WebAssembly allowed and addon activates | Keep terminal image support enabled |
+| CSP or WebView rejects WebAssembly | Warn and continue without terminal image support |
+| WebGL is unavailable or disabled | Keep the existing path that does not load the image addon |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a supported WebView loads WebGL and `ImageAddon`; image protocols remain available.
+- Base: WebGL is disabled by theme, transparency, settings, or platform policy; the default renderer remains usable.
+- Bad: `terminal.loadAddon(imageAddon)` throws and aborts the React terminal initialization effect.
+
+### 6. Tests Required
+
+- `node --test scripts/terminalImageAddonCsp.test.mjs`: assert the CSP token and local fallback guard.
+- `npx tsc --noEmit`: assert the terminal initialization path remains type-safe.
+- Manual Windows check: create a terminal on a WebView2 runtime that previously rejected WASM and confirm the terminal opens; image support may degrade, but the terminal must remain usable.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+terminal.loadAddon(imageAddon);
+```
+
+```json
+"script-src 'self' 'unsafe-eval'"
+```
+
+#### Correct
+
+```tsx
+try {
+  terminal.loadAddon(imageAddon);
+} catch (err) {
+  imageAddon.dispose();
+  logWarn("Failed to load terminal image addon; continuing without terminal image support", { sessionId, err });
+}
+```
+
+```json
+"script-src 'self' 'wasm-unsafe-eval'"
+```
+
 ### Convention: Terminal display state stays in the Display controller
 
 **What**: `useTerminalDisplay` owns renderer state and output-direction state: `WebglAddon`, fit/viewport scheduling, active write queue, inactive output buffer, and the `pty-output-{sessionId}` listener. `XTermTerminal` only orchestrates the terminal instance and passes narrow ref/callback contracts into the hook.
