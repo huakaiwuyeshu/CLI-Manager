@@ -3,6 +3,7 @@
 pub mod app_paths;
 mod ccswitch_db;
 mod claude_hook;
+pub mod codex_app_server_proxy;
 pub mod codex_statusline;
 mod commands;
 mod conpty_sideload;
@@ -827,12 +828,21 @@ pub fn run() {
             commands::terminal::pty_daemon_upgrade_if_idle,
             commands::terminal::pty_daemon_sessions,
             commands::cc_connect::cc_connect_get_status,
+            commands::cc_connect::cc_connect_inspect_executable,
             commands::cc_connect::cc_connect_save_profile,
             commands::cc_connect::cc_connect_clear_credentials,
+            commands::cc_connect::cc_connect_weixin_authorization_start,
+            commands::cc_connect::cc_connect_weixin_authorization_status,
+            commands::cc_connect::cc_connect_weixin_authorization_cancel,
             commands::cc_connect::cc_connect_start,
             commands::cc_connect::cc_connect_stop,
             commands::cc_connect::cc_connect_restart,
             commands::cc_connect::cc_connect_get_logs,
+            commands::cc_connect::handoff::cc_connect_handoff_status,
+            commands::cc_connect::handoff::cc_connect_handoff_platforms,
+            commands::cc_connect::handoff::cc_connect_handoff_start,
+            commands::cc_connect::handoff::cc_connect_handoff_cancel,
+            commands::cc_connect::handoff_notification::cc_connect_handoff_notification_status,
             take_pending_background_session,
             commands::desktop_pet::desktop_pet_catalog,
             commands::desktop_pet::desktop_pet_list_installed,
@@ -841,6 +851,7 @@ pub fn run() {
             commands::desktop_pet::desktop_pet_import,
             commands::desktop_pet::desktop_pet_uninstall,
             commands::desktop_pet::desktop_pet_window_sync,
+            commands::desktop_pet::desktop_pet_window_set_bounds,
             commands::desktop_pet::desktop_pet_window_hide,
             commands::desktop_pet::desktop_pet_window_reset_position,
             commands::terminal_shell::terminal_shell_scan,

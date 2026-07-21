@@ -55,6 +55,7 @@ import {
   TERMINAL_SIDE_PANEL_TAB_ORDER,
   type TerminalSidePanelTab,
 } from "./terminal/TerminalSidePanel";
+import { RemoteHandoffOverlay } from "./terminal/RemoteHandoffOverlay";
 import { WorktreeFinishDialog } from "./worktree/WorktreeFinishDialog";
 import { FileExplorerSidebar } from "./files/FileExplorerSidebar";
 import { openWindowsTerminal } from "../lib/externalTerminal";
@@ -1719,6 +1720,8 @@ function PaneLeafView({
                   isVisible={!historyActive && isLayoutVisible && session.id === effectivePaneActiveSessionId}
                 />
               </Suspense>
+            ) : session.remoteHandoff ? (
+              <RemoteHandoffOverlay session={session} />
             ) : (
               <XTermTerminal
                 sessionId={session.id}

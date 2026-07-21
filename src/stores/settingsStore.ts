@@ -23,6 +23,18 @@ import {
   sanitizeThirdPartyHookTargets,
   type ThirdPartyHookTarget,
 } from "../lib/thirdPartyNotifications";
+import {
+  DESKTOP_PET_SIZE_DEFAULT_PERCENT,
+  normalizeDesktopPetSizePercent,
+  type DesktopPetSizePercent,
+} from "../lib/desktopPetSize";
+
+export {
+  DESKTOP_PET_SIZE_DEFAULT_PERCENT,
+  DESKTOP_PET_SIZE_MAX_PERCENT,
+  DESKTOP_PET_SIZE_MIN_PERCENT,
+  DESKTOP_PET_SIZE_STEP_PERCENT,
+} from "../lib/desktopPetSize";
 
 export type ThemeMode = "dark" | "light" | "system";
 export type LightThemePalette =
@@ -154,7 +166,7 @@ export type UnsplitBehavior = "merge" | "close";
 export type FileExplorerIgnoredPaths = Record<string, string[]>;
 export type LanguagePreference = "auto" | "zh-CN" | "zh-TW" | "en-US";
 export type BatchLaunchPaneDirection = "vertical" | "horizontal";
-export type DesktopPetSize = "small" | "medium" | "large";
+export type DesktopPetSize = DesktopPetSizePercent;
 export const DESKTOP_PET_WORK_BOUNCE_MIN_PX = 0;
 export const DESKTOP_PET_WORK_BOUNCE_MAX_PX = 5;
 
@@ -379,6 +391,11 @@ export interface Settings {
   hookSettingsSectionsExpanded: HookSettingsSectionsExpanded;
   thirdPartyHookNotificationsEnabled: boolean;
   thirdPartyHookTargets: ThirdPartyHookTarget[];
+  remoteHandoffNotificationsEnabled: boolean;
+  remoteHandoffCompletionNotificationsEnabled: boolean;
+  remoteHandoffPermissionNotificationsEnabled: boolean;
+  remoteHandoffProgressNotificationsEnabled: boolean;
+  remoteHandoffProgressIntervalMinutes: number;
   claudeHookConfigDir: string | null;
   claudeHookAutoRepairKnownInstalled: boolean;
   claudeHookAutoRepairNoticeShown: boolean;
@@ -538,6 +555,11 @@ const DEFAULTS: Settings = {
   hookSettingsSectionsExpanded: { ...HOOK_SETTINGS_SECTIONS_EXPANDED_DEFAULT },
   thirdPartyHookNotificationsEnabled: true,
   thirdPartyHookTargets: [],
+  remoteHandoffNotificationsEnabled: true,
+  remoteHandoffCompletionNotificationsEnabled: true,
+  remoteHandoffPermissionNotificationsEnabled: true,
+  remoteHandoffProgressNotificationsEnabled: true,
+  remoteHandoffProgressIntervalMinutes: 5,
   claudeHookConfigDir: null,
   claudeHookAutoRepairKnownInstalled: false,
   claudeHookAutoRepairNoticeShown: false,
@@ -555,7 +577,7 @@ const DEFAULTS: Settings = {
     enabled: false,
     petId: BUILTIN_DESKTOP_PET_ID,
     alwaysOnTop: true,
-    size: "medium",
+    size: DESKTOP_PET_SIZE_DEFAULT_PERCENT,
     workingBounceEnabled: false,
     workingBounceDistancePx: 5,
     showStatus: true,
@@ -994,9 +1016,7 @@ export function migrateDesktopPetSettings(value: unknown): DesktopPetSettings {
   const petId = typeof raw.petId === "string" && raw.petId.trim() && raw.petId.length <= 80
     ? raw.petId.trim()
     : defaults.petId;
-  const size: DesktopPetSize = raw.size === "small" || raw.size === "medium" || raw.size === "large"
-    ? raw.size
-    : defaults.size;
+  const size = normalizeDesktopPetSizePercent(raw.size, defaults.size);
   const workingBounceDistancePx = Math.round(clampNumber(
     raw.workingBounceDistancePx,
     DESKTOP_PET_WORK_BOUNCE_MIN_PX,
@@ -1332,6 +1352,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         ? entries.thirdPartyHookNotificationsEnabled
         : DEFAULTS.thirdPartyHookNotificationsEnabled;
     entries.thirdPartyHookTargets = sanitizeThirdPartyHookTargets(entries.thirdPartyHookTargets);
+    entries.remoteHandoffNotificationsEnabled =
+      typeof entries.remoteHandoffNotificationsEnabled === "boolean"
+        ? entries.remoteHandoffNotificationsEnabled
+        : DEFAULTS.remoteHandoffNotificationsEnabled;
+    entries.remoteHandoffCompletionNotificationsEnabled =
+      typeof entries.remoteHandoffCompletionNotificationsEnabled === "boolean"
+        ? entries.remoteHandoffCompletionNotificationsEnabled
+        : DEFAULTS.remoteHandoffCompletionNotificationsEnabled;
+    entries.remoteHandoffPermissionNotificationsEnabled =
+      typeof entries.remoteHandoffPermissionNotificationsEnabled === "boolean"
+        ? entries.remoteHandoffPermissionNotificationsEnabled
+        : DEFAULTS.remoteHandoffPermissionNotificationsEnabled;
+    entries.remoteHandoffProgressNotificationsEnabled =
+      typeof entries.remoteHandoffProgressNotificationsEnabled === "boolean"
+        ? entries.remoteHandoffProgressNotificationsEnabled
+        : DEFAULTS.remoteHandoffProgressNotificationsEnabled;
+    entries.remoteHandoffProgressIntervalMinutes =
+      typeof entries.remoteHandoffProgressIntervalMinutes === "number"
+        && Number.isFinite(entries.remoteHandoffProgressIntervalMinutes)
+        ? Math.min(60, Math.max(1, Math.round(entries.remoteHandoffProgressIntervalMinutes)))
+        : DEFAULTS.remoteHandoffProgressIntervalMinutes;
     entries.claudeHookConfigDir =
       typeof entries.claudeHookConfigDir === "string" && entries.claudeHookConfigDir.trim()
         ? entries.claudeHookConfigDir

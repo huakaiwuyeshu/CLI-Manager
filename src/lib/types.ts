@@ -229,6 +229,19 @@ export interface SyncedHistoryPaneSession {
   updatedAt: number;
 }
 
+export type RemoteHandoffPhase = "pending" | "active" | "cancelling" | "recovery_failed";
+
+export interface RemoteHandoffSessionState {
+  phase: RemoteHandoffPhase;
+  cliSessionId: string;
+  projectName: string;
+  workDir: string;
+  providerId?: string;
+  providerName?: string;
+  platform?: "telegram" | "feishu" | "weixin" | "wecom";
+  startedAtMs?: number;
+}
+
 export interface TerminalSession {
   id: string;
   projectId?: string;
@@ -249,6 +262,8 @@ export interface TerminalSession {
   /** true 时启动命令由 XTermTerminal 在 initialTerminalOutput 写完后再发送。 */
   deferStartupUntilInitialOutput?: boolean;
   cliSessionId?: string;
+  /** 远程托管期间保留标签元数据，但本地不再持有 PTY。 */
+  remoteHandoff?: RemoteHandoffSessionState;
   /** CLI hook 上报的当前 effort，仅用于实时统计展示，不作为历史解析来源。 */
   cliReasoningEffort?: string;
   /** 会话类型；缺省视为 "pty"。"subagent-transcript" 为只读转录伪会话（无 PTY、不持久化）。 */
