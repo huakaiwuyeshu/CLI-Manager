@@ -46,6 +46,8 @@ interface MetaPatchInput {
 interface OpenHistoryOptions {
   sourceFilter?: HistorySourceFilter;
   projectPath?: string | null;
+  /** 左侧/入口选中的具体项目 id；仅用于 UI 高亮，会话过滤仍按 path。 */
+  projectId?: string | null;
   scopedProjectPath?: string | null;
 }
 
@@ -64,6 +66,8 @@ interface HistoryStore {
   statsCacheKey: string | null;
   sourceFilter: HistorySourceFilter;
   projectPathFilter: string | null;
+  /** 项目树高亮用；null 时回退到 path 匹配。 */
+  projectIdFilter: string | null;
   scopedProjectPathFilter: string | null;
   sessions: HistorySessionView[];
   hasMoreSessions: boolean;
@@ -88,7 +92,7 @@ interface HistoryStore {
   closeHistory: () => void;
   toggleHistory: () => Promise<void>;
   setSourceFilter: (filter: HistorySourceFilter) => Promise<void>;
-  setProjectPathFilter: (projectPath: string | null) => Promise<void>;
+  setProjectPathFilter: (projectPath: string | null, projectId?: string | null) => Promise<void>;
   loadSessions: () => Promise<void>;
   loadMoreSessions: () => Promise<void>;
   loadIndexStatus: () => Promise<void>;
@@ -1435,6 +1439,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   statsCacheKey: null,
   sourceFilter: "all",
   projectPathFilter: null,
+  projectIdFilter: null,
   scopedProjectPathFilter: null,
   sessions: [],
   hasMoreSessions: false,
@@ -1536,15 +1541,20 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   openHistory: async (options) => {
     const nextSourceFilter = options?.sourceFilter ?? get().sourceFilter;
     const nextProjectPathFilter = options?.projectPath?.trim() || null;
+    const nextProjectIdFilter = nextProjectPathFilter
+      ? (options?.projectId?.trim() || null)
+      : null;
     const nextScopedProjectPathFilter = options?.scopedProjectPath?.trim() || null;
     const filterChanged =
       nextSourceFilter !== get().sourceFilter ||
       nextProjectPathFilter !== get().projectPathFilter ||
+      nextProjectIdFilter !== get().projectIdFilter ||
       nextScopedProjectPathFilter !== get().scopedProjectPathFilter;
     const hasSessions = get().sessions.length > 0;
     const stopPerf = createPerfMarker("history.open", {
       sourceFilter: nextSourceFilter,
       projectPathFilter: nextProjectPathFilter ?? "__all__",
+      projectIdFilter: nextProjectIdFilter ?? "__none__",
       scopedProjectPathFilter: nextScopedProjectPathFilter ?? "__none__",
       fromCache: hasSessions && !filterChanged,
     });
@@ -1552,6 +1562,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       isOpen: true,
       sourceFilter: nextSourceFilter,
       projectPathFilter: nextProjectPathFilter,
+      projectIdFilter: nextProjectIdFilter,
       scopedProjectPathFilter: nextScopedProjectPathFilter,
     });
     try {
@@ -1585,8 +1596,13 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     }
   },
 
-  setProjectPathFilter: async (projectPath) => {
-    set({ projectPathFilter: projectPath?.trim() || null, scopedProjectPathFilter: null });
+  setProjectPathFilter: async (projectPath, projectId) => {
+    const nextProjectPath = projectPath?.trim() || null;
+    set({
+      projectPathFilter: nextProjectPath,
+      projectIdFilter: nextProjectPath ? (projectId?.trim() || null) : null,
+      scopedProjectPathFilter: null,
+    });
     await get().loadSessions();
     if (!get().globalQuery.trim()) {
       set({ searchHits: [] });

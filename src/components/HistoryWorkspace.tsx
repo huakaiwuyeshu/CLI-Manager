@@ -212,6 +212,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
   const searching = useHistoryStore((s) => s.searching);
   const sourceFilter = useHistoryStore((s) => s.sourceFilter);
   const projectPathFilter = useHistoryStore((s) => s.projectPathFilter);
+  const projectIdFilter = useHistoryStore((s) => s.projectIdFilter);
   const scopedProjectPathFilter = useHistoryStore((s) => s.scopedProjectPathFilter);
   const sessions = useHistoryStore((s) => s.sessions);
   const metaMap = useHistoryStore((s) => s.metaMap);
@@ -1063,6 +1064,7 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           sessionListRef={sessionListRef}
           sourceFilter={sourceFilter}
           projectPathFilter={projectPathFilter}
+          projectIdFilter={projectIdFilter}
           scopedProjectPathFilter={scopedProjectPathFilter}
           projects={historyProjects}
           groups={groups}
@@ -1090,8 +1092,8 @@ export function HistoryWorkspace({ active = true }: HistoryWorkspaceProps) {
           onSourceFilterChange={(value) => {
             void setSourceFilter(value as HistorySourceFilter);
           }}
-          onProjectPathFilterChange={(value) => {
-            void setProjectPathFilter(value);
+          onProjectPathFilterChange={(value, projectId) => {
+            void setProjectPathFilter(value, projectId);
           }}
           onGlobalQueryChange={setGlobalQuery}
           onFavoriteOnlyChange={setFavoriteOnly}
